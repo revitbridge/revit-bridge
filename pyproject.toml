@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "revit-bridge"
+version = "0.1.0"
+description = "Intent bridge between designers and AI for Revit: MCP server + Claude Code plugin"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "revitbridge" }]
+keywords = ["revit", "bim", "mcp", "claude-code"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering",
+]
+# Hard constraint: no LLM SDK, no chromadb, no FastAPI (see CLAUDE.md).
+dependencies = [
+  "mcp>=2,<3",
+  "pydantic>=2",
+  "pyyaml>=6",
+  "websockets>=12",
+]
+
+[project.urls]
+Homepage = "https://github.com/revitbridge/revit-bridge"
+Issues = "https://github.com/revitbridge/revit-bridge/issues"
+Changelog = "https://github.com/revitbridge/revit-bridge/blob/main/CHANGELOG.md"
+
+[project.scripts]
+revit-bridge = "revit_bridge.mcp_server:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["revit_bridge"]
+
+# Built-in capability packs live in ./capabilities (repo root); ship them
+# inside the wheel so `uvx revit-bridge` finds them without a checkout.
+[tool.hatch.build.targets.wheel.force-include]
+"capabilities" = "revit_bridge/capabilities/builtin"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "revit_bridge",
+  "capabilities",
+  "tests",
+  "README.md",
+  "CHANGELOG.md",
+  "LICENSE",
+  "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

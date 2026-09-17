@@ -6,3 +6,12 @@
 
 # Local Claude Code state
 .claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
