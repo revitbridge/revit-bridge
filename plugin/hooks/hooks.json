@@ -1,0 +1,18 @@
+{
+  "description": "Spec confirmation gate: execute_code and run_tool are denied unless spec_confirmed is true.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__(plugin_revit-bridge_)?revit-bridge__(execute_code|run_tool)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv",
+            "args": ["run", "--no-project", "--quiet", "${CLAUDE_PLUGIN_ROOT}/hooks/spec_gate.py"],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

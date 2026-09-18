@@ -21,6 +21,10 @@ uvx --from . revit-bridge check   # ping the add-in on REVIT_BRIDGE_HOST:REVIT_B
 - `revit_bridge/capabilities/` — capability pack store; YAML packs in `capabilities/` at repo root.
 - `revit_bridge/spec/`, `validators/`, `evidence/`, `auth/` — TaskSpec models, later phases, slot token helpers.
 - `tests/` — pytest; `tests/fake_revit.py` fakes the add-in.
+- `plugin/` — Claude Code plugin: `skills/revit-bridge/SKILL.md` (+ `references/`), `.mcp.json`,
+  `hooks/hooks.json` + `hooks/spec_gate.py`. `.claude-plugin/marketplace.json` at the repo root
+  publishes it. Validate with `claude plugin validate .` and `claude plugin validate ./plugin --strict`;
+  try locally with `claude --plugin-dir ./plugin`.
 
 ## Hard constraints
 

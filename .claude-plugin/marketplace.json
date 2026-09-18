@@ -1,0 +1,19 @@
+{
+  "name": "revit-bridge",
+  "owner": { "name": "revitbridge", "url": "https://github.com/revitbridge" },
+  "description": "Plugins from the revitbridge organization: an intent bridge between designers and AI for Autodesk Revit.",
+  "plugins": [
+    {
+      "name": "revit-bridge",
+      "source": "./plugin",
+      "version": "0.1.0",
+      "description": "Skill, MCP server and spec-confirmation hook for working in a running Revit model.",
+      "author": { "name": "revitbridge", "url": "https://github.com/revitbridge" },
+      "homepage": "https://github.com/revitbridge/revit-bridge",
+      "repository": "https://github.com/revitbridge/revit-bridge",
+      "license": "MIT",
+      "keywords": ["revit", "bim", "mcp", "autodesk"],
+      "category": "productivity"
+    }
+  ]
+}

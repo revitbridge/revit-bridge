@@ -28,7 +28,20 @@ Revit 2026 with the add-in installed and its local TCP listener on (default
 }
 ```
 
-**Claude Code**:
+**Claude Code** - the plugin (skill + MCP server + confirmation hook, recommended):
+
+```
+/plugin marketplace add revitbridge/revit-bridge
+/plugin install revit-bridge@revit-bridge
+```
+
+The plugin's `.mcp.json` starts the server with `uvx`; its `hooks/hooks.json`
+denies `execute_code` / `run_tool` calls that lack `spec_confirmed=true`
+(`uv run` executes `plugin/hooks/spec_gate.py`, so `uv` must be on PATH). The
+skill is also installable on its own with
+`npx skills add revitbridge/revit-bridge`.
+
+MCP server only, without the skill and hook:
 
 ```bash
 claude mcp add revit-bridge -- uvx revit-bridge

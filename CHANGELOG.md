@@ -6,6 +6,12 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Claude Code plugin in `plugin/` (skill `revit-bridge` with pattern, workflow and
+  standards references, `.mcp.json`, PreToolUse spec gate hook) and the
+  marketplace manifest `.claude-plugin/marketplace.json`.
+
 ### Fixed
 
 - The reference pack `_example_create_wall_v2.yaml` sat in `capabilities/` and was
