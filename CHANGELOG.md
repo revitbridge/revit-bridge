@@ -6,6 +6,12 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Plugin 0.1.1: `plugin/.mcp.json` runs the PyPI release (`uvx revit-bridge`)
+  instead of a git checkout, so installs no longer need `uvx --refresh` to pick
+  up new versions.
+
 ## [0.1.0] - 2026-09-18
 
 First release of the standalone package, extracted from the former

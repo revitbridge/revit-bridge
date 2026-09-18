@@ -6,7 +6,7 @@
     {
       "name": "revit-bridge",
       "source": "./plugin",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "Skill, MCP server and spec-confirmation hook for working in a running Revit model.",
       "author": { "name": "revitbridge", "url": "https://github.com/revitbridge" },
       "homepage": "https://github.com/revitbridge/revit-bridge",

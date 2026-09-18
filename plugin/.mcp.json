@@ -2,7 +2,7 @@
   "mcpServers": {
     "revit-bridge": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/revitbridge/revit-bridge", "revit-bridge"]
+      "args": ["revit-bridge"]
     }
   }
 }

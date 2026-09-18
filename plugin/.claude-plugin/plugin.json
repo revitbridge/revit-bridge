@@ -1,7 +1,7 @@
 {
   "name": "revit-bridge",
   "displayName": "Revit Bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Build, change and query a running Autodesk Revit model through the revit-bridge MCP server, with a parameter-source protocol and a spec-confirmation gate.",
   "author": { "name": "revitbridge", "url": "https://github.com/revitbridge" },
   "homepage": "https://github.com/revitbridge/revit-bridge",
