@@ -36,9 +36,6 @@ from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.revit.settings import RevitSettings, env_flag
 from revit_bridge.snapshot.query import RevitQueryExecutor
 
-# Category values interpolated into C# must match this exact shape (P0-4)
-_CATEGORY_RE = re.compile(r"OST_[A-Za-z]+")
-
 # Hosts that run their own confirmation flow (the web demo) may lift the gate.
 ENV_ALLOW_UNCONFIRMED = "REVIT_BRIDGE_ALLOW_UNCONFIRMED"
 
@@ -224,50 +221,7 @@ async def get_tool_choices(name: str) -> str:
 
     try:
         client = await RevitClientPool.get_client()
-        executor = RevitQueryExecutor(client)
-        choices: dict[str, list[dict]] = {}
-
-        for p in dynamic_params:
-            source = p["choices_from"]
-            items: list[dict] = []
-
-            if source == "levels":
-                levels = await executor.get_levels()
-                items = [{"label": f"{lv.get('Name','?')} ({lv.get('ElevationMm',0)}mm)",
-                          "value": lv.get("Name", "")} for lv in levels]
-            elif source.startswith("family_types:"):
-                category = source.split(":", 1)[1]
-                types = await executor.get_family_types([category])
-                items = [{"label": t.get("name", t.get("Name", str(t))),
-                          "value": t.get("name", t.get("Name", str(t)))} for t in types]
-            elif source == "floor_types":
-                code = ('var types = new FilteredElementCollector(document)\n'
-                        '    .OfClass(typeof(FloorType)).Cast<FloorType>()\n'
-                        '    .Select(ft => new { Name = ft.Name, Id = ft.Id.Value }).ToList();\n'
-                        'return types;')
-                resp = await client.send_code(code)
-                if resp.success and resp.result:
-                    data = resp.result if isinstance(resp.result, list) else [resp.result]
-                    items = [{"label": ft.get("Name", str(ft)),
-                              "value": ft.get("Name", str(ft))} for ft in data]
-            elif source.startswith("elements:"):
-                category = source.split(":", 1)[1]
-                if not _CATEGORY_RE.fullmatch(category):
-                    choices[p["name"]] = []
-                    continue
-                code = (f'var elems = new FilteredElementCollector(document)\n'
-                        f'    .OfCategory(BuiltInCategory.{category})\n'
-                        f'    .WhereElementIsNotElementType()\n'
-                        f'    .Select(e => new {{ Id = e.Id.Value, Name = e.Name }}).ToList();\n'
-                        f'return elems;')
-                resp = await client.send_code(code)
-                if resp.success and resp.result:
-                    data = resp.result if isinstance(resp.result, list) else [resp.result]
-                    items = [{"label": f"{el.get('Name','?')} (ID: {el.get('Id','?')})",
-                              "value": el.get("Id", "")} for el in data]
-
-            choices[p["name"]] = items
-
+        choices = await RevitQueryExecutor(client).get_tool_choices(dynamic_params)
         return _dumps(choices)
     except Exception as e:
         return _dumps({"success": False, "error": str(e)})

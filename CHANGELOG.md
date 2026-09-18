@@ -11,6 +11,14 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 - Claude Code plugin in `plugin/` (skill `revit-bridge` with pattern, workflow and
   standards references, `.mcp.json`, PreToolUse spec gate hook) and the
   marketplace manifest `.claude-plugin/marketplace.json`.
+- `RevitQueryExecutor.get_tool_choices(dynamic_params)` resolves a pack's
+  `choices_from` sources (`levels`, `family_types:<OST_*>`, `floor_types`,
+  `elements:<OST_*>`) and `RevitQueryExecutor.get_project_units()` reads the
+  project's length unit. The MCP `get_tool_choices` tool and the web host both
+  call these instead of carrying their own Revit snippets.
+- `escape_param_value` in `revit_bridge.capabilities`: `ToolStore.render_code`
+  now escapes quotes, backslashes and newlines in string parameters so a value
+  cannot terminate the C# string literal it is rendered into.
 
 ### Fixed
 

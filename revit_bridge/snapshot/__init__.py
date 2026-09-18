@@ -7,9 +7,11 @@ later phase.
 from revit_bridge.snapshot.atoms import ATOM_CATALOG, AtomDef, AtomKind, AtomResolver, get_atom_keys, list_atoms
 from revit_bridge.snapshot.query import (
     ALLOWED_CATEGORIES,
+    CATEGORY_RE,
     HOSTED_CATEGORIES,
     OST_REFERENCE,
     RevitQueryExecutor,
+    detect_length_unit,
     sanitize_categories,
 )
 
@@ -19,9 +21,11 @@ __all__ = [
     "AtomDef",
     "AtomKind",
     "AtomResolver",
+    "CATEGORY_RE",
     "HOSTED_CATEGORIES",
     "OST_REFERENCE",
     "RevitQueryExecutor",
+    "detect_length_unit",
     "get_atom_keys",
     "list_atoms",
     "sanitize_categories",

@@ -8,10 +8,17 @@ not migrated.
 from __future__ import annotations
 
 import logging
+import re
 
 from revit_bridge.revit.client import RevitClient
 
 _log = logging.getLogger("revit_bridge.snapshot.query")
+
+# Category values interpolated into C# must match this exact shape (P0-4)
+CATEGORY_RE = re.compile(r"OST_[A-Za-z]+")
+
+# ``choices_from`` values a capability pack may declare for a parameter.
+CHOICE_SOURCES = ("levels", "family_types:<OST_Category>", "floor_types", "elements:<OST_Category>")
 
 
 # BuiltInCategory reference — the categories the bridge knows how to query.
@@ -122,3 +129,116 @@ class RevitQueryExecutor:
         if resp.success and resp.result:
             return resp.result if isinstance(resp.result, list) else [resp.result]
         return []
+
+    async def get_project_units(self) -> dict:
+        """Read the project's display unit for lengths.
+
+        Returns ``{"revit_unit": <UnitTypeId>, "display_name": <label>,
+        "detected": "mm" | "m" | "feet"}`` or ``{"error": <message>}``.
+        """
+        code = (
+            'var units = document.GetUnits();\n'
+            'var lengthSpec = Autodesk.Revit.DB.SpecTypeId.Length;\n'
+            'var formatOptions = units.GetFormatOptions(lengthSpec);\n'
+            'var unitTypeId = formatOptions.GetUnitTypeId();\n'
+            'return new {\n'
+            '    LengthUnit = unitTypeId.TypeId,\n'
+            '    DisplayName = Autodesk.Revit.DB.LabelUtils.GetLabelForUnit(unitTypeId)\n'
+            '};\n'
+        )
+        resp = await self.client.send_code(code)
+        if not (resp.success and isinstance(resp.result, dict)):
+            return {"error": resp.error or "Failed to query project units"}
+        unit_id = str(resp.result.get("LengthUnit", ""))
+        display = str(resp.result.get("DisplayName", ""))
+        return {
+            "revit_unit": unit_id,
+            "display_name": display,
+            "detected": detect_length_unit(unit_id, display),
+        }
+
+    async def get_tool_choices(self, dynamic_params: list[dict]) -> dict[str, list[dict]]:
+        """Resolve ``choices_from`` sources of a capability pack against Revit.
+
+        ``dynamic_params`` is what ``ToolStore.get_dynamic_params`` returns:
+        ``[{"name": ..., "choices_from": ...}, ...]``. The result maps each
+        parameter name to ``[{"label": ..., "value": ...}, ...]``; unknown or
+        malformed sources yield an empty list rather than an exception.
+        """
+        choices: dict[str, list[dict]] = {}
+        for param in dynamic_params:
+            source = str(param.get("choices_from", ""))
+            items: list[dict] = []
+
+            if source == "levels":
+                items = [
+                    {"label": f"{lv.get('Name', '?')} ({lv.get('ElevationMm', 0)}mm)",
+                     "value": lv.get("Name", "")}
+                    for lv in await self.get_levels()
+                ]
+            elif source.startswith("family_types:"):
+                category = source.split(":", 1)[1]
+                items = [
+                    {"label": _type_name(t), "value": _type_name(t)}
+                    for t in await self.get_family_types([category])
+                ]
+            elif source == "floor_types":
+                code = (
+                    'var types = new FilteredElementCollector(document)\n'
+                    '    .OfClass(typeof(FloorType)).Cast<FloorType>()\n'
+                    '    .Select(ft => new { Name = ft.Name, Id = ft.Id.Value }).ToList();\n'
+                    'return types;'
+                )
+                resp = await self.client.send_code(code)
+                if resp.success and resp.result:
+                    data = resp.result if isinstance(resp.result, list) else [resp.result]
+                    items = [{"label": _type_name(ft), "value": _type_name(ft)} for ft in data]
+            elif source.startswith("elements:"):
+                category = source.split(":", 1)[1]
+                if not CATEGORY_RE.fullmatch(category):
+                    _log.warning(f"[get_tool_choices] invalid category in {source!r}")
+                    choices[param["name"]] = []
+                    continue
+                code = (
+                    f'var elems = new FilteredElementCollector(document)\n'
+                    f'    .OfCategory(BuiltInCategory.{category})\n'
+                    f'    .WhereElementIsNotElementType()\n'
+                    f'    .Select(e => new {{ Id = e.Id.Value, Name = e.Name }}).ToList();\n'
+                    f'return elems;'
+                )
+                resp = await self.client.send_code(code)
+                if resp.success and resp.result:
+                    data = resp.result if isinstance(resp.result, list) else [resp.result]
+                    items = [
+                        {"label": f"{el.get('Name', '?')} (ID: {el.get('Id', '?')})",
+                         "value": el.get("Id", "")}
+                        for el in data
+                    ]
+            else:
+                _log.warning(f"[get_tool_choices] unknown choices_from {source!r}")
+
+            choices[param["name"]] = items
+        return choices
+
+
+def _type_name(item) -> str:
+    """Type name from a Revit reply - the add-in is not consistent about the key."""
+    if isinstance(item, dict):
+        return str(
+            item.get("TypeName") or item.get("typeName")
+            or item.get("name") or item.get("Name") or item
+        )
+    return str(item)
+
+
+def detect_length_unit(unit_id: str, display_name: str = "") -> str:
+    """Map a Revit ``UnitTypeId`` / label to ``"mm"``, ``"m"`` or ``"feet"``."""
+    uid = unit_id.lower()
+    label = display_name.lower()
+    if "millimeters" in uid or "millimeters" in label:
+        return "mm"
+    if "meters" in uid and "milli" not in uid:
+        return "m"
+    if "feet" in uid or "foot" in uid:
+        return "feet"
+    return "mm"

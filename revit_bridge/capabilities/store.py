@@ -47,6 +47,21 @@ def default_capabilities_dir() -> Path:
 TOOLS_DIR = default_capabilities_dir()
 
 
+def escape_param_value(value) -> str:
+    """Make a parameter value safe inside a C# string literal (P0-3).
+
+    Placeholders in code templates sit between double quotes; a value carrying
+    a quote, backslash or newline would otherwise terminate the literal and
+    inject code. Non-strings are rendered with ``str``.
+    """
+    if isinstance(value, str):
+        return (value.replace("\\", "\\\\")
+                     .replace('"', '\\"')
+                     .replace("\r", "\\r")
+                     .replace("\n", "\\n"))
+    return str(value)
+
+
 @dataclass
 class SolidifiedTool:
     """A reusable tool created from a successful code execution.
@@ -362,7 +377,7 @@ class ToolStore:
 
         code = tool.code_template
         for k, v in filled.items():
-            code = code.replace(f"{{{k}}}", str(v))
+            code = code.replace(f"{{{k}}}", escape_param_value(v))
         return code
 
     def get_dynamic_params(self, name: str) -> list[dict]:

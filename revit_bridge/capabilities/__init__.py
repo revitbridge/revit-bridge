@@ -4,6 +4,13 @@ from revit_bridge.capabilities.store import (
     SolidifiedTool,
     ToolStore,
     default_capabilities_dir,
+    escape_param_value,
 )
 
-__all__ = ["ENV_CAPABILITIES_DIR", "SolidifiedTool", "ToolStore", "default_capabilities_dir"]
+__all__ = [
+    "ENV_CAPABILITIES_DIR",
+    "SolidifiedTool",
+    "ToolStore",
+    "default_capabilities_dir",
+    "escape_param_value",
+]
