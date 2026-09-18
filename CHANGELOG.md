@@ -6,27 +6,7 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- Claude Code plugin in `plugin/` (skill `revit-bridge` with pattern, workflow and
-  standards references, `.mcp.json`, PreToolUse spec gate hook) and the
-  marketplace manifest `.claude-plugin/marketplace.json`.
-- `RevitQueryExecutor.get_tool_choices(dynamic_params)` resolves a pack's
-  `choices_from` sources (`levels`, `family_types:<OST_*>`, `floor_types`,
-  `elements:<OST_*>`) and `RevitQueryExecutor.get_project_units()` reads the
-  project's length unit. The MCP `get_tool_choices` tool and the web host both
-  call these instead of carrying their own Revit snippets.
-- `escape_param_value` in `revit_bridge.capabilities`: `ToolStore.render_code`
-  now escapes quotes, backslashes and newlines in string parameters so a value
-  cannot terminate the C# string literal it is rendered into.
-
-### Fixed
-
-- The reference pack `_example_create_wall_v2.yaml` sat in `capabilities/` and was
-  loaded as a second `create_wall`. It now lives in `capabilities/examples/`, which
-  the store never reads; `list_tools` returns the 11 built-in packs exactly once.
-
-## [0.1.0] - 2026-09-17
+## [0.1.0] - 2026-09-18
 
 First release of the standalone package, extracted from the former
 `revit-api-rag` monorepo.
@@ -42,9 +22,21 @@ First release of the standalone package, extracted from the former
 - Connection settings from environment variables: `REVIT_BRIDGE_HOST`,
   `REVIT_BRIDGE_PORT`, `REVIT_BRIDGE_TOKEN`, `REVIT_BRIDGE_TIMEOUT`;
   the token is sent with every JSON-RPC request.
-- Twelve built-in capability packs shipped inside the wheel;
+- Eleven built-in capability packs shipped inside the wheel (a reference pack
+  lives in `capabilities/examples/`, which the store never reads);
   `REVIT_BRIDGE_CAPABILITIES_DIR` overrides the directory.
 - Slot token helpers (`revit_bridge.auth.tokens`) for the web relay.
+- `RevitQueryExecutor.get_tool_choices(dynamic_params)` resolves a pack's
+  `choices_from` sources (`levels`, `family_types:<OST_*>`, `floor_types`,
+  `elements:<OST_*>`) and `RevitQueryExecutor.get_project_units()` reads the
+  project's length unit. The MCP `get_tool_choices` tool and the web host both
+  call these instead of carrying their own Revit snippets.
+- `escape_param_value` in `revit_bridge.capabilities`: `ToolStore.render_code`
+  escapes quotes, backslashes and newlines in string parameters so a value
+  cannot terminate the C# string literal it is rendered into.
+- Claude Code plugin in `plugin/` (skill `revit-bridge` with pattern, workflow and
+  standards references, `.mcp.json`, PreToolUse spec gate hook) and the
+  marketplace manifest `.claude-plugin/marketplace.json`.
 - Test suite with a fake Revit TCP server; CI and PyPI trusted publishing workflows.
 
 ### Removed (compared with the monorepo server)
