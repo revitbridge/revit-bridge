@@ -1,5 +1,6 @@
 # Example: upgraded tool format with atom sources and enriched metadata
-# This file is for reference only — not loaded as an actual tool (prefixed with _)
+# This file is for reference only. ToolStore loads only top-level capabilities/*.yaml,
+# so nothing under capabilities/examples/ is ever registered as a tool.
 
 name: create_wall
 display_name: Create Wall

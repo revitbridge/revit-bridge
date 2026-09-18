@@ -15,12 +15,26 @@ BUILTIN_NAMES = {
 def test_builtin_packs_are_found_and_loadable():
     store = ToolStore()
     files = sorted(p.name for p in store.tools_dir.glob("*.yaml"))
-    assert len(files) == 12
-    names = {t.name for t in store.list_tools()}
-    assert BUILTIN_NAMES <= names
+    assert len(files) == 11
+    tools = store.list_tools()
+    names = [t.name for t in tools]
+    assert len(names) == 11
+    assert len(set(names)) == len(names), f"duplicate tool names: {names}"
+    assert set(names) == BUILTIN_NAMES
     for name in BUILTIN_NAMES:
         tool = store.load(name)
         assert tool is not None and tool.code_template.strip()
+
+
+def test_examples_subdirectory_is_never_loaded():
+    store = ToolStore()
+    examples = store.tools_dir / "examples"
+    assert examples.is_dir() and any(examples.glob("*.yaml"))
+    assert names_of(store).count("create_wall") == 1
+
+
+def names_of(store: ToolStore) -> list[str]:
+    return [t.name for t in store.list_tools()]
 
 
 def test_env_override_selects_directory(tmp_path, monkeypatch):

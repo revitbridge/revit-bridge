@@ -4,6 +4,14 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- The reference pack `_example_create_wall_v2.yaml` sat in `capabilities/` and was
+  loaded as a second `create_wall`. It now lives in `capabilities/examples/`, which
+  the store never reads; `list_tools` returns the 11 built-in packs exactly once.
+
 ## [0.1.0] - 2026-09-17
 
 First release of the standalone package, extracted from the former
@@ -30,4 +38,5 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/revitbridge/revit-bridge/releases/tag/v0.1.0
