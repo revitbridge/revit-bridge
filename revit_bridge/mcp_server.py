@@ -62,19 +62,26 @@ def unconfirmed_allowed(env: Mapping[str, str] | None = None) -> bool:
     return env_flag(ENV_ALLOW_UNCONFIRMED, env)
 
 
-def gate_refusal(token: str, projection: dict, env: Mapping[str, str] | None = None) -> dict | None:
-    """Redeem ``token`` for ``projection``; the refusal payload when it must not run, else None.
+def gate_refusal(token: str, projection: dict, env: Mapping[str, str] | None = None,
+                 consume: bool = False) -> dict | None:
+    """Check ``token`` for ``projection``; the refusal payload when it must not run, else None.
 
     A token is a one-time credential issued by ``confirm_spec`` and bound to
     the hash of the execution projection, so a model cannot confirm one
-    thing and run another. Only the host bypass lifts the check.
+    thing and run another. With ``consume=False`` the token is only verified;
+    the tools call again with ``consume=True`` right before dispatch, after
+    every check that does not touch Revit, so a refused validation leaves
+    the confirmation redeemable. Only the host bypass lifts the check.
     """
     if unconfirmed_allowed(env):
         return None
     if not isinstance(token, str) or not token.strip():
         return confirmation_required()
     try:
-        _gate.redeem(token.strip(), projection)
+        if consume:
+            _gate.consume(token.strip(), projection)
+        else:
+            _gate.verify(token.strip(), projection)
     except GateError as exc:
         return confirmation_invalid(exc)
     return None
@@ -318,6 +325,9 @@ async def execute_code(code: str, parameters: list | None = None, token: str = "
         return _dumps({"success": False, "error": "blocked", "warnings": warnings})
     try:
         client = await RevitClientPool.get_client()
+        refusal = gate_refusal(token, projection, consume=True)   # the last step before Revit
+        if refusal:
+            return _dumps(refusal)
         resp = await client.send_code(code, parameters)
         return _dumps({
             "success": resp.success,
@@ -432,9 +442,13 @@ async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
     if not safe:
         return _dumps({"success": False, "error": "blocked", "warnings": warnings})
 
-    # Execute via client pool
+    # Execute via client pool; the token is consumed only now, after every
+    # check that could still refuse without touching Revit
     try:
         client = await RevitClientPool.get_client()
+        refusal = gate_refusal(token, projection, consume=True)
+        if refusal:
+            return _dumps(refusal)
         resp = await client.send_code(code)
         _tool_store.record_usage(name, success=resp.success)
         result = {

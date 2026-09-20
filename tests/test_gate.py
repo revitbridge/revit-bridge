@@ -50,12 +50,14 @@ async def _acall(tool_name: str, **arguments) -> dict:
     return json.loads(result.content[0].text)
 
 
-def spec_for(tool: str, **values) -> dict:
+def spec_for(tool: str, _units: dict | None = None, **values) -> dict:
     """A confirmable run_tool spec: every value sourced as the designer's answer."""
+    units = _units or {}
     spec = TaskSpec(
         task=f"run {tool}",
         action=Action(kind="run_tool", tool=tool),
-        parameters=[ParamBinding(name=k, value=v, unit="mm" if isinstance(v, (int, float)) else None,
+        parameters=[ParamBinding(name=k, value=v,
+                                 unit=units.get(k, "mm" if isinstance(v, (int, float)) else None),
                                  source=Source.answer, evidence=f"q_{k}") for k, v in values.items()],
         snapshot_fingerprint=None,
     )
@@ -152,6 +154,62 @@ def test_token_is_bound_to_the_confirmed_parameters(monkeypatch, isolated_store)
     assert server._gate.peek(token).used_at is None
     projection = {"kind": "run_tool", "tool": "create_wall", "params": {"level_name": "L1", "height": 3000.0}}
     assert server.gate_refusal(token, projection, {}) is None
+
+
+def test_a_refused_validation_does_not_consume_the_token(monkeypatch, isolated_store, revit_env):
+    """Review C-2: verify first, consume the moment before send_code."""
+    spec = spec_for("create_wall", _units={"height": "mm"}, level_name="L1", height="tall")  # not a number
+    token = confirm(spec)["token"]
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
+    out = _call("run_tool", name="create_wall", params=json.dumps({"level_name": "L1", "height": "tall"}), token=token)
+    assert out["success"] is False and "expects double" in out["error"]
+    assert server._gate.peek(token).used_at is None                     # still redeemable
+    # a leftover placeholder, an unhealthy tool and a blocked execute_code leave it alone too
+    isolated_store.solidify(name="leaky", code="return {count};", parameters=[])
+    leaky = confirm(spec_for("leaky"))["token"]
+    assert "placeholder" in _call("run_tool", name="leaky", params="{}", token=leaky)["error"]
+    assert server._gate.peek(leaky).used_at is None
+    # an unreachable Revit does not consume it either
+    good = confirm(spec_for("query_levels"))["token"]
+    out = _call("run_tool", name="query_levels", params="{}", token=good)
+    assert out["success"] is False and server._gate.peek(good).used_at is None
+
+    async def scenario():
+        async with FakeRevit() as fake:
+            revit_env(fake.port)
+            try:
+                out = await _acall("run_tool", name="query_levels", params="{}", token=good)
+                assert out["success"] is True                              # the same token, later
+                assert server._gate.peek(good).used_at
+                fake.requests.clear()
+                blocked = (await _acall("confirm_spec", spec=code_spec("return 1;")))["token"]
+                monkeypatch.setattr(server.sandbox, "review", lambda code: (False, ["Blocked pattern: test"]))
+                out = await _acall("execute_code", code="return 1;", token=blocked)
+                assert out["error"] == "blocked" and fake.requests == []
+                assert server._gate.peek(blocked).used_at is None
+            finally:
+                await RevitClientPool.disconnect()
+
+    asyncio.run(scenario())
+
+
+def test_gate_verify_and_consume(isolated_data_dir):
+    gate = Gate(ttl_seconds=600)
+    spec = TaskSpec.model_validate(spec_for("query_levels"))
+    conf = gate.issue(spec)
+    projection = spec.execution_projection()
+    assert gate.verify(conf.token, projection).used_at is None
+    assert gate.verify(conf.token).used_at is None                      # projection optional for verify
+    with pytest.raises(Exception) as excinfo:
+        gate.verify(conf.token, {"kind": "run_tool", "tool": "other", "params": {}})
+    assert excinfo.value.reason == "mismatch" and gate.peek(conf.token).used_at is None
+    assert gate.consume(conf.token, projection).used_at
+    with pytest.raises(Exception) as excinfo:
+        gate.verify(conf.token, projection)
+    assert excinfo.value.reason == "used"
+    with pytest.raises(Exception) as excinfo:
+        gate.consume(conf.token, projection)
+    assert excinfo.value.reason == "used"
 
 
 def test_token_expires(monkeypatch, isolated_store):

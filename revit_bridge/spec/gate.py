@@ -2,10 +2,12 @@
 
 ``confirm_spec`` issues a token bound to the hash of the spec's execution
 projection (tool + params, or code + parameters). ``run_tool`` and
-``execute_code`` redeem it against the projection they are about to run:
-the token must exist, be unused, be unexpired, and the projection must hash
-to the same value - confirming A and executing B is refused. A redeemed
-token is marked used at once.
+``execute_code`` ``verify`` it against the projection they are about to run
+- the token must exist, be unused, be unexpired, and the projection must
+hash to the same value, so confirming A and executing B is refused - run
+every check that does not touch Revit (parameter validation, rendering,
+the sandbox review), and ``consume`` it the moment before the code is
+sent. A refused validation therefore leaves the token redeemable.
 
 Tokens live in memory and, until redeemed or expired, in
 ``<evidence_dir>/pending/<token[:12]>.json`` so a restarted server can still
@@ -97,8 +99,9 @@ class Gate:
 
     # -- redeem ----------------------------------------------------------------
 
-    def redeem(self, token: str, projection: dict) -> Confirmation:
-        """Validate and consume ``token`` for ``projection``; raises GateError."""
+    def verify(self, token: str, projection: dict | None = None) -> Confirmation:
+        """Check ``token`` (exists, unused, unexpired, and - when given - bound
+        to ``projection``) without consuming it; raises GateError."""
         conf = self._tokens.get(token) or self._load(token)
         if conf is None:
             raise GateError("unknown", "no confirmation with this token")
@@ -107,12 +110,25 @@ class Gate:
         if conf.expired():
             self._forget(conf)
             raise GateError("expired", f"confirmation expired at {conf.expires_at}")
-        if projection_hash(projection) != conf.projection_hash:
+        if projection is not None and projection_hash(projection) != conf.projection_hash:
             raise GateError("mismatch", "the execution does not match the confirmed spec")
+        return conf
+
+    def consume(self, token: str, projection: dict | None = None) -> Confirmation:
+        """Mark ``token`` used; call it the moment before the execution is sent.
+
+        Re-runs ``verify`` so a token that expired between the checks and the
+        dispatch is still refused.
+        """
+        conf = self.verify(token, projection)
         conf.used_at = _iso(_now())
         self._tokens[token] = conf
         self._unlink(conf)
         return conf
+
+    def redeem(self, token: str, projection: dict) -> Confirmation:
+        """``verify`` + ``consume`` in one step."""
+        return self.consume(token, projection)
 
     def peek(self, token: str) -> Confirmation | None:
         return self._tokens.get(token) or self._load(token)
