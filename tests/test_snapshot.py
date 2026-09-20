@@ -200,6 +200,22 @@ def test_family_types_failure_is_a_warning_not_zero_types():
     assert snap.family_types == [] and snap.warnings[0].startswith("family_types: Timeout")
 
 
+def test_unparseable_block_result_is_named_in_warnings():
+    """Review B-5: a reply without the snapshot keys is reported, not silently blank."""
+    for result, described in (({"raw_output": "System.Object[]"}, "keys raw_output"),
+                              ("just text", "str"), ([1, 2], "list"), ({}, "empty object")):
+        def odd(request, result=result):
+            if request["method"] == "send_code_to_revit" and "CategoryNames" in request["params"]["code"]:
+                return FakeRevit.code_result(request["id"], result)
+            return make_handler()(request)
+
+        snap, _ = snapshot_with(odd, ["OST_Walls"])
+        assert snap.warnings[0] == f"snapshot: unparseable result ({described})", result
+        assert snap.document["title"] == "" and snap.levels == []
+        # no category labels: types still come from the per-category fallback
+        assert [t.category for t in snap.family_types] == ["OST_Walls"]
+
+
 def test_lists_are_capped_on_this_side_too():
     big = copy.deepcopy(FULL)
     big["Grids"] = {"Count": 70, "Names": [f"G{i}" for i in range(70)]}

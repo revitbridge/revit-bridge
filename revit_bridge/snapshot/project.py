@@ -184,6 +184,19 @@ return new { Document = docInfo, Units = unitsInfo, ActiveView = viewInfo, Level
 """
 
 
+# Keys the block returns; a reply carrying none of them is not a snapshot.
+SNAPSHOT_KEYS = frozenset({
+    "Document", "Units", "ActiveView", "Levels", "Grids", "Selection",
+    "SelectionCount", "Links", "Phases", "CategoryNames", "Warnings",
+})
+
+
+def _describe(result) -> str:
+    if isinstance(result, dict):
+        return "keys " + ", ".join(sorted(str(k) for k in result)[:5]) if result else "empty object"
+    return type(result).__name__
+
+
 def snapshot_code(categories: list[str]) -> str:
     """The C# block for these categories (already validated by CATEGORY_RE)."""
     quoted = ", ".join(f'"{c}"' for c in categories)
@@ -227,11 +240,15 @@ async def take_snapshot(client: RevitClient, categories: list[str] | None = None
 
     raw: dict = {}
     resp = await client.send_code(snapshot_code(cats))
-    if resp.success and isinstance(resp.result, dict):
+    if not resp.success:
+        warnings.append(f"snapshot code failed: {resp.error or 'no result'}")
+    elif not isinstance(resp.result, dict) or not (set(resp.result) & SNAPSHOT_KEYS):
+        # e.g. {"raw_output": ...} when the reply was not JSON: say so rather
+        # than returning a blank snapshot with a valid-looking fingerprint
+        warnings.append(f"snapshot: unparseable result ({_describe(resp.result)})")
+    else:
         raw = resp.result
         warnings.extend(str(w) for w in (raw.get("Warnings") or []))
-    else:
-        warnings.append(f"snapshot code failed: {resp.error or 'no result'}")
 
     document = _part(warnings, "document", _document, raw.get("Document"), {"title": "", "revit_version": "", "is_workshared": False})
     units = _part(warnings, "units", _units, raw.get("Units"), {"length": "mm", "raw": ""})
