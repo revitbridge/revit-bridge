@@ -364,20 +364,26 @@ async def check_connection(settings: RevitSettings | None = None) -> dict:
     """Open a fresh connection, read the open document's title, describe the outcome.
 
     The probe is a read-only snippet rather than ``say_hello`` (which pops a
-    dialog in Revit). ``reachable`` means the add-in ran it; ``document`` is
-    the title it returned.
+    dialog in Revit). ``reachable`` is true as soon as the add-in answers at
+    all; what it answered is reported separately: ``document`` is the title
+    of the open document, ``document_error`` the add-in's message when the
+    probe could not run (no document open, wrong token, ...). ``error``
+    holds transport failures only.
     """
     settings = settings or RevitSettings.from_env()
     status = settings.describe()
     status["document"] = None
+    status["document_error"] = None
     client = RevitClient(settings=settings)
     try:
         await client.connect()
         resp = await client.send_code(CHECK_PROBE)
-        status["reachable"] = bool(resp.success)
-        status["error"] = None if resp.success else resp.error
+        status["reachable"] = bool(resp.success or resp.raw)   # raw: a reply came back
+        status["error"] = None if status["reachable"] else resp.error
         if resp.success and isinstance(resp.result, str):
             status["document"] = resp.result
+        elif status["reachable"]:
+            status["document_error"] = resp.error or "probe returned no title"
     except Exception as exc:
         status["reachable"] = False
         status["error"] = str(exc) or type(exc).__name__

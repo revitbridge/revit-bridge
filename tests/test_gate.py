@@ -181,9 +181,9 @@ def test_check_connection_reports_both_outcomes():
 
     up, down = asyncio.run(scenario())
     assert up["reachable"] is True and up["status"] == "connected" and up["error"] is None
-    assert up["document"] == "Project1"
+    assert up["document"] == "Project1" and up["document_error"] is None
     assert down["reachable"] is False and down["status"] == "disconnected" and down["error"]
-    assert down["document"] is None
+    assert down["document"] is None and down["document_error"] is None
 
 
 def test_check_probe_is_a_read_only_snippet_not_say_hello():
@@ -197,17 +197,65 @@ def test_check_probe_is_a_read_only_snippet_not_say_hello():
     assert [r["method"] for r in requests] == ["send_code_to_revit"]
     assert requests[0]["params"]["code"] == "return document.Title;"
 
+    # The add-in answered but could not run the probe: reachable, document error reported
     def no_document(request):
         return FakeRevit.code_result(request["id"], None, success=False,
                                      error="NullReferenceException: no document")
 
-    async def failing():
-        async with FakeRevit(no_document) as fake:
-            settings = server.RevitSettings(host="127.0.0.1", port=fake.port, timeout=2.0, connect_timeout=1.0)
+    def wrong_token(request):
+        return FakeRevit.error(request["id"], -32600, "Unauthorized: invalid or missing token")
+
+    def hangs(request):
+        return []
+
+    async def probe(handler, timeout=2.0):
+        async with FakeRevit(handler) as fake:
+            settings = server.RevitSettings(host="127.0.0.1", port=fake.port, timeout=timeout, connect_timeout=1.0)
             return await server.check_connection(settings)
 
-    status = asyncio.run(failing())
-    assert status["reachable"] is False and "no document" in status["error"]
+    status = asyncio.run(probe(no_document))
+    assert status["reachable"] is True and status["status"] == "connected" and status["error"] is None
+    assert status["document"] is None and "no document" in status["document_error"]
+
+    status = asyncio.run(probe(wrong_token))
+    assert status["reachable"] is True and "Unauthorized" in status["document_error"]
+
+    # No reply at all is not reachable
+    status = asyncio.run(probe(hangs, timeout=0.3))
+    assert status["reachable"] is False and "Timeout" in status["error"] and status["document_error"] is None
+
+
+def test_main_check_exit_code_follows_reachable(monkeypatch, capsys):
+    """`revit-bridge check` exits 0 when the add-in answered, even without a document."""
+    import threading
+
+    def no_document(request):
+        return FakeRevit.code_result(request["id"], None, success=False, error="no document")
+
+    ready, stop = threading.Event(), threading.Event()
+    port: list[int] = []
+
+    def serve():  # the check runs its own event loop, so the fake needs one of its own
+        async def run():
+            async with FakeRevit(no_document) as fake:
+                port.append(fake.port)
+                ready.set()
+                while not stop.is_set():
+                    await asyncio.sleep(0.02)
+        asyncio.run(run())
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    assert ready.wait(5)
+    try:
+        monkeypatch.setenv("REVIT_BRIDGE_PORT", str(port[0]))
+        monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "2")
+        assert server.main(["check"]) == 0
+        printed = json.loads(capsys.readouterr().out)
+        assert printed["status"] == "connected" and printed["document_error"] == "no document"
+    finally:
+        stop.set()
+        thread.join(5)
 
 
 def test_main_check_exit_code(monkeypatch, capsys):

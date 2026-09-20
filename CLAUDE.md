@@ -11,7 +11,8 @@ uv sync                      # creates .venv, installs dev group (pytest)
 uv run pytest                # unit tests; a fake Revit TCP server, no Revit needed
 uv build                     # sdist + wheel; wheel bundles capabilities/ as revit_bridge/capabilities/builtin
                              # and plugin/skills as revit_bridge/skills
-uvx --from . revit-bridge check   # ping the add-in on REVIT_BRIDGE_HOST:REVIT_BRIDGE_PORT
+uvx --from . revit-bridge check   # read the open document's title through the add-in on
+                                  # REVIT_BRIDGE_HOST:REVIT_BRIDGE_PORT; exit 0 when it answered
 ```
 
 ## Layout

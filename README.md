@@ -62,8 +62,10 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
    uvx revit-bridge check
    ```
 
-   Prints host, port, whether a token is set, the open document's title and
-   `"status": "connected"`; the exit code is 0 when Revit answered, 1 otherwise.
+   Prints host, port, whether a token is set, the open document's title
+   (`document`, or `document_error` when the add-in answered but could not
+   read it) and `"status": "connected"`; the exit code is 0 when the add-in
+   answered, 1 otherwise.
 
 3. In your host, work in three steps:
 
