@@ -44,15 +44,18 @@ dev = ["pytest>=8"]
 [tool.hatch.build.targets.wheel]
 packages = ["revit_bridge"]
 
-# Built-in capability packs live in ./capabilities (repo root); ship them
-# inside the wheel so `uvx revit-bridge` finds them without a checkout.
+# Built-in capability packs live in ./capabilities (repo root) and the plugin
+# skills in ./plugin/skills; ship both inside the wheel so `uvx revit-bridge`
+# finds them without a checkout (see revit_bridge/paths.py).
 [tool.hatch.build.targets.wheel.force-include]
 "capabilities" = "revit_bridge/capabilities/builtin"
+"plugin/skills" = "revit_bridge/skills"
 
 [tool.hatch.build.targets.sdist]
 include = [
   "revit_bridge",
   "capabilities",
+  "plugin/skills",
   "tests",
   "README.md",
   "CHANGELOG.md",

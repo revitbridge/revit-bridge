@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import re
 import sys
 from collections.abc import Mapping
 
@@ -296,16 +295,16 @@ def api_stats() -> str:
     tools = _tool_store.list_tools()
     return (
         f"revit-bridge {__version__}\n"
-        f"Solidified tools: {len(tools)} (directory: {_tool_store.tools_dir})"
+        f"Solidified tools: {len(tools)} "
+        f"(built-in: {_tool_store.builtin_dir}; user: {_tool_store.user_dir})"
     )
 
 
 @mcp.resource("revit://tools/{name}")
 def tool_resource(name: str) -> str:
     """Returns the YAML definition of a solidified tool by name."""
-    safe_name = re.sub(r"[^\w\-]", "_", name)
-    tool_path = _tool_store._tool_path(safe_name)
-    if not tool_path.exists():
+    tool_path = _tool_store.path_of(name)
+    if tool_path is None:
         return json.dumps({"error": f"Tool '{name}' not found."})
     return tool_path.read_text(encoding="utf-8")
 

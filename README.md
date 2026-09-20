@@ -93,7 +93,8 @@ Resources: `revit://stats`, `revit://tools/{name}`, `revit://connection-status`.
 | `REVIT_BRIDGE_TOKEN` | *(unset)* | Pre-shared token, sent with every request when the add-in has one configured |
 | `REVIT_BRIDGE_TIMEOUT` | `60` | Seconds to wait for a command to finish |
 | `REVIT_BRIDGE_ALLOW_UNCONFIRMED` | *(unset)* | `1` lifts the `spec_confirmed` gate (host-internal flows only) |
-| `REVIT_BRIDGE_CAPABILITIES_DIR` | packaged packs | Directory of capability YAML files; new `solidify_tool` packs are written here |
+| `REVIT_BRIDGE_DATA_DIR` | `%LOCALAPPDATA%evit-bridge` (Windows), `~/.local/share/revit-bridge` (else) | Per-user data: solidified packs, `usage.json`, later the evidence ledger |
+| `REVIT_BRIDGE_CAPABILITIES_DIR` | `<data dir>/capabilities` | User pack directory; the packs shipped in the wheel stay visible, a user pack of the same name replaces one |
 
 Development:
 

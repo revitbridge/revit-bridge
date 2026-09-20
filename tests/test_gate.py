@@ -19,10 +19,8 @@ from tests.fake_revit import FakeRevit
 
 @pytest.fixture
 def isolated_store(tmp_path, monkeypatch):
-    """Point the server at a private copy of the built-in capability packs."""
-    store = ToolStore(tmp_path / "caps")
-    for src in ToolStore().tools_dir.glob("*.yaml"):
-        (store.tools_dir / src.name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    """Point the server at a store whose user directory is private to the test."""
+    store = ToolStore(user_dir=tmp_path / "caps")
     monkeypatch.setattr(server, "_tool_store", store)
     return store
 

@@ -6,8 +6,37 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `revit_bridge.paths`: per-user data root (`%LOCALAPPDATA%/revit-bridge` on
+  Windows, `$XDG_DATA_HOME/revit-bridge` or `~/.local/share/revit-bridge`
+  elsewhere; `REVIT_BRIDGE_DATA_DIR` overrides) with `user_capabilities_dir()`,
+  `evidence_dir()`, `builtin_capabilities_dir()` and `skills_dir()`.
+- `ToolStore(user_dir, builtin_dir)` reads two directories: the read-only
+  built-in packs and the user directory. A user pack with the same name
+  replaces a built-in one; `solidify` / `update` / `delete` write only the
+  user directory (`update` copies a built-in pack there first, `delete` of a
+  built-in pack leaves an empty `<name>.disabled` marker; `enable(name)`
+  removes it). `path_of(name)` tells which file is in effect.
+- Execution counters (`execution_count`, `last_used`, `failure_count`) live in
+  `<user dir>/usage.json`; pack files are never rewritten to record a run.
+- The plugin skills (`plugin/skills/`) ship inside the wheel as
+  `revit_bridge/skills/`; `revit_bridge.skills_dir()` locates them.
+- Capability pack files are read in both layouts: files without
+  `schema_version` are the 0.1 layout (`version` reads as `0.0.0`, parameter
+  `source` / `unit` / `required` are inferred, string preconditions become
+  `{text: ...}`); files written by the store carry `schema_version: 1`,
+  `version`, `revit_versions`, `validator`, `fixtures`, `approved_by` /
+  `approved_at`, and `update()` bumps the patch version when `code_template`
+  or `parameters` change.
+
 ### Changed
 
+- `REVIT_BRIDGE_CAPABILITIES_DIR` now overrides only the user directory; the
+  built-in packs stay visible. `default_capabilities_dir()` is kept for 0.1
+  callers.
+- `tags` on capability packs are read but no longer written (`applies_when`
+  replaces them); `solidify(tags=...)` is accepted and ignored.
 - Plugin 0.1.1: `plugin/.mcp.json` runs the PyPI release (`uvx revit-bridge`)
   instead of a git checkout, so installs no longer need `uvx --refresh` to pick
   up new versions.

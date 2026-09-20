@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
+from revit_bridge.paths import data_root, skills_dir
+
 try:
     __version__ = version("revit-bridge")
 except PackageNotFoundError:  # running from a source tree without install
     __version__ = "0.0.0"
 
-__all__ = ["__version__"]
+__all__ = ["__version__", "data_root", "skills_dir"]
