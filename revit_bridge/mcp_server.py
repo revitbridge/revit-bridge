@@ -7,6 +7,8 @@ Usage:
     python -m revit_bridge.mcp_server
 
 Tools:
+    - get_project_snapshot : read-only picture of the open model (no gate)
+    - query                : read-only model queries by kind (no gate)
     - execute_code      : send C# code to Revit (spec_confirmed gate)
     - solidify_tool     : save successful code as a reusable named tool
     - list_tools        : list all solidified tools
@@ -33,7 +35,8 @@ from revit_bridge.revit import sandbox
 from revit_bridge.revit.client import RevitClient
 from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.revit.settings import RevitSettings, env_flag
-from revit_bridge.snapshot.query import RevitQueryExecutor
+from revit_bridge.snapshot.project import take_snapshot
+from revit_bridge.snapshot.query import QUERY_KINDS, RevitQueryExecutor, run_query
 
 # Hosts that run their own confirmation flow (the web demo) may lift the gate.
 ENV_ALLOW_UNCONFIRMED = "REVIT_BRIDGE_ALLOW_UNCONFIRMED"
@@ -72,6 +75,12 @@ not search documentation and does not generate code: you write the code.
 
 ## Tools
 
+0. **get_project_snapshot** / **query** - read-only, no confirmation needed.
+   Take a snapshot (document, units, active view, levels, grids, selection,
+   links, phases, family types of the requested categories) before you
+   interpret a request; use `query(kind, args)` for levels, grids,
+   family_types, elements, selection, view_elements, units, counts. Never
+   write C# for something these answer.
 1. **list_tools** - solidified tools available for execution. Check here first;
    prefer `run_tool` over writing new code when a tool matches the task.
 2. **get_tool_choices** - ask Revit for the real values of a tool's dynamic
@@ -136,6 +145,38 @@ _MUTATING = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 def _dumps(payload) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+# -- Read-only tools (no gate) ------------------------------------------------
+
+@mcp.tool(annotations=_READ_ONLY)
+async def get_project_snapshot(categories: list[str] | None = None) -> str:
+    """Read-only picture of the open Revit model: document, units, active view,
+    levels, grids, selection, links, phases and the family types of the given
+    categories (default: walls, structural columns/framing, floors, doors,
+    windows). Partial failures are listed in `warnings`; `fingerprint`
+    identifies the model state for `reconcile`."""
+    try:
+        client = await RevitClientPool.get_client()
+        snapshot = await take_snapshot(client, categories)
+        return snapshot.model_dump_json(indent=2)
+    except ValueError as e:
+        return _dumps({"error": "invalid_category", "message": str(e)})
+    except Exception as e:
+        return _dumps({"error": "revit_unreachable", "message": str(e) or type(e).__name__})
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def query(kind: str, args: dict | None = None) -> str:
+    """Read-only model query, no confirmation needed. kinds: levels, grids,
+    family_types (args.categories), elements (args.category, args.limit<=200),
+    selection, view_elements (args.limit<=200), units, counts (args.categories).
+    Returns {"error": "unknown_kind", "kinds": [...]} for anything else."""
+    try:
+        client = await RevitClientPool.get_client()
+        return _dumps(await run_query(RevitQueryExecutor(client), kind, args))
+    except Exception as e:
+        return _dumps({"error": "revit_unreachable", "kind": kind, "message": str(e) or type(e).__name__})
 
 
 # -- Execution Tools ----------------------------------------------------------
@@ -316,16 +357,27 @@ async def connection_status() -> str:
 
 # -- check subcommand ---------------------------------------------------------
 
+CHECK_PROBE = "return document.Title;"
+
+
 async def check_connection(settings: RevitSettings | None = None) -> dict:
-    """Open a fresh connection, send say_hello, and describe the outcome."""
+    """Open a fresh connection, read the open document's title, describe the outcome.
+
+    The probe is a read-only snippet rather than ``say_hello`` (which pops a
+    dialog in Revit). ``reachable`` means the add-in ran it; ``document`` is
+    the title it returned.
+    """
     settings = settings or RevitSettings.from_env()
     status = settings.describe()
+    status["document"] = None
     client = RevitClient(settings=settings)
     try:
         await client.connect()
-        resp = await client.send_command("say_hello", {"message": "ping"})
+        resp = await client.send_code(CHECK_PROBE)
         status["reachable"] = bool(resp.success)
         status["error"] = None if resp.success else resp.error
+        if resp.success and isinstance(resp.result, str):
+            status["document"] = resp.result
     except Exception as exc:
         status["reachable"] = False
         status["error"] = str(exc) or type(exc).__name__

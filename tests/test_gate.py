@@ -181,7 +181,33 @@ def test_check_connection_reports_both_outcomes():
 
     up, down = asyncio.run(scenario())
     assert up["reachable"] is True and up["status"] == "connected" and up["error"] is None
+    assert up["document"] == "Project1"
     assert down["reachable"] is False and down["status"] == "disconnected" and down["error"]
+    assert down["document"] is None
+
+
+def test_check_probe_is_a_read_only_snippet_not_say_hello():
+    async def scenario():
+        async with FakeRevit() as fake:
+            settings = server.RevitSettings(host="127.0.0.1", port=fake.port, timeout=2.0, connect_timeout=1.0)
+            await server.check_connection(settings)
+            return fake.requests
+
+    requests = asyncio.run(scenario())
+    assert [r["method"] for r in requests] == ["send_code_to_revit"]
+    assert requests[0]["params"]["code"] == "return document.Title;"
+
+    def no_document(request):
+        return FakeRevit.code_result(request["id"], None, success=False,
+                                     error="NullReferenceException: no document")
+
+    async def failing():
+        async with FakeRevit(no_document) as fake:
+            settings = server.RevitSettings(host="127.0.0.1", port=fake.port, timeout=2.0, connect_timeout=1.0)
+            return await server.check_connection(settings)
+
+    status = asyncio.run(failing())
+    assert status["reachable"] is False and "no document" in status["error"]
 
 
 def test_main_check_exit_code(monkeypatch, capsys):

@@ -44,6 +44,32 @@ OST_REFERENCE: dict[str, str] = {
 HOSTED_CATEGORIES: frozenset[str] = frozenset({"OST_Windows", "OST_Doors"})
 ALLOWED_CATEGORIES: frozenset[str] = frozenset(OST_REFERENCE)
 
+# The ``query`` tool: read-only kinds, each with the ``args`` keys it accepts.
+MAX_QUERY_LIMIT = 200
+DEFAULT_QUERY_LIMIT = 100
+QUERY_KINDS: dict[str, tuple[str, ...]] = {
+    "levels": (),
+    "grids": (),
+    "family_types": ("categories",),
+    "elements": ("category", "limit"),
+    "selection": (),
+    "view_elements": ("limit",),
+    "units": (),
+    "counts": ("categories",),
+}
+
+
+class RevitQueryError(RuntimeError):
+    """Revit answered, but with an error (compile failure, no document, timeout)."""
+
+
+def _clamp_limit(limit) -> int:
+    try:
+        value = int(limit)
+    except (TypeError, ValueError):
+        return DEFAULT_QUERY_LIMIT
+    return max(1, min(value, MAX_QUERY_LIMIT))
+
 
 def sanitize_categories(raw_categories) -> list[str]:
     """Keep only known BuiltInCategory names, in order, without duplicates."""
@@ -157,6 +183,99 @@ class RevitQueryExecutor:
             "detected": detect_length_unit(unit_id, display),
         }
 
+    # -- read-only templates behind the ``query`` tool ------------------------------
+
+    async def get_grids(self) -> list[dict]:
+        """All grids: ``[{Id, Name}]``."""
+        code = (
+            'var grids = new FilteredElementCollector(document)\n'
+            '    .OfClass(typeof(Grid)).Cast<Grid>()\n'
+            '    .Select(g => new { Id = g.Id.Value, Name = g.Name }).ToList();\n'
+            'return grids;'
+        )
+        return await self._code_list(code)
+
+    async def get_elements(self, category: str, limit: int = MAX_QUERY_LIMIT) -> dict:
+        """Instances of one category: ``{Total, Items: [{Id, Name, Category, Type, Level}]}``.
+
+        Raises ``ValueError`` for a category that does not look like ``OST_*``
+        (the name is interpolated into C#).
+        """
+        if not CATEGORY_RE.fullmatch(category):
+            raise ValueError(f"invalid category {category!r}")
+        limit = _clamp_limit(limit)
+        code = (
+            f'var bic = (BuiltInCategory)Enum.Parse(typeof(BuiltInCategory), "{category}");\n'
+            f'var total = new FilteredElementCollector(document).OfCategory(bic)\n'
+            f'    .WhereElementIsNotElementType().GetElementCount();\n'
+            f'var items = new FilteredElementCollector(document).OfCategory(bic)\n'
+            f'    .WhereElementIsNotElementType().Take({limit})\n'
+            f'    .Select(e => {{\n'
+            f'        var t = document.GetElement(e.GetTypeId());\n'
+            f'        var lv = document.GetElement(e.LevelId);\n'
+            f'        return new {{ Id = e.Id.Value, Name = e.Name,\n'
+            f'                     Category = e.Category != null ? e.Category.Name : "",\n'
+            f'                     Type = t != null ? t.Name : "",\n'
+            f'                     Level = lv != null ? lv.Name : null }};\n'
+            f'    }}).ToList();\n'
+            f'return new {{ Total = total, Items = items }};'
+        )
+        return await self._code_dict(code)
+
+    async def get_view_elements(self, limit: int = MAX_QUERY_LIMIT) -> dict:
+        """Elements visible in the active view: ``{View, ViewType, Total, Items}``."""
+        limit = _clamp_limit(limit)
+        code = (
+            f'var view = document.ActiveView;\n'
+            f'if (view == null) return new {{ View = (string)null, ViewType = (string)null,\n'
+            f'                                Total = 0, Items = new List<object>() }};\n'
+            f'var total = new FilteredElementCollector(document, view.Id)\n'
+            f'    .WhereElementIsNotElementType().GetElementCount();\n'
+            f'var items = new FilteredElementCollector(document, view.Id)\n'
+            f'    .WhereElementIsNotElementType().Take({limit})\n'
+            f'    .Select(e => (object)new {{ Id = e.Id.Value, Name = e.Name,\n'
+            f'        Category = e.Category != null ? e.Category.Name : "" }}).ToList();\n'
+            f'return new {{ View = view.Name, ViewType = view.ViewType.ToString(),\n'
+            f'             Total = total, Items = items }};'
+        )
+        return await self._code_dict(code)
+
+    async def get_counts(self, categories: list[str]) -> list[dict]:
+        """Instance counts per category: ``[{Category, Count}]`` (``Count`` -1 + ``Error`` on failure)."""
+        for cat in categories:
+            if not CATEGORY_RE.fullmatch(cat):
+                raise ValueError(f"invalid category {cat!r}")
+        quoted = ", ".join(f'"{c}"' for c in categories)
+        code = (
+            f'var result = new List<object>();\n'
+            f'foreach (var name in new string[] {{ {quoted} }}) {{\n'
+            f'    try {{\n'
+            f'        var bic = (BuiltInCategory)Enum.Parse(typeof(BuiltInCategory), name);\n'
+            f'        var n = new FilteredElementCollector(document).OfCategory(bic)\n'
+            f'            .WhereElementIsNotElementType().GetElementCount();\n'
+            f'        result.Add(new {{ Category = name, Count = n }});\n'
+            f'    }} catch (Exception ex) {{\n'
+            f'        result.Add(new {{ Category = name, Count = -1, Error = ex.Message }});\n'
+            f'    }}\n'
+            f'}}\n'
+            f'return result;'
+        )
+        return await self._code_list(code)
+
+    async def _code_list(self, code: str) -> list[dict]:
+        resp = await self.client.send_code(code)
+        if not resp.success:
+            raise RevitQueryError(resp.error or "Revit returned no result")
+        if resp.result is None:
+            return []
+        return resp.result if isinstance(resp.result, list) else [resp.result]
+
+    async def _code_dict(self, code: str) -> dict:
+        resp = await self.client.send_code(code)
+        if not resp.success or not isinstance(resp.result, dict):
+            raise RevitQueryError(resp.error or "Revit returned no result")
+        return resp.result
+
     async def get_tool_choices(self, dynamic_params: list[dict]) -> dict[str, list[dict]]:
         """Resolve ``choices_from`` sources of a capability pack against Revit.
 
@@ -242,3 +361,140 @@ def detect_length_unit(unit_id: str, display_name: str = "") -> str:
     if "feet" in uid or "foot" in uid:
         return "feet"
     return "mm"
+
+
+# -- the ``query`` tool -------------------------------------------------------------
+
+async def run_query(executor: RevitQueryExecutor, kind: str, args: dict | None = None) -> dict:
+    """Answer one read-only ``query(kind, args)`` call.
+
+    ``args`` keys are whitelisted per kind (see ``QUERY_KINDS``); categories
+    must match ``CATEGORY_RE``; ``limit`` is clamped to 1..MAX_QUERY_LIMIT.
+    Errors come back as ``{"error": code, ...}`` rather than exceptions:
+    ``unknown_kind`` (with the list of kinds), ``invalid_args`` (with a
+    message) and ``revit_error`` (with Revit's message). Transport failures
+    (no add-in) propagate to the caller.
+    """
+    if kind not in QUERY_KINDS:
+        return {"error": "unknown_kind", "kind": kind, "kinds": sorted(QUERY_KINDS)}
+    args = args or {}
+    if not isinstance(args, dict):
+        return {"error": "invalid_args", "message": "args must be an object"}
+    unknown = sorted(set(args) - set(QUERY_KINDS[kind]))
+    if unknown:
+        return {"error": "invalid_args", "kind": kind, "message": f"unexpected args {unknown}",
+                "allowed": list(QUERY_KINDS[kind])}
+    try:
+        return await _QUERY_HANDLERS[kind](executor, args)
+    except ValueError as exc:
+        return {"error": "invalid_args", "kind": kind, "message": str(exc)}
+    except RevitQueryError as exc:
+        return {"error": "revit_error", "kind": kind, "message": str(exc)}
+
+
+def _categories_arg(args: dict) -> list[str]:
+    raw = args.get("categories")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("categories must be a non-empty list of OST_* names")
+    cleaned: list[str] = []
+    for cat in raw:
+        if not isinstance(cat, str) or not CATEGORY_RE.fullmatch(cat.strip()):
+            raise ValueError(f"invalid category {cat!r}: expected an OST_* name")
+        if cat.strip() not in cleaned:
+            cleaned.append(cat.strip())
+    return cleaned
+
+
+def _category_arg(args: dict) -> str:
+    cat = args.get("category")
+    if not isinstance(cat, str) or not CATEGORY_RE.fullmatch(cat.strip()):
+        raise ValueError(f"invalid category {cat!r}: expected an OST_* name")
+    return cat.strip()
+
+
+async def _q_levels(executor: RevitQueryExecutor, args: dict) -> dict:
+    items = [
+        {"id": lv.get("Id"), "name": lv.get("Name", ""), "elevation_mm": lv.get("ElevationMm", 0.0)}
+        for lv in await executor.get_levels()
+    ]
+    return {"kind": "levels", "items": items}
+
+
+async def _q_grids(executor: RevitQueryExecutor, args: dict) -> dict:
+    items = [{"id": g.get("Id"), "name": g.get("Name", "")} for g in await executor.get_grids()]
+    return {"kind": "grids", "count": len(items), "items": items}
+
+
+async def _q_family_types(executor: RevitQueryExecutor, args: dict) -> dict:
+    categories = _categories_arg(args)
+    items = [
+        {"id": t.get("FamilyTypeId"), "family": t.get("FamilyName", ""),
+         "name": _type_name(t), "category": t.get("Category", "")}
+        for t in await executor.get_family_types(categories)
+        if isinstance(t, dict)
+    ]
+    return {"kind": "family_types", "categories": categories, "items": items}
+
+
+async def _q_elements(executor: RevitQueryExecutor, args: dict) -> dict:
+    category = _category_arg(args)
+    limit = _clamp_limit(args.get("limit", DEFAULT_QUERY_LIMIT))
+    data = await executor.get_elements(category, limit)
+    items = [
+        {"id": e.get("Id"), "name": e.get("Name", ""), "category": e.get("Category", ""),
+         "type": e.get("Type", ""), "level": e.get("Level")}
+        for e in (data.get("Items") or [])
+    ]
+    return {"kind": "elements", "category": category, "total": int(data.get("Total") or 0),
+            "limit": limit, "items": items}
+
+
+async def _q_selection(executor: RevitQueryExecutor, args: dict) -> dict:
+    items = [
+        {"id": e.get("Id"), "name": e.get("Name", ""), "category": e.get("Category") or ""}
+        for e in await executor.get_selected_elements()
+        if isinstance(e, dict)
+    ]
+    return {"kind": "selection", "count": len(items), "items": items}
+
+
+async def _q_view_elements(executor: RevitQueryExecutor, args: dict) -> dict:
+    limit = _clamp_limit(args.get("limit", DEFAULT_QUERY_LIMIT))
+    data = await executor.get_view_elements(limit)
+    items = [
+        {"id": e.get("Id"), "name": e.get("Name", ""), "category": e.get("Category", "")}
+        for e in (data.get("Items") or [])
+    ]
+    return {"kind": "view_elements", "view": data.get("View"), "view_type": data.get("ViewType"),
+            "total": int(data.get("Total") or 0), "limit": limit, "items": items}
+
+
+async def _q_units(executor: RevitQueryExecutor, args: dict) -> dict:
+    units = await executor.get_project_units()
+    if "error" in units:
+        raise RevitQueryError(str(units["error"]))
+    return {"kind": "units", "length": units["detected"], "raw": units["revit_unit"],
+            "display_name": units["display_name"]}
+
+
+async def _q_counts(executor: RevitQueryExecutor, args: dict) -> dict:
+    categories = _categories_arg(args)
+    items = []
+    for row in await executor.get_counts(categories):
+        item = {"category": row.get("Category", ""), "count": int(row.get("Count", -1))}
+        if row.get("Error"):
+            item["error"] = str(row["Error"])
+        items.append(item)
+    return {"kind": "counts", "items": items}
+
+
+_QUERY_HANDLERS = {
+    "levels": _q_levels,
+    "grids": _q_grids,
+    "family_types": _q_family_types,
+    "elements": _q_elements,
+    "selection": _q_selection,
+    "view_elements": _q_view_elements,
+    "units": _q_units,
+    "counts": _q_counts,
+}

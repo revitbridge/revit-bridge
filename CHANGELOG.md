@@ -8,6 +8,17 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- `get_project_snapshot(categories?)` MCP tool and `revit_bridge.snapshot.take_snapshot`:
+  one read-only C# block plus one family-types command return a `ProjectSnapshot`
+  (document, units, active view, levels, grids, family types of the requested
+  categories, selection, links, phases, `warnings` for partial failures,
+  `fingerprint` over title + Revit version + levels). No confirmation gate.
+- `query(kind, args)` MCP tool and `revit_bridge.snapshot.run_query`: read-only
+  kinds `levels`, `grids`, `family_types`, `elements`, `selection`,
+  `view_elements`, `units`, `counts` with whitelisted `args` (`categories`,
+  `category`, `limit` clamped to 200); unknown kinds return
+  `{"error": "unknown_kind", "kinds": [...]}`. New read-only templates
+  `RevitQueryExecutor.get_grids / get_elements / get_view_elements / get_counts`.
 - `revit_bridge.paths`: per-user data root (`%LOCALAPPDATA%/revit-bridge` on
   Windows, `$XDG_DATA_HOME/revit-bridge` or `~/.local/share/revit-bridge`
   elsewhere; `REVIT_BRIDGE_DATA_DIR` overrides) with `user_capabilities_dir()`,
@@ -42,6 +53,9 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Changed
 
+- `revit-bridge check` (and `revit://connection-status`) probes with the
+  read-only snippet `return document.Title;` instead of `say_hello`, which
+  opened a dialog in Revit; the output gains a `document` field.
 - `REVIT_BRIDGE_CAPABILITIES_DIR` now overrides only the user directory; the
   built-in packs stay visible. `default_capabilities_dir()` is kept for 0.1
   callers and always names the user directory.

@@ -18,7 +18,8 @@ uvx --from . revit-bridge check   # ping the add-in on REVIT_BRIDGE_HOST:REVIT_B
 
 - `revit_bridge/mcp_server.py` — MCP tools, `main()` (`serve` | `check`).
 - `revit_bridge/revit/` — TCP JSON-RPC client, connection pool, settings from `REVIT_BRIDGE_*`, sandbox.
-- `revit_bridge/snapshot/` — query atoms and model queries.
+- `revit_bridge/snapshot/` — query atoms, model queries (`query.py`, incl. the `query` tool kinds),
+  `project.py` (`ProjectSnapshot`, `take_snapshot`).
 - `revit_bridge/paths.py` — per-user data root (`REVIT_BRIDGE_DATA_DIR`), user/built-in pack directories, `skills_dir()`.
 - `revit_bridge/capabilities/` — capability pack store (built-in packs in `capabilities/` at repo root, user packs
   and `usage.json` in the data root; a user pack overrides a built-in one of the same name).

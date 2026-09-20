@@ -84,6 +84,9 @@ class FakeRevit:
         if method == "say_hello":
             return cls.ok(rid, {"message": "Hello from fake Revit"})
         if method == "send_code_to_revit":
+            code = request.get("params", {}).get("code", "")
+            if code == "return document.Title;":
+                return cls.code_result(rid, "Project1")
             return cls.code_result(rid, {"Status": "Created", "ElementId": 4242})
         if method == "get_available_family_types":
             cats = request.get("params", {}).get("categoryList", [])

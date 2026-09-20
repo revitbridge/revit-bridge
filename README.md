@@ -62,11 +62,15 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
    uvx revit-bridge check
    ```
 
-   Prints host, port, whether a token is set and `"status": "connected"`; the
-   exit code is 0 when Revit answered, 1 otherwise.
+   Prints host, port, whether a token is set, the open document's title and
+   `"status": "connected"`; the exit code is 0 when Revit answered, 1 otherwise.
 
 3. In your host, work in three steps:
 
+   - `get_project_snapshot` — what the model contains (units, levels, grids,
+     family types, selection, …); `query(kind, args)` answers single read-only
+     questions (`levels`, `grids`, `family_types`, `elements`, `selection`,
+     `view_elements`, `units`, `counts`). Neither needs confirmation.
    - `list_tools` — see the capability packs (`create_wall`, `query_levels`, …).
    - `get_tool_choices` with a tool name — Revit returns the real levels,
      family types or elements for that tool's dynamic parameters.
@@ -93,7 +97,8 @@ Resources: `revit://stats`, `revit://tools/{name}`, `revit://connection-status`.
 | `REVIT_BRIDGE_TOKEN` | *(unset)* | Pre-shared token, sent with every request when the add-in has one configured |
 | `REVIT_BRIDGE_TIMEOUT` | `60` | Seconds to wait for a command to finish |
 | `REVIT_BRIDGE_ALLOW_UNCONFIRMED` | *(unset)* | `1` lifts the `spec_confirmed` gate (host-internal flows only) |
-| `REVIT_BRIDGE_DATA_DIR` | `%LOCALAPPDATA%evit-bridge` (Windows), `~/.local/share/revit-bridge` (else) | Per-user data: solidified packs, `usage.json`, later the evidence ledger |
+| `REVIT_BRIDGE_DATA_DIR` | `%LOCALAPPDATA%
+evit-bridge` (Windows), `~/.local/share/revit-bridge` (else) | Per-user data: solidified packs, `usage.json`, later the evidence ledger |
 | `REVIT_BRIDGE_CAPABILITIES_DIR` | `<data dir>/capabilities` | User pack directory; the packs shipped in the wheel stay visible, a user pack of the same name replaces one |
 
 Development:
