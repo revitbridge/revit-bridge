@@ -286,6 +286,28 @@ def test_reconcile_flags_values_that_do_not_exist(pack):
     assert result.conflicts == [] and result.ready is True
 
 
+def test_reconcile_never_says_not_found_against_a_truncated_list(pack):
+    """Review C-1: TypeSummary.names holds at most 50 of count; absence proves nothing."""
+    snap = snapshot(family_types=[TypeSummary(category="OST_Walls", count=80,
+                                              names=[f"Type {i:02d}" for i in range(50)])])
+    result = reconcile(good_spec(type_name=binding("type_name", "Type 77", Source.answer, "q")), snap, pack)
+    assert [c.kind for c in result.conflicts] == ["ambiguous"]
+    c = result.conflicts[0]
+    assert c.param == "type_name" and c.claimed == "Type 77" and len(c.available) == 50
+    assert c.message == ("type_name = 'Type 77' 不在快照列出的前 50 个名字里（该类别共 80 个，名单被截断）；"
+                         '请用 query("family_types", {"categories": ["OST_Walls"]}) 核对')
+    assert result.ready is False
+    # a value that is in the partial list is fine; a complete list still yields not_found
+    assert reconcile(good_spec(type_name=binding("type_name", "Type 07", Source.answer, "q")), snap, pack).ready is True
+    complete = snapshot(family_types=[TypeSummary(category="OST_Walls", count=50,
+                                                  names=[f"Type {i:02d}" for i in range(50)])])
+    result = reconcile(good_spec(type_name=binding("type_name", "Type 77", Source.answer, "q")), complete, pack)
+    assert [c.kind for c in result.conflicts] == ["not_found"]
+    en = good_spec(type_name=binding("type_name", "Type 77", Source.answer, "q"), language="en")
+    assert reconcile(en, snap, pack).conflicts[0].message.endswith(
+        'verify with query("family_types", {"categories": ["OST_Walls"]})')
+
+
 def test_reconcile_flags_ambiguous_fuzzy_matches(pack):
     snap = snapshot(levels=[LevelInfo(id=1, name="L1", elevation_mm=0.0), LevelInfo(id=2, name="l 1", elevation_mm=100.0)])
     result = reconcile(good_spec(level_name=binding("level_name", "l1", Source.answer, "q")), snap, pack)

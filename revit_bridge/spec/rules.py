@@ -72,6 +72,8 @@ _T = {
         "not_found": "{param} = {claimed!r} 在快照中不存在",
         "did_you_mean": "{param} = {claimed!r} 在快照中不存在；是否指 {hint!r}？",
         "ambiguous": "{param} = {claimed!r} 匹配多个候选：{matches}",
+        "truncated": "{param} = {claimed!r} 不在快照列出的前 {shown} 个名字里（该类别共 {count} 个，名单被截断）；"
+                     "请用 query(\"family_types\", {{\"categories\": [\"{category}\"]}}) 核对",
         "stale": "规格依据的快照 {claimed} 与当前快照 {current} 不符，请重新对账",
         "tool_missing": "工具 {tool} 不存在",
     },
@@ -85,6 +87,9 @@ _T = {
         "not_found": "{param} = {claimed!r} does not exist in the snapshot",
         "did_you_mean": "{param} = {claimed!r} does not exist in the snapshot; did you mean {hint!r}?",
         "ambiguous": "{param} = {claimed!r} matches several candidates: {matches}",
+        "truncated": "{param} = {claimed!r} is not among the first {shown} names the snapshot lists (the category "
+                     "has {count}; the list is truncated); verify with "
+                     "query(\"family_types\", {{\"categories\": [\"{category}\"]}})",
         "stale": "the spec was reconciled against snapshot {claimed}, the current one is {current}; reconcile again",
         "tool_missing": "tool {tool} does not exist",
     },
@@ -245,15 +250,28 @@ def _match(claimed: Any, candidates: list[str]) -> tuple[bool, list[str]]:
     return False, [c for c in candidates if _fold(c) == key]
 
 
-def _candidates(pdef: dict, snapshot: ProjectSnapshot) -> list[str] | None:
+class _Candidates:
+    """What the snapshot knows for one choices_from source."""
+
+    def __init__(self, names: list[str], total: int | None = None, category: str = ""):
+        self.names = names
+        self.total = len(names) if total is None else total
+        self.category = category
+
+    @property
+    def truncated(self) -> bool:
+        return self.total > len(self.names)
+
+
+def _candidates(pdef: dict, snapshot: ProjectSnapshot) -> _Candidates | None:
     source = str(pdef.get("choices_from") or "")
     if source == "levels":
-        return [lv.name for lv in snapshot.levels]
+        return _Candidates([lv.name for lv in snapshot.levels])
     if source.startswith("family_types:"):
         category = source.split(":", 1)[1]
         for summary in snapshot.family_types:
             if summary.category == category:
-                return list(summary.names)
+                return _Candidates(list(summary.names), summary.count, category)
         return None   # category not in this snapshot: nothing to check against
     return None
 
@@ -306,10 +324,17 @@ def reconcile(draft: TaskSpec, snapshot: ProjectSnapshot,
         pdef = params.get(b.name)
         if pdef is None:
             continue
-        candidates = _candidates(pdef, snapshot)
-        if candidates is not None:
+        known = _candidates(pdef, snapshot)
+        if known is not None:
+            candidates = known.names
             exact, fuzzy = _match(b.value, candidates)
-            if not exact:
+            if not exact and known.truncated:
+                # The snapshot lists at most MAX_NAMES names: absence proves nothing
+                conflicts.append(Conflict(
+                    param=b.name, claimed=b.value, kind="ambiguous", available=list(candidates),
+                    message=_t(lang, "truncated", param=b.name, claimed=b.value, shown=len(candidates),
+                               count=known.total, category=known.category)))
+            elif not exact:
                 if len(fuzzy) > 1:
                     conflicts.append(Conflict(
                         param=b.name, claimed=b.value, kind="ambiguous", available=fuzzy,
