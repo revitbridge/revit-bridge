@@ -117,6 +117,17 @@ def test_projection_canonical_json_and_hash():
     assert code.execution_projection() == {"kind": "execute_code", "code": "return 1;", "parameters": [1]}
 
 
+def test_optional_fields_default_to_none():
+    """Review C-7: a spec need not name a snapshot; an interpretation need not name a parameter."""
+    spec = TaskSpec(task="t", action=Action(kind="execute_code", code="return 1;"), parameters=[])
+    assert spec.snapshot_fingerprint is None and spec.interpretations == [] and spec.workflow is None
+    it = Interpretation(text="'F2 shang' read as level F2")
+    assert it.param is None and it.confirmed is False
+    parsed = TaskSpec.model_validate({"task": "t", "action": {"kind": "run_tool", "tool": "x"}, "parameters": [],
+                                      "interpretations": [{"text": "read as mm"}]})
+    assert parsed.interpretations[0].param is None and parsed.snapshot_fingerprint is None
+
+
 def test_card_shows_every_parameter_with_its_source():
     spec = good_spec()
     spec.interpretations = [Interpretation(param="x", text="x 按 mm 理解", confirmed=True)]

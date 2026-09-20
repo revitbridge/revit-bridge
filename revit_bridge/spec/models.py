@@ -122,7 +122,7 @@ class ParamBinding(BaseModel):
 
 class Interpretation(BaseModel):
     """A reading the model made that the designer must see and confirm."""
-    param: str | None
+    param: str | None = None       # None: about the task as a whole (a range word)
     text: str                      # e.g. "3000 按 mm 理解" / "'F2 上' 理解为底部约束为 F2"
     confirmed: bool = False
 
@@ -148,7 +148,7 @@ class TaskSpec(BaseModel):
     parameters: list[ParamBinding]
     interpretations: list[Interpretation] = Field(default_factory=list)
     steps: list[str] = Field(default_factory=list)   # for display
-    snapshot_fingerprint: str | None                 # the snapshot the spec was reconciled against
+    snapshot_fingerprint: str | None = None          # the snapshot the spec was reconciled against
     workflow: WorkflowState | None = None
     language: str = "zh"
 
