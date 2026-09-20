@@ -273,7 +273,13 @@ class ToolStore:
         return self._disabled_marker(name).exists()
 
     def path_of(self, name: str) -> Path | None:
-        """The file that ``load(name)`` reads, or None."""
+        """The file that ``load(name)`` reads, or None.
+
+        A user file always wins, even next to a stale ``.disabled`` marker;
+        the marker only hides the built-in copy. ``list_tools`` applies the
+        same rule, so a pack dropped into the user directory by hand is
+        visible everywhere or nowhere.
+        """
         user = self._tool_path(name)
         if user.exists():
             return user
@@ -332,11 +338,14 @@ class ToolStore:
         return self._to_tool(data) if data else None
 
     def list_tools(self) -> list[SolidifiedTool]:
-        """Built-in packs plus user packs; same name -> the user pack."""
+        """Built-in packs plus user packs; same name -> the user pack.
+
+        A ``.disabled`` marker hides a built-in pack only (see ``path_of``).
+        """
         packs: dict[str, dict] = {}
         for path in self._pack_files(self.builtin_dir):
             data = self._read_pack(path)
-            if data:
+            if data and not self.is_disabled(data["name"]):
                 packs[data["name"]] = data
         for path in self._pack_files(self.user_dir):
             data = self._read_pack(path)
@@ -346,7 +355,6 @@ class ToolStore:
         return [
             self._to_tool(packs[name], usage.get(name, empty_usage()))
             for name in sorted(packs)
-            if not self.is_disabled(name)
         ]
 
     # -- writing ---------------------------------------------------------------

@@ -341,3 +341,24 @@ def test_query_source_round_trips_through_choices_and_validation(tmp_path):
     valid, errors, filled = store.validate_params("probe", {"level_name": "L1"})
     assert valid and filled == {"level_name": "L1"}
     assert store.render_code("probe", {"level_name": "L1"}) == 'return "L1";'
+
+
+def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):
+    """load, path_of and list_tools agree on what is visible (review item 3)."""
+    store = ToolStore(user_dir=tmp_path / "user")
+    store.user_dir.mkdir()
+    (store.user_dir / "query_levels.disabled").touch()
+    assert store.load("query_levels") is None and "query_levels" not in names_of(store)
+
+    (store.user_dir / "query_levels.yaml").write_text(
+        "name: query_levels\ncode_template: return 9;\n", encoding="utf-8")
+    assert store.path_of("query_levels") == store.user_dir / "query_levels.yaml"
+    assert store.load("query_levels").code_template == "return 9;"
+    listed = {t.name: t for t in store.list_tools()}
+    assert listed["query_levels"].code_template == "return 9;" and len(listed) == 11
+    assert (store.user_dir / "query_levels.disabled").exists()   # untouched by reads
+
+    # A stale marker for a user-only pack (no built-in) hides nothing either
+    (store.user_dir / "mine.yaml").write_text("name: mine\ncode_template: return 1;\n", encoding="utf-8")
+    (store.user_dir / "mine.disabled").touch()
+    assert store.load("mine") is not None and "mine" in names_of(store)
