@@ -28,7 +28,6 @@ the v1 layout.
 """
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field, fields
 from datetime import datetime
@@ -71,11 +70,13 @@ PACK_FIELDS = (
 
 
 def default_capabilities_dir() -> Path:
-    """Deprecated 0.1 name. Returns the user directory when
-    ``REVIT_BRIDGE_CAPABILITIES_DIR`` is set, else the built-in directory."""
-    if os.environ.get(ENV_CAPABILITIES_DIR, "").strip():
-        return user_capabilities_dir()
-    return builtin_capabilities_dir()
+    """Deprecated 0.1 name for ``user_capabilities_dir()``.
+
+    Always the writable user directory: a 0.1 caller doing
+    ``ToolStore(default_capabilities_dir())`` must never end up writing into
+    the read-only packs shipped in the wheel.
+    """
+    return user_capabilities_dir()
 
 
 def escape_param_value(value) -> str:
@@ -242,6 +243,13 @@ def _safe_stem(name: str) -> str:
     return re.sub(r"[^\w\-]", "_", name)
 
 
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return a == b
+
+
 # -- store ----------------------------------------------------------------------
 
 class ToolStore:
@@ -250,6 +258,11 @@ class ToolStore:
     def __init__(self, user_dir: Path | str | None = None, builtin_dir: Path | str | None = None):
         self.user_dir = Path(user_dir) if user_dir else user_capabilities_dir()
         self.builtin_dir = Path(builtin_dir) if builtin_dir else builtin_capabilities_dir()
+        if _same_dir(self.user_dir, self.builtin_dir):
+            raise ValueError(
+                f"user_dir must not be the built-in pack directory ({self.builtin_dir}); "
+                f"it is read-only"
+            )
         self.usage = UsageStore(self.user_dir / USAGE_FILE)
 
     @property

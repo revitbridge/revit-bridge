@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import yaml
 
 from revit_bridge.capabilities.store import ToolStore, default_capabilities_dir, normalize_pack
@@ -53,7 +54,7 @@ def test_examples_subdirectory_and_underscore_files_are_never_loaded(tmp_path):
     assert "broken" not in names_of(store) and store.load("broken") is None
 
 
-def test_capabilities_dir_override_only_moves_the_user_directory(tmp_path, monkeypatch):
+def test_capabilities_dir_override_only_moves_the_user_directory(tmp_path, monkeypatch, isolated_data_dir):
     mine = tmp_path / "mine"
     monkeypatch.setenv("REVIT_BRIDGE_CAPABILITIES_DIR", str(mine))
     assert user_capabilities_dir() == mine
@@ -64,7 +65,19 @@ def test_capabilities_dir_override_only_moves_the_user_directory(tmp_path, monke
     store.solidify("mine_only", "return 1;")
     assert (mine / "mine_only.yaml").exists()
     monkeypatch.delenv("REVIT_BRIDGE_CAPABILITIES_DIR")
-    assert default_capabilities_dir() == builtin_capabilities_dir()
+    # Without the override the 0.1 helper still names the writable user directory,
+    # never the read-only built-in packs (review item 4).
+    assert default_capabilities_dir() == isolated_data_dir / "capabilities"
+    assert ToolStore(default_capabilities_dir()).user_dir == isolated_data_dir / "capabilities"
+
+
+def test_store_refuses_to_write_into_the_builtin_directory(tmp_path):
+    with pytest.raises(ValueError, match="read-only"):
+        ToolStore(builtin_capabilities_dir())
+    with pytest.raises(ValueError):
+        ToolStore(user_dir=tmp_path / "x", builtin_dir=tmp_path / "x")
+    ToolStore(user_dir=tmp_path / "x", builtin_dir=tmp_path / "y")   # distinct: fine
+    assert (builtin_capabilities_dir() / "create_wall.yaml").exists()
 
 
 def test_user_pack_overrides_builtin_of_the_same_name(tmp_path):
