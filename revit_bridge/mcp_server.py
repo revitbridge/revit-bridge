@@ -9,11 +9,14 @@ Usage:
 Tools:
     - get_project_snapshot : read-only picture of the open model (no gate)
     - query                : read-only model queries by kind (no gate)
-    - execute_code      : send C# code to Revit (spec_confirmed gate)
+    - missing_params       : the questions a pack still needs answered
+    - reconcile            : a draft TaskSpec against a snapshot
+    - confirm_spec         : validate a TaskSpec, issue a confirmation token
+    - execute_code      : send C# code to Revit (confirmation token)
     - solidify_tool     : save successful code as a reusable named tool
     - list_tools        : list all solidified tools
     - get_tool_choices  : query Revit for a tool's dynamic parameter choices
-    - run_tool          : execute a solidified tool (spec_confirmed gate)
+    - run_tool          : execute a solidified tool (confirmation token)
 
 The server never calls a model: the host does. Connection settings come from
 ``REVIT_BRIDGE_*`` environment variables (see README, Configure).
@@ -28,42 +31,60 @@ from collections.abc import Mapping
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
+from pydantic import ValidationError
 
 from revit_bridge import __version__
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.revit import sandbox
-from revit_bridge.revit.client import RevitClient
+from revit_bridge.revit.client import PING_PROBE, RevitClient
 from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.revit.settings import RevitSettings, env_flag
-from revit_bridge.snapshot.project import take_snapshot, validate_categories
+from revit_bridge.snapshot.project import ProjectSnapshot, take_snapshot, validate_categories
 from revit_bridge.snapshot.query import QUERY_KINDS, RevitQueryExecutor, run_query
+from revit_bridge.spec.gate import Gate, GateError, confirmation_invalid, confirmation_required
+from revit_bridge.spec.models import TaskSpec
+from revit_bridge.spec.rules import missing_params as _missing_params
+from revit_bridge.spec.rules import reconcile as _reconcile
+from revit_bridge.spec.rules import validate_spec
 
-# Hosts that run their own confirmation flow (the web demo) may lift the gate.
+# Hosts that run their own confirmation flow (the web demo, until phase 6)
+# may lift the gate.
 ENV_ALLOW_UNCONFIRMED = "REVIT_BRIDGE_ALLOW_UNCONFIRMED"
 
 _tool_store = ToolStore()
+_gate = Gate()
 
 
-# -- Spec confirmation gate ---------------------------------------------------
+# -- Confirmation gate --------------------------------------------------------
 
 def unconfirmed_allowed(env: Mapping[str, str] | None = None) -> bool:
     """True when ``REVIT_BRIDGE_ALLOW_UNCONFIRMED`` lifts the gate."""
     return env_flag(ENV_ALLOW_UNCONFIRMED, env)
 
 
-def gate_refusal(spec_confirmed: bool, env: Mapping[str, str] | None = None) -> dict | None:
-    """Return the refusal payload when execution must not proceed, else None."""
-    if spec_confirmed or unconfirmed_allowed(env):
+def gate_refusal(token: str, projection: dict, env: Mapping[str, str] | None = None) -> dict | None:
+    """Redeem ``token`` for ``projection``; the refusal payload when it must not run, else None.
+
+    A token is a one-time credential issued by ``confirm_spec`` and bound to
+    the hash of the execution projection, so a model cannot confirm one
+    thing and run another. Only the host bypass lifts the check.
+    """
+    if unconfirmed_allowed(env):
         return None
-    return {
-        "success": False,
-        "error": "refused_unconfirmed_spec",
-        "message": (
-            "Execution refused: spec_confirmed is false. Show the designer the task "
-            "spec (every parameter with its source), get their confirmation, then "
-            "call again with spec_confirmed=true."
-        ),
-    }
+    if not isinstance(token, str) or not token.strip():
+        return confirmation_required()
+    try:
+        _gate.redeem(token.strip(), projection)
+    except GateError as exc:
+        return confirmation_invalid(exc)
+    return None
+
+
+def _parse_json_arg(value, what: str):
+    """MCP hosts send objects; some send the JSON text. Accept both."""
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
 
 
 # -- MCP Server ---------------------------------------------------------------
@@ -92,12 +113,20 @@ not search documentation and does not generate code: you write the code.
    (do NOT open your own). End with `return <object>;`.
 5. **solidify_tool** - save code that worked as a named tool with parameters.
 
-## Spec confirmation gate (spec_confirmed)
+## Confirmation gate (token)
 
-`execute_code` and `run_tool` take `spec_confirmed` (default false) and refuse to
-run while it is false. Before setting it to true you must have shown the designer
-the task spec - every parameter with its value and where the value came from -
-and received their confirmation. Never set `spec_confirmed=true` on your own.
+`execute_code` and `run_tool` refuse to run without a `token`. A token comes only
+from `confirm_spec(spec)`: build a TaskSpec (task, action, every parameter with
+its value, source and evidence, interpretations, snapshot_fingerprint), show the
+designer the spec card, get an explicit confirmation, then call `confirm_spec`.
+It validates the spec (every parameter sourced, choices from Revit, units and
+range words confirmed as interpretations) and returns `{token, spec_hash,
+expires_at, card}` or `{errors}`. The token is one-time, expires in 10 minutes
+and is bound to the exact tool + parameters (or code) of the spec: running
+anything else with it fails with `confirmation_invalid` / `mismatch`.
+Use `missing_params(tool, known)` to get the questions still open and
+`reconcile(spec, snapshot)` to check a draft against the model before asking
+for confirmation.
 
 ## Parameter source protocol (prevents silent failures)
 
@@ -189,14 +218,85 @@ async def query(kind: str, args: dict | None = None) -> str:
         return _dumps({"error": "query_failed", "kind": kind, "message": f"{type(e).__name__}: {e}"})
 
 
+# -- TaskSpec tools (no gate) -------------------------------------------------
+
+@mcp.tool(annotations=_READ_ONLY)
+def missing_params(tool: str, known: dict | str | None = None, language: str = "zh") -> str:
+    """The questions still open for a capability pack: one per required parameter
+    not in `known` ({name: value}), with the real options when a snapshot can
+    supply them (levels, family types). Returns a JSON list of
+    {id, param, text, why, options, allow_other}."""
+    pack = _tool_store.load(tool)
+    if pack is None:
+        return _dumps({"error": "unknown_tool", "tool": tool})
+    try:
+        known_values = _parse_json_arg(known, "known") or {}
+    except json.JSONDecodeError as e:
+        return _dumps({"error": "invalid_args", "message": f"known: {e}"})
+    if not isinstance(known_values, dict):
+        return _dumps({"error": "invalid_args", "message": "known must be an object {name: value}"})
+    snapshot = None
+    return _dumps([q.model_dump() for q in _missing_params(pack, known_values, snapshot, language)])
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def reconcile(spec: dict | str, snapshot: dict | str | None = None) -> str:
+    """Check a draft TaskSpec against the model: values that do not exist
+    (levels, family types), missing parameters as questions, readings the
+    designer must confirm (units, range words), a stale snapshot. Pass the
+    snapshot from get_project_snapshot, or omit it and the server takes one.
+    Returns {conflicts, questions, interpretations_required, ready}."""
+    try:
+        draft = TaskSpec.model_validate(_parse_json_arg(spec, "spec"))
+    except (ValidationError, json.JSONDecodeError, TypeError) as e:
+        return _dumps({"error": "invalid_spec", "message": str(e)})
+    try:
+        if snapshot is None:
+            client = await RevitClientPool.get_client()
+            snap = await take_snapshot(client)
+        else:
+            snap = ProjectSnapshot.model_validate(_parse_json_arg(snapshot, "snapshot"))
+    except (ValidationError, json.JSONDecodeError, TypeError) as e:
+        return _dumps({"error": "invalid_snapshot", "message": str(e)})
+    except OSError as e:
+        return _dumps({"error": "revit_unreachable", "message": str(e) or type(e).__name__})
+    pack = _tool_store.load(draft.action.tool) if draft.action.kind == "run_tool" and draft.action.tool else None
+    return _dumps(_reconcile(draft, snap, pack).model_dump())
+
+
+@mcp.tool()
+def confirm_spec(spec: dict | str, confirmed_by: str = "designer", channel: str = "chat") -> str:
+    """Turn a designer-confirmed TaskSpec into a one-time execution token.
+    Call only after the designer has seen the spec card and said yes.
+    Validates the spec (spec 5.1 rules) and returns {token, spec_hash,
+    expires_at, card}, or {errors: [{code, param, message}]} without a token."""
+    try:
+        parsed = TaskSpec.model_validate(_parse_json_arg(spec, "spec"))
+    except (ValidationError, json.JSONDecodeError, TypeError) as e:
+        return _dumps({"errors": [{"code": "invalid_spec", "param": None, "message": str(e)}]})
+    pack = _tool_store.load(parsed.action.tool) if parsed.action.kind == "run_tool" and parsed.action.tool else None
+    errors = validate_spec(parsed, pack)
+    if errors:
+        return _dumps({"errors": [e.model_dump() for e in errors]})
+    conf = _gate.issue(parsed, confirmed_by=confirmed_by or "designer", channel=channel or "chat")
+    return _dumps({
+        "token": conf.token,
+        "spec_hash": conf.spec_hash,
+        "expires_at": conf.expires_at,
+        "card": parsed.card(),
+    })
+
+
 # -- Execution Tools ----------------------------------------------------------
 
 @mcp.tool(annotations=_MUTATING)
-async def execute_code(code: str, parameters: list | None = None, spec_confirmed: bool = False) -> str:
+async def execute_code(code: str, parameters: list | None = None, token: str = "") -> str:
     """Send C# code to Revit for execution over the local TCP socket.
-    Refused unless spec_confirmed=true (the designer confirmed the task spec).
+    Requires a token from confirm_spec for a TaskSpec whose action is
+    execute_code with exactly this code and parameters.
     Returns execution result or error message."""
-    refusal = gate_refusal(spec_confirmed)
+    projection = {"kind": "execute_code", "code": code, "parameters": list(parameters or [])}
+    refusal = gate_refusal(token, projection)
     if refusal:
         return _dumps(refusal)
     # Security review - always enforced before dispatch (P0-2)
@@ -278,18 +378,22 @@ async def get_tool_choices(name: str) -> str:
 
 
 @mcp.tool(annotations=_MUTATING)
-async def run_tool(name: str, params: str = "{}", spec_confirmed: bool = False) -> str:
+async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
     """Execute a solidified tool by name with given parameters.
-    IMPORTANT: Call get_tool_choices first for parameters with choices_from / source: query:*.
-    Refused unless spec_confirmed=true (the designer confirmed the task spec).
+    IMPORTANT: Call get_tool_choices first for parameters with choices_from / source: tool:*.
+    Requires a token from confirm_spec for a TaskSpec whose action is run_tool
+    with exactly this tool and these parameter values.
     params: JSON object of parameter values, e.g. {"level_name": "L1", "height": 3000}"""
-    refusal = gate_refusal(spec_confirmed)
-    if refusal:
-        return _dumps(refusal)
     try:
         param_dict = json.loads(params) if params else {}
     except json.JSONDecodeError:
         return _dumps({"success": False, "error": f"Invalid params JSON: {params}"})
+    if not isinstance(param_dict, dict):
+        return _dumps({"success": False, "error": "params must be a JSON object"})
+    projection = {"kind": "run_tool", "tool": name, "params": param_dict}
+    refusal = gate_refusal(token, projection)
+    if refusal:
+        return _dumps(refusal)
 
     # Health check - warn if tool is stale or failing
     health = _tool_store.health_check(name)
@@ -367,7 +471,7 @@ async def connection_status() -> str:
 
 # -- check subcommand ---------------------------------------------------------
 
-CHECK_PROBE = "return document.Title;"
+CHECK_PROBE = PING_PROBE
 
 
 async def check_connection(settings: RevitSettings | None = None) -> dict:

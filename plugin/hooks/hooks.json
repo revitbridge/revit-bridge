@@ -1,5 +1,5 @@
 {
-  "description": "Spec confirmation gate: execute_code and run_tool are denied unless spec_confirmed is true.",
+  "description": "Confirmation gate: execute_code and run_tool are denied unless they carry a token from confirm_spec.",
   "hooks": {
     "PreToolUse": [
       {

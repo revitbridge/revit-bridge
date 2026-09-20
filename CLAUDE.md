@@ -24,7 +24,8 @@ uvx --from . revit-bridge check   # read the open document's title through the a
 - `revit_bridge/paths.py` — per-user data root (`REVIT_BRIDGE_DATA_DIR`), user/built-in pack directories, `skills_dir()`.
 - `revit_bridge/capabilities/` — capability pack store (built-in packs in `capabilities/` at repo root, user packs
   and `usage.json` in the data root; a user pack overrides a built-in one of the same name).
-- `revit_bridge/spec/`, `validators/`, `evidence/`, `auth/` — TaskSpec models, later phases, slot token helpers.
+- `revit_bridge/spec/` — `models.py` (TaskSpec), `rules.py` (validation, missing params, reconcile), `gate.py`
+  (confirmation tokens). `validators/`, `evidence/` — later phases; `auth/` — slot token helpers.
 - `tests/` — pytest; `tests/fake_revit.py` fakes the add-in.
 - `plugin/` — Claude Code plugin: `skills/revit-bridge/SKILL.md` (+ `references/`), `.mcp.json`,
   `hooks/hooks.json` + `hooks/spec_gate.py`. `.claude-plugin/marketplace.json` at the repo root
@@ -38,7 +39,8 @@ uvx --from . revit-bridge check   # read the open document's title through the a
   `tests/test_package.py` enforces this.
 - Configuration comes only from `REVIT_BRIDGE_*` environment variables. No config files.
 - No `sys.path` manipulation, no imports from other repositories.
-- `execute_code` and `run_tool` keep the `spec_confirmed` gate; do not weaken it.
+- `execute_code` and `run_tool` run only with a one-time token from `confirm_spec`
+  (bound to the exact tool + parameters, or code); do not weaken the gate.
 - Capability pack format, TaskSpec structure and the plugin `SKILL.md` structure are
   defined by planning. If a change needs them, stop and record `BLOCKED` in the notes log.
 - Scripts and workflow files are ASCII only.

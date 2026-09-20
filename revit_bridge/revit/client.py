@@ -26,6 +26,9 @@ from revit_bridge.revit.settings import RevitSettings
 
 _log = logging.getLogger("revit_bridge.revit.client")
 
+# Read-only snippet used by ping() and `revit-bridge check`.
+PING_PROBE = "return document.Title;"
+
 
 @dataclass
 class RevitResponse:
@@ -241,9 +244,13 @@ class RevitClient:
         return resp
 
     async def ping(self) -> bool:
-        """Quick connectivity check via say_hello command."""
+        """Quick connectivity check: run the read-only title probe.
+
+        ``say_hello`` is not used because the add-in answers it with a
+        TaskDialog in Revit.
+        """
         try:
-            resp = await self.send_command("say_hello", {"message": "ping"})
+            resp = await self.send_code(PING_PROBE)
             return resp.success
         except Exception:
             return False

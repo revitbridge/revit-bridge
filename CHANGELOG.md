@@ -8,6 +8,25 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- TaskSpec (`revit_bridge.spec.models`): `Source`, `ParamBinding`,
+  `Interpretation`, `Action`, `WorkflowState`, `TaskSpec` with
+  `execution_projection()`, `canonical_json()`, `spec_hash()` and `card()`.
+- `revit_bridge.spec.rules`: `validate_spec(spec, pack)` (the 5.1 rules:
+  `missing_param`, `no_evidence`, `unsourced_choice`, `guessed_value`,
+  `default_not_declared`, `bad_preference_ref`, `unconfirmed_interpretation`,
+  `blocked_code`), `missing_params(pack, known, snapshot, language)` ->
+  questions with real options from a snapshot, `reconcile(draft, snapshot,
+  pack)` -> conflicts (`not_found`, `ambiguous`, `unit_missing`,
+  `stale_snapshot`), questions, interpretations required (units, range words
+  such as "在 F2 上"), `ready`.
+- Confirmation gate (`revit_bridge.spec.gate`): `confirm_spec(spec)` validates a
+  TaskSpec and issues a one-time token bound to the hash of its execution
+  projection; `run_tool` / `execute_code` redeem it (`confirmation_required`
+  without one, `confirmation_invalid` with reason `expired | used | mismatch |
+  unknown`). Tokens expire after `REVIT_BRIDGE_CONFIRM_TTL` seconds (default
+  600) and survive a server restart once via `<evidence dir>/pending/`.
+- MCP tools `missing_params(tool, known, language?)`, `reconcile(spec, snapshot?)`
+  and `confirm_spec(spec, confirmed_by?, channel?)`.
 - `get_project_snapshot(categories?)` MCP tool and `revit_bridge.snapshot.take_snapshot`:
   one read-only C# block plus one family-types command return a `ProjectSnapshot`
   (document, units, active view, levels, grids, family types of the requested
@@ -53,6 +72,12 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Changed
 
+- **Breaking:** `execute_code` and `run_tool` take `token` instead of
+  `spec_confirmed`; a model-set boolean no longer authorises anything. The
+  plugin hook denies calls without a `token`. `REVIT_BRIDGE_ALLOW_UNCONFIRMED=1`
+  still lifts the gate for host-internal flows (removed in phase 6).
+- `RevitClient.ping()` runs the read-only `return document.Title;` probe
+  instead of `say_hello` (a dialog in Revit).
 - `revit-bridge check` (and `revit://connection-status`) probes with the
   read-only snippet `return document.Title;` instead of `say_hello`, which
   opened a dialog in Revit; the output gains a `document` field.

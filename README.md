@@ -36,7 +36,7 @@ Revit 2026 with the add-in installed and its local TCP listener on (default
 ```
 
 The plugin's `.mcp.json` starts the server with `uvx`; its `hooks/hooks.json`
-denies `execute_code` / `run_tool` calls that lack `spec_confirmed=true`
+denies `execute_code` / `run_tool` calls that carry no confirmation `token`
 (`uv run` executes `plugin/hooks/spec_gate.py`, so `uv` must be on PATH). The
 skill is also installable on its own with
 `npx skills add revitbridge/revit-bridge`.
@@ -76,15 +76,20 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
    - `list_tools` — see the capability packs (`create_wall`, `query_levels`, …).
    - `get_tool_choices` with a tool name — Revit returns the real levels,
      family types or elements for that tool's dynamic parameters.
-   - `run_tool` with the chosen values and `spec_confirmed=true`.
+   - `confirm_spec` with the TaskSpec the designer confirmed, then `run_tool`
+     with the chosen values and the returned `token`.
 
    `execute_code` takes arbitrary C# for tasks no pack covers. The code runs
    inside Revit with `document` in scope and a transaction already open; end it
    with `return <object>;`. `solidify_tool` saves code that worked as a new pack.
 
-**Confirmation gate.** `execute_code` and `run_tool` default to
-`spec_confirmed=false` and return `refused_unconfirmed_spec` until the host has
-shown the designer every parameter with its source and received confirmation.
+**Confirmation gate.** `execute_code` and `run_tool` return
+`confirmation_required` without a `token`. A token comes only from
+`confirm_spec(spec)`: the TaskSpec lists every parameter with its value, source
+and evidence; the server validates it and issues a one-time token bound to
+exactly that tool and those parameters (or that code). Running anything else
+with it, reusing it, or using it after 10 minutes fails with
+`confirmation_invalid`. `missing_params` and `reconcile` help build the spec.
 Hosts that run their own confirmation flow can set
 `REVIT_BRIDGE_ALLOW_UNCONFIRMED=1`.
 
@@ -98,7 +103,8 @@ Resources: `revit://stats`, `revit://tools/{name}`, `revit://connection-status`.
 | `REVIT_BRIDGE_PORT` | `18080` | TCP port of the add-in |
 | `REVIT_BRIDGE_TOKEN` | *(unset)* | Pre-shared token, sent with every request when the add-in has one configured |
 | `REVIT_BRIDGE_TIMEOUT` | `60` | Seconds to wait for a command to finish |
-| `REVIT_BRIDGE_ALLOW_UNCONFIRMED` | *(unset)* | `1` lifts the `spec_confirmed` gate (host-internal flows only) |
+| `REVIT_BRIDGE_ALLOW_UNCONFIRMED` | *(unset)* | `1` lifts the confirmation-token gate (host-internal flows only) |
+| `REVIT_BRIDGE_CONFIRM_TTL` | `600` | Seconds a confirmation token stays valid |
 | `REVIT_BRIDGE_DATA_DIR` | `%LOCALAPPDATA%
 evit-bridge` (Windows), `~/.local/share/revit-bridge` (else) | Per-user data: solidified packs, `usage.json`, later the evidence ledger |
 | `REVIT_BRIDGE_CAPABILITIES_DIR` | `<data dir>/capabilities` | User pack directory; the packs shipped in the wheel stay visible, a user pack of the same name replaces one |

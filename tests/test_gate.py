@@ -1,7 +1,8 @@
-"""Execution gate: execute_code / run_tool refuse unconfirmed specs.
+"""Execution gate: execute_code / run_tool run only with a token from confirm_spec.
 
-Rewritten from the former agent-workflow contract tests: the contract is now
-enforced by the package, not by prompt text.
+The token is one-time, expires, and is bound to the exact execution
+projection; the check subcommand and the read-only listing tools live here
+too because they share the fake add-in fixtures.
 """
 from __future__ import annotations
 
@@ -13,6 +14,9 @@ import pytest
 import revit_bridge.mcp_server as server
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.revit.pool import RevitClientPool
+
+from revit_bridge.spec.gate import Gate
+from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec
 
 from tests.fake_revit import FakeRevit
 
@@ -36,53 +40,154 @@ def revit_env(monkeypatch):
     return apply
 
 
-def _call(tool: str, **arguments) -> dict:
-    result = asyncio.run(server.mcp.call_tool(tool, arguments))
+def _call(tool_name: str, **arguments) -> dict:
+    result = asyncio.run(server.mcp.call_tool(tool_name, arguments))
     return json.loads(result.content[0].text)
 
 
+async def _acall(tool_name: str, **arguments) -> dict:
+    result = await server.mcp.call_tool(tool_name, arguments)
+    return json.loads(result.content[0].text)
+
+
+def spec_for(tool: str, **values) -> dict:
+    """A confirmable run_tool spec: every value sourced as the designer's answer."""
+    spec = TaskSpec(
+        task=f"run {tool}",
+        action=Action(kind="run_tool", tool=tool),
+        parameters=[ParamBinding(name=k, value=v, unit="mm" if isinstance(v, (int, float)) else None,
+                                 source=Source.answer, evidence=f"q_{k}") for k, v in values.items()],
+        snapshot_fingerprint=None,
+    )
+    return spec.model_dump(mode="json")
+
+
+def code_spec(code: str, parameters: list | None = None) -> dict:
+    return TaskSpec(task="run code", action=Action(kind="execute_code", code=code, code_parameters=parameters),
+                    parameters=[], snapshot_fingerprint=None).model_dump(mode="json")
+
+
+def confirm(spec: dict) -> dict:
+    return _call("confirm_spec", spec=spec)
+
+
 def test_gate_refusal_logic():
-    assert server.gate_refusal(True, {}) is None
-    assert server.gate_refusal(False, {"REVIT_BRIDGE_ALLOW_UNCONFIRMED": "1"}) is None
-    refusal = server.gate_refusal(False, {})
-    assert refusal["success"] is False
-    assert refusal["error"] == "refused_unconfirmed_spec"
-    assert "spec_confirmed=true" in refusal["message"]
+    projection = {"kind": "run_tool", "tool": "query_levels", "params": {}}
+    assert server.gate_refusal("", projection, {"REVIT_BRIDGE_ALLOW_UNCONFIRMED": "1"}) is None
+    refusal = server.gate_refusal("", projection, {})
+    assert refusal["success"] is False and refusal["error"] == "confirmation_required"
+    assert "confirm_spec" in refusal["hint"]
+    unknown = server.gate_refusal("not-a-token", projection, {})
+    assert unknown["error"] == "confirmation_invalid" and unknown["reason"] == "unknown"
 
 
-def test_execute_code_refuses_without_confirmation(monkeypatch):
+def test_execute_code_refuses_without_token(monkeypatch):
     monkeypatch.delenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", raising=False)
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")  # nothing listens here; gate must fire first
     out = _call("execute_code", code="return 1;")
-    assert out["success"] is False
-    assert out["error"] == "refused_unconfirmed_spec"
+    assert out["success"] is False and out["error"] == "confirmation_required"
+    out = _call("execute_code", code="return 1;", token="   ")
+    assert out["error"] == "confirmation_required"
+    out = _call("execute_code", code="return 1;", token="bogus")
+    assert out["error"] == "confirmation_invalid" and out["reason"] == "unknown"
 
 
-def test_run_tool_refuses_without_confirmation(monkeypatch, isolated_store):
+def test_run_tool_refuses_without_token(monkeypatch, isolated_store):
     monkeypatch.delenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", raising=False)
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
     out = _call("run_tool", name="query_levels", params="{}")
-    assert out["success"] is False
-    assert out["error"] == "refused_unconfirmed_spec"
+    assert out["success"] is False and out["error"] == "confirmation_required"
+    # spec_confirmed is gone: the old flag lifts nothing and is not in the schemas
+    out = _call("run_tool", name="query_levels", params="{}", spec_confirmed=True)
+    assert out["error"] == "confirmation_required"
+    out = _call("execute_code", code="return 1;", spec_confirmed=True)
+    assert out["error"] == "confirmation_required"
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    for name in ("run_tool", "execute_code"):
+        props = tools[name].input_schema["properties"]
+        assert "token" in props and "spec_confirmed" not in props, name
 
 
-def test_execute_code_runs_when_confirmed(monkeypatch, revit_env):
+def test_confirm_spec_issues_a_token_and_execute_code_redeems_it(monkeypatch, revit_env):
     monkeypatch.delenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", raising=False)
 
     async def scenario():
         async with FakeRevit() as fake:
             revit_env(fake.port)
             try:
+                issued = await _acall("confirm_spec", spec=code_spec("return 1;"))
+                assert set(issued) == {"token", "spec_hash", "expires_at", "card"}
+                assert issued["card"].startswith("Task: run code\nCode: execute_code (1 lines)")
                 result = await server.mcp.call_tool(
-                    "execute_code", {"code": "return 1;", "spec_confirmed": True})
+                    "execute_code", {"code": "return 1;", "token": issued["token"]})
                 out = json.loads(result.content[0].text)
                 assert out["success"] is True
                 assert out["result"] == {"Status": "Created", "ElementId": 4242}
                 assert fake.requests[-1]["method"] == "send_code_to_revit"
+                return issued["token"]
             finally:
                 await RevitClientPool.disconnect()
 
-    asyncio.run(scenario())
+    token = asyncio.run(scenario())
+    # the same token cannot run again
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
+    again = _call("execute_code", code="return 1;", token=token)
+    assert again["error"] == "confirmation_invalid" and again["reason"] == "used"
+
+
+def test_token_is_bound_to_the_confirmed_parameters(monkeypatch, isolated_store):
+    """Confirm A, execute B: refused with reason mismatch."""
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
+    issued = confirm(spec_for("create_wall", level_name="L1", height=3000))
+    assert "token" in issued
+    token = issued["token"]
+    out = _call("run_tool", name="create_wall", params=json.dumps({"level_name": "L1", "height": 4000}), token=token)
+    assert out == {"success": False, "error": "confirmation_invalid", "reason": "mismatch",
+                   "message": "the execution does not match the confirmed spec"}
+    out = _call("run_tool", name="query_levels", params="{}", token=token)
+    assert out["reason"] == "mismatch"
+    out = _call("execute_code", code="return 1;", token=token)
+    assert out["reason"] == "mismatch"
+    # a mismatch does not consume the token: the confirmed call still works (3000.0 == 3000)
+    assert server._gate.peek(token).used_at is None
+    projection = {"kind": "run_tool", "tool": "create_wall", "params": {"level_name": "L1", "height": 3000.0}}
+    assert server.gate_refusal(token, projection, {}) is None
+
+
+def test_token_expires(monkeypatch, isolated_store):
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
+    monkeypatch.setattr(server._gate, "ttl_seconds", 0)
+    token = confirm(spec_for("query_levels"))["token"]
+    out = _call("run_tool", name="query_levels", params="{}", token=token)
+    assert out["error"] == "confirmation_invalid" and out["reason"] == "expired"
+    out = _call("run_tool", name="query_levels", params="{}", token=token)
+    assert out["reason"] == "unknown"                    # expired tokens are forgotten
+
+
+def test_token_survives_a_server_restart_once(isolated_data_dir, isolated_store, monkeypatch):
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
+    token = confirm(spec_for("query_levels"))["token"]
+    pending = list((isolated_data_dir / "evidence" / "pending").glob("*.json"))
+    assert len(pending) == 1 and pending[0].name == f"{token[:12]}.json"
+
+    fresh = Gate()                                        # same data dir, empty memory
+    conf = fresh.redeem(token, {"kind": "run_tool", "tool": "query_levels", "params": {}})
+    assert conf.used_at and not pending[0].exists()
+    with pytest.raises(Exception) as excinfo:
+        fresh.redeem(token, {"kind": "run_tool", "tool": "query_levels", "params": {}})
+    assert excinfo.value.reason == "used"
+    assert Gate().peek(token) is None                     # gone from disk
+
+
+def test_confirm_spec_returns_errors_without_a_token(isolated_store):
+    out = confirm(spec_for("create_wall"))                # level_name unbound
+    assert "token" not in out
+    assert [e["code"] for e in out["errors"]] == ["missing_param"]
+    assert out["errors"][0]["param"] == "level_name"
+    out = confirm({"task": "x"})
+    assert out["errors"][0]["code"] == "invalid_spec"
+    out = confirm(json.dumps(spec_for("query_levels")))   # JSON text is accepted too
+    assert "token" in out
 
 
 def test_env_override_lifts_gate_for_host_flows(monkeypatch, revit_env):
@@ -103,15 +208,19 @@ def test_env_override_lifts_gate_for_host_flows(monkeypatch, revit_env):
 
 def test_execute_code_blocks_dangerous_code_before_dispatch(monkeypatch):
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
-    out = _call("execute_code", code="System.IO.File.Delete(\"x\");", spec_confirmed=True)
-    assert out["success"] is False
-    assert out["error"] == "blocked"
+    code = "System.IO.File.Delete(\"x\");"
+    refused = confirm(code_spec(code))                  # confirm_spec already refuses it
+    assert refused["errors"][0]["code"] == "blocked_code"
+    monkeypatch.setenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", "1")
+    out = _call("execute_code", code=code)               # and so does the tool itself
+    assert out["success"] is False and out["error"] == "blocked"
     assert any("System.IO" in w for w in out["warnings"])
 
 
 def test_run_tool_requires_queried_parameters(monkeypatch, isolated_store):
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
-    out = _call("run_tool", name="create_wall", params="{}", spec_confirmed=True)
+    monkeypatch.setenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", "1")
+    out = _call("run_tool", name="create_wall", params="{}")
     assert out["success"] is False
     assert "level_name" in out["error"]
 
@@ -119,7 +228,8 @@ def test_run_tool_requires_queried_parameters(monkeypatch, isolated_store):
 def test_run_tool_never_ships_a_leftover_placeholder(monkeypatch, isolated_store):
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")  # nothing listens: the refusal must come first
     isolated_store.solidify(name="leaky", code="return {count};", parameters=[])
-    out = _call("run_tool", name="leaky", params="{}", spec_confirmed=True)
+    token = confirm(spec_for("leaky"))["token"]
+    out = _call("run_tool", name="leaky", params="{}", token=token)
     assert out["success"] is False
     assert "placeholder(s) ['count']" in out["error"]
 
@@ -131,8 +241,9 @@ def test_run_tool_executes_confirmed_tool(monkeypatch, isolated_store, revit_env
         async with FakeRevit() as fake:
             revit_env(fake.port)
             try:
+                token = (await _acall("confirm_spec", spec=spec_for("query_levels")))["token"]
                 result = await server.mcp.call_tool(
-                    "run_tool", {"name": "query_levels", "params": "{}", "spec_confirmed": True})
+                    "run_tool", {"name": "query_levels", "params": "{}", "token": token})
                 out = json.loads(result.content[0].text)
                 assert out["success"] is True
                 assert out["tool"] == "query_levels"
@@ -142,6 +253,52 @@ def test_run_tool_executes_confirmed_tool(monkeypatch, isolated_store, revit_env
 
     asyncio.run(scenario())
     assert isolated_store.load("query_levels").execution_count == 1
+
+
+def test_missing_params_and_reconcile_tools(isolated_store):
+    questions = _call("missing_params", tool="create_wall", known={"height": 3000})
+    assert [q["param"] for q in questions] == ["level_name"]
+    assert questions[0]["id"] == "q_level_name" and questions[0]["options"] == []
+    assert _call("missing_params", tool="nope") == {"error": "unknown_tool", "tool": "nope"}
+    with pytest.raises(Exception):                        # the MCP layer rejects a non-object `known`
+        _call("missing_params", tool="create_wall", known=[1])
+    assert _call("missing_params", tool="create_wall", known='{"level_name": "L1"}') == []   # JSON text ok
+
+    snapshot = {
+        "taken_at": "2026-09-20T00:00:00Z", "duration_ms": 1,
+        "document": {"title": "P", "revit_version": "2026", "is_workshared": False},
+        "units": {"length": "mm", "raw": ""}, "active_view": None,
+        "levels": [{"id": 1, "name": "L1", "elevation_mm": 0.0}], "grids": {"count": 0, "names": []},
+        "family_types": [], "selection": [], "selection_count": 0, "links": [], "phases": [],
+        "warnings": [], "fingerprint": "f" * 16,
+    }
+    draft = spec_for("create_wall", level_name="l1", height=3000)
+    out = _call("reconcile", spec=draft, snapshot=snapshot)
+    assert [c["kind"] for c in out["conflicts"]] == ["not_found"]
+    assert out["conflicts"][0]["available"][0] == "L1" and out["ready"] is False
+    assert _call("reconcile", spec={"task": "x"}, snapshot=snapshot)["error"] == "invalid_spec"
+    assert _call("reconcile", spec=draft, snapshot={"nope": 1})["error"] == "invalid_snapshot"
+
+
+def test_hook_denies_calls_without_a_token():
+    import importlib.util
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[1] / "plugin" / "hooks" / "spec_gate.py"
+    module_spec = importlib.util.spec_from_file_location("spec_gate", path)
+    hook = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(hook)
+
+    for tool in ("mcp__revit-bridge__run_tool", "mcp__plugin_revit-bridge_revit-bridge__execute_code"):
+        assert hook.decide(tool, {}) == hook.REASON
+        assert hook.decide(tool, {"token": ""}) == hook.REASON
+        assert hook.decide(tool, {"token": "   "}) == hook.REASON
+        assert hook.decide(tool, {"token": True}) == hook.REASON
+        assert hook.decide(tool, {"spec_confirmed": True}) == hook.REASON   # the 0.1 flag no longer counts
+        assert hook.decide(tool, {"token": "abc"}) is None
+    assert hook.decide("mcp__revit-bridge__query", {}) is None
+    assert hook.decide("Bash", {"command": "ls"}) is None
+    assert "confirm_spec" in hook.REASON and "spec_confirmed" not in hook.REASON
 
 
 def test_list_tools_and_choices(monkeypatch, isolated_store, revit_env):

@@ -37,6 +37,9 @@ def test_ping_and_send_code_unwraps_inner_result():
             client = RevitClient(settings=_settings(server))
             try:
                 assert await client.ping() is True
+                probe = server.requests[-1]
+                assert probe["method"] == "send_code_to_revit"          # not say_hello (a dialog)
+                assert probe["params"]["code"] == "return document.Title;"
                 resp = await client.send_code("return 1;")
                 assert resp.success is True
                 assert resp.result == {"Status": "Created", "ElementId": 4242}

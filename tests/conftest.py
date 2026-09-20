@@ -20,5 +20,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     server = sys.modules.get("revit_bridge.mcp_server")
     if server is not None:
         from revit_bridge.capabilities.store import ToolStore
+        from revit_bridge.spec.gate import Gate
         monkeypatch.setattr(server, "_tool_store", ToolStore())
+        monkeypatch.setattr(server, "_gate", Gate())
     return data
