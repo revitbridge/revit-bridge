@@ -20,6 +20,16 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   removes it). `path_of(name)` tells which file is in effect.
 - Execution counters (`execution_count`, `last_used`, `failure_count`) live in
   `<user dir>/usage.json`; pack files are never rewritten to record a run.
+  Updates from several hosts sharing one data directory are serialised
+  through `usage.json.lock` (a writer that cannot take the lock within 2 s
+  proceeds anyway; a lock older than 10 s is treated as abandoned). The
+  counters are advisory, not an audit trail.
+- `ToolStore.render(name, params)` returns `(code, errors)` and refuses code in
+  which a `{placeholder}` survives substitution; `render_code` keeps the 0.1
+  shape. A parameter without a default must be given a value even when
+  `required: false`.
+- `ToolStore()` raises `ValueError` when its user directory is the built-in
+  pack directory.
 - The plugin skills (`plugin/skills/`) ship inside the wheel as
   `revit_bridge/skills/`; `revit_bridge.skills_dir()` locates them.
 - Capability pack files are read in both layouts: files without
@@ -34,7 +44,10 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 - `REVIT_BRIDGE_CAPABILITIES_DIR` now overrides only the user directory; the
   built-in packs stay visible. `default_capabilities_dir()` is kept for 0.1
-  callers.
+  callers and always names the user directory.
+- Parameter sources written as `query:<kind>` / `interactive:<kind>` are read
+  as `tool:<kind>`, and a `tool:<query>` source without `choices_from` gets
+  `choices_from: <query>` so `get_tool_choices` can resolve it.
 - `tags` on capability packs are read but no longer written (`applies_when`
   replaces them); `solidify(tags=...)` is accepted and ignored.
 - Plugin 0.1.1: `plugin/.mcp.json` runs the PyPI release (`uvx revit-bridge`)
