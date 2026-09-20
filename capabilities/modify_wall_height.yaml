@@ -1,6 +1,9 @@
+schema_version: 1
 name: modify_wall_height
 display_name: Modify Wall Height
-description: Change the height of a wall by ElementId.
+description: Set the unconnected height of one wall, chosen by ElementId.
+version: "1.0.0"
+revit_versions: ["2026"]
 code_template: |
   // Step 1: Get wall by ID
   var elementId = new ElementId({element_id});
@@ -18,17 +21,36 @@ code_template: |
 parameters:
   - name: element_id
     type: integer
-    description: Wall ElementId
+    description: ElementId of the wall to change
+    source: tool:elements
     choices_from: elements:OST_Walls
+    required: true
   - name: height
     type: double
-    description: New wall height (mm)
-    default: '3000'
-tags:
-  - wall
-  - modify
-  - utility
-created_at: '2026-03-13T00:00:00'
+    description: New unconnected wall height (mm)
+    unit: mm
+    source: designer
+    required: true
+preconditions:
+  - kind: category_present
+    category: OST_Walls
+  - text: "the wall must not be attached at the top (attached walls ignore the unconnected height)"
+not_for:
+  - "create wall"
+  - "wall type"
+  - "curtain wall"
+applies_when:
+  - "change wall height"
+  - "wall height"
+  - "make the wall taller"
+validator:
+  kind: param_equals
+  category: OST_Walls
+  checks:
+    - param_name: WALL_USER_HEIGHT_PARAM
+      spec_param: height
+fixtures: []
+approved_by: null
+approved_at: null
+created_at: "2026-03-13T00:00:00"
 source_query: change wall height
-execution_count: 0
-last_used: ''

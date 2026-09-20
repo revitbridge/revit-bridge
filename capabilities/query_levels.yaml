@@ -1,6 +1,9 @@
+schema_version: 1
 name: query_levels
 display_name: Query Levels
-description: List all levels in the model with their elevations.
+description: List all levels in the model with their elevations (read-only).
+version: "1.0.0"
+revit_versions: ["2026"]
 code_template: |
   var levels = new FilteredElementCollector(document)
       .OfClass(typeof(Level))
@@ -15,11 +18,23 @@ code_template: |
 
   return levels;
 parameters: []
-tags:
-  - query
-  - levels
-  - utility
-created_at: '2026-03-13T00:00:00'
+preconditions: []
+not_for:
+  - "create level"
+  - "rename level"
+applies_when:
+  - "list levels"
+  - "which levels"
+  - "level elevations"
+validator:
+  kind: count_delta
+  category: OST_Levels
+  expected: 0
+fixtures:
+  - name: basic
+    params: {}
+    expect: {}
+approved_by: null
+approved_at: null
+created_at: "2026-03-13T00:00:00"
 source_query: list all levels
-execution_count: 0
-last_used: ''

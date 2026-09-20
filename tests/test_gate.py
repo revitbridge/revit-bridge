@@ -64,6 +64,40 @@ def spec_for(tool: str, _units: dict | None = None, **values) -> dict:
     return spec.model_dump(mode="json")
 
 
+WALL = {"level_name": "L1", "start_x": 0, "start_y": 0, "end_x": 5000, "end_y": 0, "height": 3000}
+
+LEAKY = "schema_version: 1\nname: leaky\nversion: 1.0.0\ncode_template: return {count};\nparameters: []\n"
+
+
+def drop_pack(store: ToolStore, name: str, text: str) -> None:
+    """Write a pack file by hand (solidify would refuse an invalid one)."""
+    store.user_dir.mkdir(parents=True, exist_ok=True)
+    (store.user_dir / f"{name}.yaml").write_text(text, encoding="utf-8")
+
+
+def counting_handler(before: int, after: int, result=None):
+    """A fake add-in whose count probe answers ``before`` until code has run, then ``after``."""
+    state = {"ran": False}
+
+    def handler(request):
+        rid, method = request["id"], request["method"]
+        if method == "send_code_to_revit":
+            code = request["params"]["code"]
+            if "CategoryNames" in code:                                   # the snapshot block
+                return FakeRevit.code_result(rid, {
+                    "Document": {"Title": "Project1", "RevitVersion": "2026", "IsWorkshared": False},
+                    "Levels": [{"Id": 1, "Name": "L1", "ElevationMm": 0.0}],
+                    "CategoryNames": {}, "Warnings": []})
+            if "GetElementCount" in code and "Enum.Parse(typeof(BuiltInCategory)" in code:
+                return FakeRevit.code_result(rid, after if state["ran"] else before)
+            if code == server.DOCUMENT_PROBE:
+                return FakeRevit.code_result(rid, {"Title": "Project1", "RevitVersion": "2026"})
+            state["ran"] = True
+            return FakeRevit.code_result(rid, result if result is not None else {"Status": "Created", "ElementId": 4242})
+        return FakeRevit.default_handler(request)
+    return handler
+
+
 def code_spec(code: str, parameters: list | None = None) -> dict:
     return TaskSpec(task="run code", action=Action(kind="execute_code", code=code, code_parameters=parameters),
                     parameters=[], snapshot_fingerprint=None).model_dump(mode="json")
@@ -140,10 +174,10 @@ def test_confirm_spec_issues_a_token_and_execute_code_redeems_it(monkeypatch, re
 def test_token_is_bound_to_the_confirmed_parameters(monkeypatch, isolated_store):
     """Confirm A, execute B: refused with reason mismatch."""
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
-    issued = confirm(spec_for("create_wall", level_name="L1", height=3000))
+    issued = confirm(spec_for("create_wall", **WALL))
     assert "token" in issued
     token = issued["token"]
-    out = _call("run_tool", name="create_wall", params=json.dumps({"level_name": "L1", "height": 4000}), token=token)
+    out = _call("run_tool", name="create_wall", params=json.dumps({**WALL, "height": 4000}), token=token)
     assert out == {"success": False, "error": "confirmation_invalid", "reason": "mismatch",
                    "message": "the execution does not match the confirmed spec"}
     out = _call("run_tool", name="query_levels", params="{}", token=token)
@@ -152,20 +186,20 @@ def test_token_is_bound_to_the_confirmed_parameters(monkeypatch, isolated_store)
     assert out["reason"] == "mismatch"
     # a mismatch does not consume the token: the confirmed call still works (3000.0 == 3000)
     assert server._gate.peek(token).used_at is None
-    projection = {"kind": "run_tool", "tool": "create_wall", "params": {"level_name": "L1", "height": 3000.0}}
+    projection = {"kind": "run_tool", "tool": "create_wall", "params": {**WALL, "height": 3000.0}}
     assert server.gate_refusal(token, projection, {}) is None
 
 
 def test_a_refused_validation_does_not_consume_the_token(monkeypatch, isolated_store, revit_env):
     """Review C-2: verify first, consume the moment before send_code."""
-    spec = spec_for("create_wall", _units={"height": "mm"}, level_name="L1", height="tall")  # not a number
+    spec = spec_for("create_wall", _units={"height": "mm"}, **{**WALL, "height": "tall"})  # not a number
     token = confirm(spec)["token"]
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
-    out = _call("run_tool", name="create_wall", params=json.dumps({"level_name": "L1", "height": "tall"}), token=token)
+    out = _call("run_tool", name="create_wall", params=json.dumps({**WALL, "height": "tall"}), token=token)
     assert out["success"] is False and "expects double" in out["error"]
     assert server._gate.peek(token).used_at is None                     # still redeemable
     # a leftover placeholder, an unhealthy tool and a blocked execute_code leave it alone too
-    isolated_store.solidify(name="leaky", code="return {count};", parameters=[])
+    drop_pack(isolated_store, "leaky", LEAKY)
     leaky = confirm(spec_for("leaky"))["token"]
     assert "placeholder" in _call("run_tool", name="leaky", params="{}", token=leaky)["error"]
     assert server._gate.peek(leaky).used_at is None
@@ -175,11 +209,11 @@ def test_a_refused_validation_does_not_consume_the_token(monkeypatch, isolated_s
     assert out["success"] is False and server._gate.peek(good).used_at is None
 
     async def scenario():
-        async with FakeRevit() as fake:
+        async with FakeRevit(counting_handler(2, 2)) as fake:
             revit_env(fake.port)
             try:
                 out = await _acall("run_tool", name="query_levels", params="{}", token=good)
-                assert out["success"] is True                              # the same token, later
+                assert out["success"] is True, out                         # the same token, later
                 assert server._gate.peek(good).used_at
                 fake.requests.clear()
                 blocked = (await _acall("confirm_spec", spec=code_spec("return 1;")))["token"]
@@ -238,7 +272,7 @@ def test_token_survives_a_server_restart_once(isolated_data_dir, isolated_store,
 
 
 def test_confirm_spec_returns_errors_without_a_token(isolated_store):
-    out = confirm(spec_for("create_wall"))                # level_name unbound
+    out = confirm(spec_for("create_wall", **{k: v for k, v in WALL.items() if k != "level_name"}))
     assert "token" not in out
     assert [e["code"] for e in out["errors"]] == ["missing_param"]
     assert out["errors"][0]["param"] == "level_name"
@@ -285,7 +319,7 @@ def test_run_tool_requires_queried_parameters(monkeypatch, isolated_store):
 
 def test_run_tool_never_ships_a_leftover_placeholder(monkeypatch, isolated_store):
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")  # nothing listens: the refusal must come first
-    isolated_store.solidify(name="leaky", code="return {count};", parameters=[])
+    drop_pack(isolated_store, "leaky", LEAKY)
     token = confirm(spec_for("leaky"))["token"]
     out = _call("run_tool", name="leaky", params="{}", token=token)
     assert out["success"] is False
@@ -296,16 +330,19 @@ def test_run_tool_executes_confirmed_tool(monkeypatch, isolated_store, revit_env
     monkeypatch.delenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", raising=False)
 
     async def scenario():
-        async with FakeRevit() as fake:
+        async with FakeRevit(counting_handler(2, 2, result=[{"Id": 1, "Name": "L1"}])) as fake:
             revit_env(fake.port)
             try:
                 token = (await _acall("confirm_spec", spec=spec_for("query_levels")))["token"]
                 result = await server.mcp.call_tool(
                     "run_tool", {"name": "query_levels", "params": "{}", "token": token})
                 out = json.loads(result.content[0].text)
-                assert out["success"] is True
-                assert out["tool"] == "query_levels"
-                assert "FilteredElementCollector" in fake.requests[-1]["params"]["code"]
+                assert out["success"] is True and out["error"] is None
+                assert out["tool"] == "query_levels" and out["result"] == [{"Id": 1, "Name": "L1"}]
+                assert out["validation"]["passed"] is True and out["validation"]["validator"] == "count_delta"
+                assert out["evidence_id"].startswith("ev_") and out["warnings"] == []
+                codes = [r["params"]["code"] for r in fake.requests if r["method"] == "send_code_to_revit"]
+                assert any("typeof(Level)" in c and "OrderBy" in c for c in codes)
             finally:
                 await RevitClientPool.disconnect()
 
@@ -316,13 +353,13 @@ def test_run_tool_executes_confirmed_tool(monkeypatch, isolated_store, revit_env
 def test_missing_params_and_reconcile_tools(isolated_store, monkeypatch):
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")           # no Revit: best effort, no options
     monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "1")
-    questions = _call("missing_params", tool="create_wall", known={"height": 3000})
+    questions = _call("missing_params", tool="create_wall", known={k: v for k, v in WALL.items() if k != "level_name"})
     assert [q["param"] for q in questions] == ["level_name"]
     assert questions[0]["id"] == "q_level_name" and questions[0]["options"] == []
     assert _call("missing_params", tool="nope") == {"error": "unknown_tool", "tool": "nope"}
     with pytest.raises(Exception):                        # the MCP layer rejects a non-object `known`
         _call("missing_params", tool="create_wall", known=[1])
-    assert _call("missing_params", tool="create_wall", known='{"level_name": "L1"}') == []   # JSON text ok
+    assert _call("missing_params", tool="create_wall", known=json.dumps(WALL)) == []          # JSON text ok
 
     snapshot = {
         "taken_at": "2026-09-20T00:00:00Z", "duration_ms": 1,
@@ -334,10 +371,11 @@ def test_missing_params_and_reconcile_tools(isolated_store, monkeypatch):
     }
     # a snapshot passed in supplies the options; a broken one is refused
     questions = _call("missing_params", tool="create_wall", known={}, snapshot=snapshot)
+    assert [q["param"] for q in questions] == ["level_name", "start_x", "start_y", "end_x", "end_y"]
     assert questions[0]["options"] == [{"label": "L1 (0.0mm)", "value": "L1", "source": "tool:levels"}]
     assert _call("missing_params", tool="create_wall", snapshot={"nope": 1})["error"] == "invalid_snapshot"
 
-    draft = spec_for("create_wall", level_name="l1", height=3000)
+    draft = spec_for("create_wall", **{**WALL, "level_name": "l1"})
     out = _call("reconcile", spec=draft, snapshot=snapshot)
     assert [c["kind"] for c in out["conflicts"]] == ["not_found"]
     assert out["conflicts"][0]["available"][0] == "L1" and out["ready"] is False
@@ -385,9 +423,13 @@ def test_hook_denies_calls_without_a_token():
 
 
 def test_list_tools_and_choices(monkeypatch, isolated_store, revit_env):
-    listing = asyncio.run(server.mcp.call_tool("list_tools", {})).content[0].text
-    assert "- create_wall:" in listing
-    assert "- query_levels:" in listing
+    listing = {t["name"]: t for t in json.loads(asyncio.run(server.mcp.call_tool("list_tools", {})).content[0].text)}
+    assert set(listing) >= {"create_wall", "query_levels"}
+    wall = listing["create_wall"]
+    assert wall["version"] == "1.0.0" and wall["validator"] == "count_delta" and wall["used"] == 0
+    assert wall["preconditions"][0] == {"kind": "levels_min", "value": 1}
+    assert wall["parameters"][0] == {"name": "level_name", "type": "string", "source": "tool:levels",
+                                     "required": True, "choices_from": "levels"}
 
     def handler(request):
         if request["method"] == "send_code_to_revit":
@@ -522,7 +564,8 @@ def test_missing_params_takes_a_snapshot_when_none_is_given(isolated_store, revi
         async with FakeRevit(handler) as fake:
             revit_env(fake.port)
             try:
-                return await _acall("missing_params", tool="create_wall", known={})
+                return await _acall("missing_params", tool="create_wall",
+                                    known={k: v for k, v in WALL.items() if k != "level_name"})
             finally:
                 await RevitClientPool.disconnect()
 
@@ -530,3 +573,145 @@ def test_missing_params_takes_a_snapshot_when_none_is_given(isolated_store, revi
     assert [q["param"] for q in questions] == ["level_name"]
     assert [o["value"] for o in questions[0]["options"]] == ["L1", "L2"]
     assert questions[0]["text"].startswith("请选择 level_name")
+
+
+# -- spec 8/9: validators, preconditions and the ledger in the execution flow ------------------
+
+def test_run_tool_success_needs_the_validator_to_pass(isolated_store, revit_env, isolated_data_dir):
+    """success = Revit succeeded AND the validator passed; the ledger keeps the report."""
+    async def scenario():
+        async with FakeRevit(counting_handler(1, 1)) as fake:   # a wall was "created" but the count did not move
+            revit_env(fake.port)
+            try:
+                token = (await _acall("confirm_spec", spec=spec_for("create_wall", **WALL)))["token"]
+                out = await _acall("run_tool", name="create_wall", params=json.dumps(WALL), token=token)
+                assert out["success"] is False and out["error"] == "validation_failed"
+                assert out["result"] == {"Status": "Created", "ElementId": 4242}     # attached as is
+                assert out["validation"]["validator"] == "count_delta" and out["validation"]["passed"] is False
+                assert out["validation"]["checks"][0]["detail"] == "OST_Walls: before 1, after 1, delta 0, expected 1"
+                assert out["validation"]["before"] == {"category": "OST_Walls", "count": 1}
+                record = server._ledger.get(out["evidence_id"])
+                assert record["success"] is False and record["error"] == "validation_failed"
+                assert record["validation"]["passed"] is False
+                assert record["tool"] == "create_wall" and record["tool_version"] == "1.0.0"
+                assert record["token_prefix"] == token[:6] and record["confirmed_by"] == "designer"
+                assert record["document"] == {"title": "Project1", "revit_version": "2026"}
+                assert record["params"] == WALL and record["result_summary"]["ids"] == [4242]
+                assert record["host"] == "mcp" and record["action"] == "run_tool"
+                assert isolated_store.load("create_wall").failure_count == 1   # counted as a failure
+
+                token = (await _acall("confirm_spec", spec=spec_for("create_wall", **WALL)))["token"]
+                fake.handler = counting_handler(1, 2)
+                out = await _acall("run_tool", name="create_wall", params=json.dumps(WALL), token=token)
+                assert out["success"] is True and out["error"] is None and out["validation"]["passed"] is True
+                assert server._ledger.get(out["evidence_id"])["success"] is True
+                assert isolated_store.load("create_wall").execution_count == 1
+            finally:
+                await RevitClientPool.disconnect()
+
+    asyncio.run(scenario())
+    files = list((isolated_data_dir / "evidence").glob("*.jsonl"))
+    assert len(files) == 1 and len(files[0].read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_run_tool_refuses_when_preconditions_fail_without_consuming_the_token(isolated_store, revit_env):
+    counting = counting_handler(1, 2)
+
+    def no_levels(request):
+        rid = request["id"]
+        if request["method"] == "send_code_to_revit" and "CategoryNames" in request["params"]["code"]:
+            return FakeRevit.code_result(rid, {
+                "Document": {"Title": "Empty", "RevitVersion": "2026", "IsWorkshared": False},
+                "Levels": [], "CategoryNames": {}, "Warnings": []})
+        return counting(request)
+
+    async def scenario():
+        async with FakeRevit(no_levels) as fake:
+            revit_env(fake.port)
+            try:
+                token = (await _acall("confirm_spec", spec=spec_for("create_wall", **WALL)))["token"]
+                out = await _acall("run_tool", name="create_wall", params=json.dumps(WALL), token=token)
+                assert out["success"] is False and out["error"] == "preconditions_failed"
+                assert out["preconditions_failed"] == ["levels_min 1: the model has 0 level(s)"]
+                assert server._gate.peek(token).used_at is None
+                codes = [r["params"]["code"] for r in fake.requests if r["method"] == "send_code_to_revit"]
+                assert not any("Wall.Create" in c for c in codes)             # nothing was executed
+            finally:
+                await RevitClientPool.disconnect()
+
+    asyncio.run(scenario())
+
+
+def test_run_tool_skips_preconditions_when_the_snapshot_times_out(isolated_store, revit_env, monkeypatch):
+    monkeypatch.setattr(server, "PRECONDITION_SNAPSHOT_TIMEOUT", 0.3)
+
+    counting = counting_handler(1, 2)
+
+    def slow_snapshot(request):
+        if request["method"] == "send_code_to_revit" and "CategoryNames" in request["params"]["code"]:
+            return []                                                   # never answers
+        return counting(request)
+
+    async def scenario():
+        async with FakeRevit(slow_snapshot) as fake:
+            revit_env(fake.port)
+            try:
+                token = (await _acall("confirm_spec", spec=spec_for("create_wall", **WALL)))["token"]
+                out = await _acall("run_tool", name="create_wall", params=json.dumps(WALL), token=token)
+                assert out["success"] is True
+                assert out["warnings"][0].startswith("preconditions skipped: snapshot timed out")
+            finally:
+                await RevitClientPool.disconnect()
+
+    asyncio.run(scenario())
+
+
+def test_execute_code_writes_a_ledger_line_and_evidence_lists_it(revit_env, isolated_store):
+    code = 'return new { ElementId = 77, Status = "Created" };'
+
+    async def scenario():
+        async with FakeRevit(counting_handler(0, 0, result={"ElementId": 77, "Status": "Created"})) as fake:
+            revit_env(fake.port)
+            try:
+                token = (await _acall("confirm_spec", spec=code_spec(code)))["token"]
+                out = await _acall("execute_code", code=code, token=token)
+                assert out["success"] is True and out["validation"] is None
+                assert out["result"] == {"ElementId": 77, "Status": "Created"}
+                record = server._ledger.get(out["evidence_id"])
+                assert record["action"] == "execute_code" and record["tool"] is None
+                assert len(record["code_sha256"]) == 64 and record["code_head"] == code
+                assert record["params"] == {"parameters": []}
+                assert record["result_summary"] == {"ids": [77], "status": "Created"}
+                assert record["document"]["title"] == "Project1"
+                listed = await _acall("evidence", limit=5)
+                assert [r["id"] for r in listed] == [out["evidence_id"]]
+                assert await _acall("evidence", tool="create_wall") == []
+                return out["evidence_id"]
+            finally:
+                await RevitClientPool.disconnect()
+
+    evidence_id = asyncio.run(scenario())
+    assert _call("validate", evidence_id=evidence_id) == {
+        "error": "no_validator", "message": "only run_tool executions carry a validator"}
+    assert _call("validate", evidence_id="ev_20000101T000000_ffffff")["error"] == "unknown_evidence"
+
+
+def test_validate_reruns_the_recorded_execution_now(isolated_store, revit_env):
+    async def scenario():
+        async with FakeRevit(counting_handler(1, 2)) as fake:
+            revit_env(fake.port)
+            try:
+                token = (await _acall("confirm_spec", spec=spec_for("create_wall", **WALL)))["token"]
+                out = await _acall("run_tool", name="create_wall", params=json.dumps(WALL), token=token)
+                assert out["success"] is True
+                again = await _acall("validate", evidence_id=out["evidence_id"])
+                assert again["evidence_id"] == out["evidence_id"] and again["tool"] == "create_wall"
+                assert again["validator"] == "count_delta" and again["passed"] is True
+                assert again["before"] == {"category": "OST_Walls", "count": 1}      # from the record
+                fake.handler = counting_handler(1, 1)                                # the wall is gone now
+                gone = await _acall("validate", evidence_id=out["evidence_id"])
+                assert gone["passed"] is False and "delta 0, expected 1" in gone["checks"][0]["detail"]
+            finally:
+                await RevitClientPool.disconnect()
+
+    asyncio.run(scenario())

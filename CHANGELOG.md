@@ -8,6 +8,31 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- Capability pack v1 (`revit_bridge.capabilities.schema`): `validate_pack(data)`
+  checks a pack file as written (`schema_version: 1`, semver `version`,
+  explicit `source` and `required` on every parameter, `unit`, `choices_from`,
+  placeholders declared, `preconditions` of kind `levels_min` /
+  `category_present` or `text`, `validator` configuration, `fixtures`).
+  `solidify` / `update` refuse a pack that fails it. The 11 built-in packs are
+  v1 files: every parameter carries `source` / `required` / `unit`, coordinates
+  and dimensions are the designer's (no more `(0, 0)` defaults), each pack
+  declares evaluable preconditions and a validator, and descriptions no longer
+  say "uses first available ...".
+- `evaluate_preconditions(pack, snapshot)`; `run_tool` takes a snapshot (5 s
+  budget) and refuses with `preconditions_failed` before consuming the token.
+- Validators (`revit_bridge.validators`): `created_ids`, `count_delta`,
+  `param_equals`, each one read-only C# probe; `category` / `expected` may be
+  `"{param}"`. `run_tool` runs `before` -> execute -> `after`; **`success` now
+  means Revit succeeded and the validator passed**; a failed assertion returns
+  `success: false, error: "validation_failed"` with the result attached.
+- Evidence ledger (`revit_bridge.evidence.ledger`): one JSONL line per
+  execution in `<evidence dir>/<YYYY-MM>.jsonl`; `run_tool` / `execute_code`
+  return `evidence_id`, `validation` and `warnings`. MCP `evidence(limit, tool)`,
+  `validate(evidence_id)` (re-runs the assertion now) and the resource
+  `revit://evidence/recent`.
+- `list_tools` returns JSON with `version`, `parameters` (source, required,
+  unit), `preconditions`, `validator`; `solidify_tool` takes `parameters` as a
+  list and an optional `validator`, and returns the problems of an invalid pack.
 - TaskSpec (`revit_bridge.spec.models`): `Source`, `ParamBinding`,
   `Interpretation`, `Action`, `WorkflowState`, `TaskSpec` with
   `execution_projection()`, `canonical_json()`, `spec_hash()` and `card()`.
@@ -72,6 +97,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Changed
 
+- `ToolStore.health_check` recommends `write_new_code` where 0.1 said
+  `fallback_to_rag`; `solidify_tool` no longer takes `tags`.
 - **Breaking:** `execute_code` and `run_tool` take `token` instead of
   `spec_confirmed`; a model-set boolean no longer authorises anything. The
   plugin hook denies calls without a `token`. `REVIT_BRIDGE_ALLOW_UNCONFIRMED=1`

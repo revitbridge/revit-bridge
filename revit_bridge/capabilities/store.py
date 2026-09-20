@@ -41,6 +41,7 @@ from revit_bridge.paths import (
     builtin_capabilities_dir,
     user_capabilities_dir,
 )
+from revit_bridge.capabilities.schema import PACK_SCHEMA_VERSION, validate_pack
 from revit_bridge.capabilities.usage import USAGE_FILE, UsageStore, empty_usage
 
 __all__ = [
@@ -56,7 +57,6 @@ __all__ = [
 
 _log = logging.getLogger("revit_bridge.capabilities.store")
 
-PACK_SCHEMA_VERSION = 1
 DISABLED_SUFFIX = ".disabled"
 
 # A ``{name}`` token in a code template; substituted by ``render``.
@@ -236,10 +236,15 @@ def _represent_str(dumper: yaml.SafeDumper, value: str):
 _PackDumper.add_representer(str, _represent_str)
 
 
-def _dump_pack(data: dict) -> str:
+def _v1_view(data: dict) -> dict:
+    """The pack as it will be written: v1 fields only, schema_version 1."""
     ordered = {key: data.get(key) for key in PACK_FIELDS}
     ordered["schema_version"] = PACK_SCHEMA_VERSION
-    return yaml.dump(ordered, Dumper=_PackDumper, allow_unicode=True, sort_keys=False)
+    return ordered
+
+
+def _dump_pack(data: dict) -> str:
+    return yaml.dump(_v1_view(data), Dumper=_PackDumper, allow_unicode=True, sort_keys=False)
 
 
 def _safe_stem(name: str) -> str:
@@ -392,7 +397,8 @@ class ToolStore:
         """Save a successful code execution as a v1 pack in the user directory.
 
         ``tags`` is accepted for 0.1 callers but no longer written; use
-        ``applies_when``.
+        ``applies_when``. Raises ``ValueError`` listing the problems when the
+        pack would not pass ``validate_pack``.
         """
         data = normalize_pack({
             "schema_version": PACK_SCHEMA_VERSION,
@@ -409,8 +415,15 @@ class ToolStore:
             "created_at": datetime.now().isoformat(),
             "source_query": source_query,
         })
+        self._check(data)
         self._write_user_pack(name, data)
         return self._to_tool(data)
+
+    @staticmethod
+    def _check(data: dict) -> None:
+        errors = validate_pack(_v1_view(data))
+        if errors:
+            raise ValueError("invalid capability pack: " + "; ".join(errors))
 
     def _write_user_pack(self, name: str, data: dict) -> Path:
         self._ensure_user_dir()
@@ -458,6 +471,7 @@ class ToolStore:
         data = normalize_pack(data)
         if any(data.get(key) != before[key] for key in before):
             data["version"] = _bump_patch(data["version"])
+        self._check(data)
         self._write_user_pack(name, data)
         return self._to_tool(data)
 
@@ -481,11 +495,11 @@ class ToolStore:
 
         Returns:
             {"status": "healthy"|"stale"|"failing"|"not_found",
-             "issues": [...], "recommendation": "use_tool"|"fallback_to_rag"}
+             "issues": [...], "recommendation": "use_tool"|"write_new_code"}
         """
         tool = self.load(name)
         if not tool:
-            return {"status": "not_found", "issues": [], "recommendation": "fallback_to_rag"}
+            return {"status": "not_found", "issues": [], "recommendation": "write_new_code"}
 
         issues: list[str] = []
 
@@ -509,7 +523,7 @@ class ToolStore:
 
         if issues:
             status = "failing" if tool.failure_count >= 2 else "stale"
-            rec = "fallback_to_rag" if tool.failure_count >= 2 else "use_tool"
+            rec = "write_new_code" if tool.failure_count >= 2 else "use_tool"
             return {"status": status, "issues": issues, "recommendation": rec}
 
         return {"status": "healthy", "issues": [], "recommendation": "use_tool"}

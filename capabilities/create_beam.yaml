@@ -1,7 +1,10 @@
+schema_version: 1
 name: create_beam
 display_name: Create Beam
-description: Create a structural beam between two points using first available beam
-  family type.
+description: Create a structural beam of a named family type between two points at an
+  elevation, on a level.
+version: "1.0.0"
+revit_versions: ["2026"]
 code_template: |
   // Step 1: Get beam family symbol by name
   var symbol = new FilteredElementCollector(document)
@@ -37,36 +40,65 @@ parameters:
   - name: type_name
     type: string
     description: Beam family type name
+    source: tool:family_types
     choices_from: family_types:OST_StructuralFraming
+    required: true
   - name: level_name
     type: string
-    description: Target level name
+    description: Reference level name
+    source: tool:levels
     choices_from: levels
+    required: true
   - name: start_x
     type: double
     description: Beam start X (mm)
-    default: '0'
+    unit: mm
+    source: designer
+    required: true
   - name: start_y
     type: double
     description: Beam start Y (mm)
-    default: '0'
+    unit: mm
+    source: designer
+    required: true
   - name: end_x
     type: double
     description: Beam end X (mm)
-    default: '5000'
+    unit: mm
+    source: designer
+    required: true
   - name: end_y
     type: double
     description: Beam end Y (mm)
-    default: '0'
+    unit: mm
+    source: designer
+    required: true
   - name: elevation
     type: double
-    description: Beam elevation (mm)
-    default: '3000'
-tags:
-  - beam
-  - structural
-  - create
-created_at: '2026-03-13T00:00:00'
+    description: Beam elevation, absolute Z (mm)
+    unit: mm
+    source: designer
+    required: true
+preconditions:
+  - kind: levels_min
+    value: 1
+  - kind: category_present
+    category: OST_StructuralFraming
+  - text: "structural framing families must be loaded"
+not_for:
+  - "beam system"
+  - "brace"
+applies_when:
+  - "create beam"
+  - "structural beam between two points"
+validator:
+  kind: created_ids
+  category: OST_StructuralFraming
+fixtures:
+  - name: basic
+    params: {type_name: "W310X38.7", level_name: "L1", start_x: 0, start_y: 0, end_x: 5000, end_y: 0, elevation: 3000}
+    expect: {Status: "Created"}
+approved_by: null
+approved_at: null
+created_at: "2026-03-13T00:00:00"
 source_query: create a structural beam
-execution_count: 0
-last_used: ''

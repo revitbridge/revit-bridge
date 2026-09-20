@@ -1,33 +1,83 @@
+schema_version: 1
 name: create_column
-display_name: Create Column
-description: create column
-code_template: "// Step 1: Parse the position — convert mm to feet (Revit internal\
-  \ units)\ndouble xFeet = 100.0 / 304.8;  // 100mm -> feet\ndouble yFeet = 0.0 /\
-  \ 304.8;    // 0mm -> feet\ndouble zFeet = 0.0;\n\n// Step 2: Find the Level \"\
-  L1\" — filter by exact name from user selection\nLevel level = new FilteredElementCollector(document)\n\
-  \    .OfClass(typeof(Level))\n    .Cast<Level>()\n    .FirstOrDefault(l => l.Name\
-  \ == \"L1\");\n\nif (level == null)\n    return new { Status = \"Error\", Message\
-  \ = \"Level 'L1' not found.\" };\n\n// Step 3: Find the FamilySymbol \"600 x 750mm\"\
-  \ in family \"M_Concrete-Rectangular-Column\"\nFamilySymbol columnSymbol = new FilteredElementCollector(document)\n\
-  \    .OfClass(typeof(FamilySymbol))\n    .Cast<FamilySymbol>()\n    .FirstOrDefault(s\
-  \ => s.Family.Name == \"M_Concrete-Rectangular-Column\" && s.Name == \"600 x 750mm\"\
-  );\n\nif (columnSymbol == null)\n    return new { Status = \"Error\", Message =\
-  \ \"FamilySymbol '600 x 750mm' not found in family 'M_Concrete-Rectangular-Column'.\"\
-  \ };\n\n// Step 4: Activate the FamilySymbol if not already active — required before\
-  \ placing instances\nif (!columnSymbol.IsActive)\n{\n    columnSymbol.Activate();\n\
-  \    document.Regenerate();\n}\n\n// Step 5: Define the insertion point in Revit\
-  \ internal units (feet)\nXYZ insertionPoint = new XYZ(xFeet, yFeet, zFeet);\n\n\
-  // Step 6: Place the structural column using NewFamilyInstance with StructuralType.Column\n\
-  FamilyInstance columnInstance = document.Create.NewFamilyInstance(\n    insertionPoint,\n\
-  \    columnSymbol,\n    level,\n    Autodesk.Revit.DB.Structure.StructuralType.Column);\n\
-  \nif (columnInstance == null)\n    return new { Status = \"Error\", Message = \"\
-  Failed to create structural column instance.\" };\n\n// Step 7: Return result with\
-  \ element info\nreturn new\n{\n    Status = \"Success\",\n    ElementId = columnInstance.Id.Value,\n\
-  \    FamilyName = columnSymbol.Family.Name,\n    TypeName = columnSymbol.Name,\n\
-  \    Level = level.Name,\n    PositionX_mm = 100.0,\n    PositionY_mm = 0.0\n};"
+display_name: Create Column (L1, 600 x 750mm)
+description: Place one structural column of family 'M_Concrete-Rectangular-Column' type '600 x 750mm'
+  at (100, 0) mm on level 'L1'. Everything is fixed in the code; solidified from a chat run.
+version: 1.0.0
+revit_versions:
+- '2026'
+code_template: |-
+  // Step 1: Parse the position — convert mm to feet (Revit internal units)
+  double xFeet = 100.0 / 304.8;  // 100mm -> feet
+  double yFeet = 0.0 / 304.8;    // 0mm -> feet
+  double zFeet = 0.0;
+
+  // Step 2: Find the Level "L1" — filter by exact name from user selection
+  Level level = new FilteredElementCollector(document)
+      .OfClass(typeof(Level))
+      .Cast<Level>()
+      .FirstOrDefault(l => l.Name == "L1");
+
+  if (level == null)
+      return new { Status = "Error", Message = "Level 'L1' not found." };
+
+  // Step 3: Find the FamilySymbol "600 x 750mm" in family "M_Concrete-Rectangular-Column"
+  FamilySymbol columnSymbol = new FilteredElementCollector(document)
+      .OfClass(typeof(FamilySymbol))
+      .Cast<FamilySymbol>()
+      .FirstOrDefault(s => s.Family.Name == "M_Concrete-Rectangular-Column" && s.Name == "600 x 750mm");
+
+  if (columnSymbol == null)
+      return new { Status = "Error", Message = "FamilySymbol '600 x 750mm' not found in family 'M_Concrete-Rectangular-Column'." };
+
+  // Step 4: Activate the FamilySymbol if not already active — required before placing instances
+  if (!columnSymbol.IsActive)
+  {
+      columnSymbol.Activate();
+      document.Regenerate();
+  }
+
+  // Step 5: Define the insertion point in Revit internal units (feet)
+  XYZ insertionPoint = new XYZ(xFeet, yFeet, zFeet);
+
+  // Step 6: Place the structural column using NewFamilyInstance with StructuralType.Column
+  FamilyInstance columnInstance = document.Create.NewFamilyInstance(
+      insertionPoint,
+      columnSymbol,
+      level,
+      Autodesk.Revit.DB.Structure.StructuralType.Column);
+
+  if (columnInstance == null)
+      return new { Status = "Error", Message = "Failed to create structural column instance." };
+
+  // Step 7: Return result with element info
+  return new
+  {
+      Status = "Success",
+      ElementId = columnInstance.Id.Value,
+      FamilyName = columnSymbol.Family.Name,
+      TypeName = columnSymbol.Name,
+      Level = level.Name,
+      PositionX_mm = 100.0,
+      PositionY_mm = 0.0
+  };
 parameters: []
-tags: []
+preconditions:
+- kind: levels_min
+  value: 1
+- kind: category_present
+  category: OST_StructuralColumns
+- text: 'level ''L1'' and family type ''M_Concrete-Rectangular-Column : 600 x 750mm'' must exist'
+not_for:
+- a column anywhere else
+- another column type
+applies_when:
+- structural column 600 x 750mm at 100,0 on L1
+validator:
+  kind: created_ids
+  category: OST_StructuralColumns
+fixtures: []
+approved_by: null
+approved_at: null
 created_at: '2026-03-15T10:44:05.472069'
 source_query: 创建结构柱100,0,0
-execution_count: 0
-last_used: ''

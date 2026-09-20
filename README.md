@@ -83,6 +83,11 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
    inside Revit with `document` in scope and a transaction already open; end it
    with `return <object>;`. `solidify_tool` saves code that worked as a new pack.
 
+   A pack's validator (`created_ids`, `count_delta` or `param_equals`) asserts
+   the outcome after the run: `success` is true only when Revit succeeded *and*
+   the assertion held, and every execution leaves a line in the evidence ledger
+   (`evidence`, `validate(evidence_id)`).
+
 **Confirmation gate.** `execute_code` and `run_tool` return
 `confirmation_required` without a `token`. A token comes only from
 `confirm_spec(spec)`: the TaskSpec lists every parameter with its value, source
@@ -108,6 +113,7 @@ Resources: `revit://stats`, `revit://tools/{name}`, `revit://connection-status`.
 | `REVIT_BRIDGE_DATA_DIR` | `%LOCALAPPDATA%
 evit-bridge` (Windows), `~/.local/share/revit-bridge` (else) | Per-user data: solidified packs, `usage.json`, later the evidence ledger |
 | `REVIT_BRIDGE_CAPABILITIES_DIR` | `<data dir>/capabilities` | User pack directory; the packs shipped in the wheel stay visible, a user pack of the same name replaces one |
+| `REVIT_BRIDGE_EVIDENCE_DIR` | `<data dir>/evidence` | Evidence ledger (`<YYYY-MM>.jsonl`) and pending confirmations |
 
 Development:
 

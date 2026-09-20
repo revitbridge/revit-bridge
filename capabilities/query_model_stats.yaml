@@ -1,6 +1,9 @@
+schema_version: 1
 name: query_model_stats
 display_name: Query Model Statistics
-description: Count elements by category in the current Revit model.
+description: Count model elements by category (read-only).
+version: "1.0.0"
+revit_versions: ["2026"]
 code_template: |
   // Step 1: Collect all model elements grouped by category
   var elements = new FilteredElementCollector(document)
@@ -13,11 +16,22 @@ code_template: |
 
   return elements;
 parameters: []
-tags:
-  - query
-  - statistics
-  - utility
-created_at: '2026-03-13T00:00:00'
+preconditions: []
+not_for:
+  - "count one category"
+applies_when:
+  - "model statistics"
+  - "how many elements"
+  - "count by category"
+validator:
+  kind: count_delta
+  category: OST_Walls
+  expected: 0
+fixtures:
+  - name: basic
+    params: {}
+    expect: {}
+approved_by: null
+approved_at: null
+created_at: "2026-03-13T00:00:00"
 source_query: show model statistics
-execution_count: 0
-last_used: ''

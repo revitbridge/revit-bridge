@@ -22,10 +22,12 @@ uvx --from . revit-bridge check   # read the open document's title through the a
 - `revit_bridge/snapshot/` — query atoms, model queries (`query.py`, incl. the `query` tool kinds),
   `project.py` (`ProjectSnapshot`, `take_snapshot`).
 - `revit_bridge/paths.py` — per-user data root (`REVIT_BRIDGE_DATA_DIR`), user/built-in pack directories, `skills_dir()`.
-- `revit_bridge/capabilities/` — capability pack store (built-in packs in `capabilities/` at repo root, user packs
-  and `usage.json` in the data root; a user pack overrides a built-in one of the same name).
+- `revit_bridge/capabilities/` — capability pack store (built-in v1 packs in `capabilities/` at repo root, user
+  packs and `usage.json` in the data root; a user pack overrides a built-in one of the same name); `schema.py`
+  validates pack files and evaluates preconditions.
 - `revit_bridge/spec/` — `models.py` (TaskSpec), `rules.py` (validation, missing params, reconcile), `gate.py`
-  (confirmation tokens). `validators/`, `evidence/` — later phases; `auth/` — slot token helpers.
+  (confirmation tokens). `validators/` — post-execution assertions; `evidence/` — the JSONL ledger;
+  `auth/` — slot token helpers.
 - `tests/` — pytest; `tests/fake_revit.py` fakes the add-in.
 - `plugin/` — Claude Code plugin: `skills/revit-bridge/SKILL.md` (+ `references/`), `.mcp.json`,
   `hooks/hooks.json` + `hooks/spec_gate.py`. `.claude-plugin/marketplace.json` at the repo root
