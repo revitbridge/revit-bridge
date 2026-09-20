@@ -282,6 +282,26 @@ def _candidates(pdef: dict, snapshot: ProjectSnapshot) -> _Candidates | None:
 _NAME_END = r"(?![0-9A-Za-z_])"
 
 
+# Snapshot warnings that mean a candidate list is missing rather than empty.
+_LEVELS_FAILED = ("levels:", "snapshot code failed", "snapshot: unparseable")
+_TYPES_FAILED = ("family_types:",)
+
+
+def _unreliable(pdef: dict, snapshot: ProjectSnapshot) -> str | None:
+    """The snapshot warning that makes this parameter's candidates unusable, if any."""
+    source = str(pdef.get("choices_from") or "")
+    if source == "levels":
+        prefixes = _LEVELS_FAILED
+    elif source.startswith("family_types:"):
+        prefixes = _TYPES_FAILED + (f"family_types {source.split(':', 1)[1]}:",)
+    else:
+        return None
+    for warning in snapshot.warnings:
+        if warning.startswith(prefixes):
+            return warning
+    return None
+
+
 def range_interpretations(spec: TaskSpec, snapshot: ProjectSnapshot) -> list[Interpretation]:
     """Level names scoped by a range word in the task text but bound nowhere.
 
@@ -336,7 +356,13 @@ def reconcile(draft: TaskSpec, snapshot: ProjectSnapshot,
         pdef = params.get(b.name)
         if pdef is None:
             continue
-        known = _candidates(pdef, snapshot)
+        failed = _unreliable(pdef, snapshot)
+        if failed is not None:
+            # The snapshot could not read this part: say so, never "not found"
+            conflicts.append(Conflict(param=b.name, claimed=b.value, kind="stale_snapshot", message=failed))
+            known = None
+        else:
+            known = _candidates(pdef, snapshot)
         if known is not None:
             candidates = known.names
             exact, fuzzy = _match(b.value, candidates)

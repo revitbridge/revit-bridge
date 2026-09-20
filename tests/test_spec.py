@@ -308,6 +308,30 @@ def test_reconcile_never_says_not_found_against_a_truncated_list(pack):
         'verify with query("family_types", {"categories": ["OST_Walls"]})')
 
 
+def test_reconcile_surfaces_a_failed_snapshot_part_instead_of_not_found(pack):
+    """Review C-5: an empty list that comes from a failure is not evidence of absence."""
+    broken = snapshot(levels=[], warnings=["levels: NullReferenceException: no view"])
+    result = reconcile(good_spec(), broken, pack)
+    assert [c.model_dump() for c in result.conflicts] == [
+        {"param": "level_name", "claimed": "L1", "kind": "stale_snapshot", "available": [],
+         "message": "levels: NullReferenceException: no view"}]
+    assert result.ready is False
+    # the whole block failed: levels are unusable too
+    result = reconcile(good_spec(), snapshot(levels=[], warnings=["snapshot code failed: CS0103"]), pack)
+    assert [c.kind for c in result.conflicts] == ["stale_snapshot"]
+    # a failed family_types query, grouped or per category
+    for warning in ("family_types: types: no document", "family_types OST_Walls: boom"):
+        result = reconcile(good_spec(), snapshot(family_types=[], warnings=[warning]), pack)
+        assert [(c.param, c.kind, c.message) for c in result.conflicts] == [("type_name", "stale_snapshot", warning)]
+    # a warning about another category leaves this one alone
+    result = reconcile(good_spec(), snapshot(warnings=["family_types OST_Doors: boom"]), pack)
+    assert result.conflicts == [] and result.ready is True
+    # the levels part is fine here: a value that really is not there is still not_found
+    result = reconcile(good_spec(level_name=binding("level_name", "L9", Source.answer, "q")),
+                       snapshot(warnings=["links: no permission"]), pack)
+    assert [c.kind for c in result.conflicts] == ["not_found"]
+
+
 def test_reconcile_flags_ambiguous_fuzzy_matches(pack):
     snap = snapshot(levels=[LevelInfo(id=1, name="L1", elevation_mm=0.0), LevelInfo(id=2, name="l 1", elevation_mm=100.0)])
     result = reconcile(good_spec(level_name=binding("level_name", "l1", Source.answer, "q")), snap, pack)
