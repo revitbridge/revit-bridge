@@ -276,6 +276,8 @@ class AtomResolver:
 
             # source format: "query:levels" or "interactive:pick_object"
             # or shorthand: "levels", "family_types:OST_Walls", "pick_object"
+            # TODO(phase 5 PR C): packs are normalised to "tool:<query>" now;
+            # accept that prefix here when the TaskSpec rules start using atoms.
             atom_key = source.replace("query:", "").replace("interactive:", "")
             items = await self.resolve(atom_key)
             if items:

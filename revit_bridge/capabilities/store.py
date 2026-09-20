@@ -139,10 +139,11 @@ def normalize_pack(data: dict, fallback_name: str = "") -> dict:
     Missing parameter keys are filled the same way for both layouts: a
     ``source`` is inferred (``choices_from`` -> ``tool:<kind>``, a ``default``
     -> ``default``, else ``designer``; the 0.1 words ``query:``/``interactive:``
-    -> ``tool:``, ``ask_user`` -> ``designer``), ``unit`` is ``mm`` when the
-    description says ``(mm)``, ``required`` means "no default". String
-    preconditions become ``{"text": ...}``. Usage counters are dropped (they
-    live in ``usage.json``); ``tags`` are kept for reading.
+    -> ``tool:``, ``ask_user`` -> ``designer``), a ``tool:<query>`` source
+    without ``choices_from`` gets ``choices_from = <query>``, ``unit`` is
+    ``mm`` when the description says ``(mm)``, ``required`` means "no
+    default". String preconditions become ``{"text": ...}``. Usage counters
+    are dropped (they live in ``usage.json``); ``tags`` are kept for reading.
     """
     out = dict(data)
     out["name"] = str(out.get("name") or fallback_name)
@@ -191,6 +192,10 @@ def _normalize_param(param: dict) -> dict:
             p["source"] = "default"
         else:
             p["source"] = "designer"
+    # A Revit-sourced value needs a query for get_tool_choices to run; the
+    # part after "tool:" is that query when the pack did not spell it out.
+    if str(p["source"]).startswith("tool:") and not p.get("choices_from"):
+        p["choices_from"] = str(p["source"]).split(":", 1)[1]
     if "unit" not in p and "(mm)" in str(p.get("description", "")):
         p["unit"] = "mm"
     if "required" not in p:
@@ -602,7 +607,9 @@ class ToolStore:
     def get_dynamic_params(self, name: str) -> list[dict]:
         """Extract parameters that need dynamic choices from Revit.
 
-        Returns list of dicts: [{name, choices_from, description}, ...]
+        Returns list of dicts: [{name, choices_from, description}, ...].
+        Every ``source: tool:*`` parameter has a ``choices_from`` after
+        normalisation, so this covers them too.
         """
         tool = self.load(name)
         if not tool:

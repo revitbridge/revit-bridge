@@ -155,6 +155,8 @@ def test_normalize_pack_covers_the_v0_vocabulary():
             {"name": "host", "source": "interactive:pick_object"},
             {"name": "x", "type": "double", "source": "ask_user", "description": "X (mm)"},
             {"name": "already", "source": "answer", "unit": "m", "required": False},
+            {"name": "col", "source": "tool:family_types:OST_StructuralColumns"},
+            {"name": "kept", "source": "tool:family_types", "choices_from": "family_types:OST_Walls"},
         ],
         "preconditions": ["at least one level", {"kind": "levels_min", "value": 1}],
         "execution_count": 3, "last_used": "2026-01-01T00:00:00", "failure_count": 1,
@@ -162,7 +164,11 @@ def test_normalize_pack_covers_the_v0_vocabulary():
     assert data["schema_version"] == 0 and data["version"] == "0.0.0"
     assert data["display_name"] == "Probe"
     sources = [p["source"] for p in data["parameters"]]
-    assert sources == ["tool:levels", "tool:pick_object", "designer", "answer"]
+    assert sources == ["tool:levels", "tool:pick_object", "designer", "answer",
+                       "tool:family_types:OST_StructuralColumns", "tool:family_types"]
+    choices = [p.get("choices_from") for p in data["parameters"]]
+    assert choices == ["levels", "pick_object", None, None,
+                       "family_types:OST_StructuralColumns", "family_types:OST_Walls"]
     assert data["parameters"][2]["unit"] == "mm" and data["parameters"][2]["required"] is True
     assert data["parameters"][3]["unit"] == "m" and data["parameters"][3]["required"] is False
     assert data["preconditions"] == [{"text": "at least one level"}, {"kind": "levels_min", "value": 1}]
@@ -317,3 +323,21 @@ def test_render_refuses_code_with_a_leftover_placeholder(tmp_path):
         {"name": "id", "type": "integer", "source": "answer"},
     ])
     assert store.render("braces", {"id": 7}) == ('return new { Status = "Created", Id = 7 };', [])
+
+
+def test_query_source_round_trips_through_choices_and_validation(tmp_path):
+    """solidify_tool's documented ``source: query:levels`` (review item 2)."""
+    store = ToolStore(user_dir=tmp_path / "user")
+    store.solidify(name="probe", code='return "{level_name}";', parameters=[
+        {"name": "level_name", "type": "string", "source": "query:levels", "description": "Level"},
+    ])
+    assert store.get_dynamic_params("probe") == [
+        {"name": "level_name", "choices_from": "levels", "description": "Level"},
+    ]
+    valid, errors, _ = store.validate_params("probe", {})
+    assert not valid and errors == [
+        "Parameter 'level_name' must be resolved from Revit (source: tool:levels) - call get_tool_choices first"
+    ]
+    valid, errors, filled = store.validate_params("probe", {"level_name": "L1"})
+    assert valid and filled == {"level_name": "L1"}
+    assert store.render_code("probe", {"level_name": "L1"}) == 'return "L1";'
