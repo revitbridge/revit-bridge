@@ -166,9 +166,12 @@ def test_rule_unsourced_choice(pack):
 def test_rule_guessed_value(pack):
     errors = validate_spec(good_spec(x=binding("x", 0, Source.tool, "tool:query", unit="mm")), pack)
     assert codes(errors) == ["guessed_value"] and errors[0].param == "x"
-    errors = validate_spec(good_spec(x=binding("x", 0, Source.preference, "preference:origin", unit="mm")), pack)
-    assert codes(errors) == ["guessed_value"]
+    assert "preference" in errors[0].message
+    errors = validate_spec(good_spec(x=binding("x", 0, Source.default, "default:probe", unit="mm")), pack)
+    assert "guessed_value" in codes(errors)
+    # the designer's words, an answer, or a named preference (shown on the card) are all fine
     assert validate_spec(good_spec(x=binding("x", 0, Source.answer, "q_x", unit="mm")), pack) == []
+    assert validate_spec(good_spec(x=binding("x", 0, Source.preference, "preference:origin", unit="mm")), pack) == []
 
 
 def test_rule_default_not_declared(pack):

@@ -160,9 +160,12 @@ def validate_spec(spec: TaskSpec, pack: SolidifiedTool | None) -> list[SpecError
                                         message=f"{b.name} must come from a Revit query or the designer's answer "
                                                 f"(pack: {pdef.get('choices_from') or pdef.get('source')}), "
                                                 f"not {b.source.value}"))
-            elif str(pdef.get("source", "")) == "designer" and b.source not in (Source.designer, Source.answer):
+            elif str(pdef.get("source", "")) == "designer" and b.source not in (
+                    Source.designer, Source.answer, Source.preference):
+                # A preference is shown on the card and still confirmed (spec 5.1, 2026-09-20 amendment)
                 errors.append(SpecError(code="guessed_value", param=b.name,
-                                        message=f"{b.name} must be the designer's words or answer, not {b.source.value}"))
+                                        message=f"{b.name} must be the designer's words, answer or a "
+                                                f"preference, not {b.source.value}"))
         if b.source is Source.default and (pdef is None or "default" not in pdef):
             errors.append(SpecError(code="default_not_declared", param=b.name,
                                     message=f"{b.name}: the pack declares no default for it"))
