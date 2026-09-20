@@ -362,6 +362,19 @@ def test_reconcile_requires_range_words_to_be_interpreted(pack):
         "'所有 L2' is read as level L2 (work on that level); please confirm"
 
 
+def test_range_words_respect_level_name_boundaries(pack):
+    """Review C-3: F2 must not match inside F20; the longer name wins."""
+    snap = snapshot(levels=[LevelInfo(id=1, name="F2", elevation_mm=0.0), LevelInfo(id=2, name="F20", elevation_mm=1.0),
+                            LevelInfo(id=3, name="L1", elevation_mm=2.0)])
+    texts = lambda task: [it.text for it in reconcile(good_spec(task=task), snap, pack).interpretations_required]
+    assert texts("在 F20 上建墙") == ["'在 F20 上' 理解为标高 F20（在该层上操作），请确认"]
+    assert texts("在 F2 上建墙") == ["'在 F2 上' 理解为标高 F2（在该层上操作），请确认"]
+    assert texts("在F2上建墙") == ["'在F2上' 理解为标高 F2（在该层上操作），请确认"]      # CJK right after the name
+    assert texts("F2_old 整层") == []                                                     # part of a longer word
+    assert texts("整层 F20 和 F2 上") == ["'整层 F20' 理解为标高 F20（在该层上操作），请确认",
+                                        "'F2 上' 理解为标高 F2（在该层上操作），请确认"]
+
+
 def test_reconcile_without_a_pack_or_with_unconfirmed_interpretations(pack):
     result = reconcile(run_tool_spec("nope"), snapshot(), None)
     assert result.conflicts[0].kind == "not_found" and result.conflicts[0].param == "tool"

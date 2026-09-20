@@ -276,21 +276,33 @@ def _candidates(pdef: dict, snapshot: ProjectSnapshot) -> _Candidates | None:
     return None
 
 
+# The level name must end at a boundary so "F2" does not match inside "F20".
+# ASCII letters/digits only: a CJK character right after the name ("F2上") is
+# not part of the name.
+_NAME_END = r"(?![0-9A-Za-z_])"
+
+
 def range_interpretations(spec: TaskSpec, snapshot: ProjectSnapshot) -> list[Interpretation]:
-    """Level names scoped by a range word in the task text but bound nowhere."""
+    """Level names scoped by a range word in the task text but bound nowhere.
+
+    Longer level names are tried first and the text they matched is
+    consumed, so "F20" is never also read as "F2".
+    """
     found: list[Interpretation] = []
     bound_values = {_fold(b.value) for b in spec.parameters} | {_fold(b.display) for b in spec.parameters}
-    for lv in snapshot.levels:
+    before = "|".join(map(re.escape, RANGE_BEFORE))
+    after = "|".join(map(re.escape, RANGE_AFTER))
+    task = spec.task
+    for lv in sorted(snapshot.levels, key=lambda l: len(l.name), reverse=True):
         if not lv.name or _fold(lv.name) in bound_values:
             continue
-        name = re.escape(lv.name)
-        before = "|".join(map(re.escape, RANGE_BEFORE))
-        after = "|".join(map(re.escape, RANGE_AFTER))
+        name = re.escape(lv.name) + _NAME_END
         pattern = rf"(?:(?:{before})\s*{name}(?:\s*(?:{after}))?)|(?:{name}\s*(?:{after}))"
-        m = re.search(pattern, spec.task)
+        m = re.search(pattern, task)
         if not m:
             continue
         phrase = m.group(0)
+        task = task[:m.start()] + " " * len(phrase) + task[m.end():]
         text = _t(spec.language, "range", phrase=phrase, level=lv.name)
         found.append(Interpretation(param=None, text=text, confirmed=_confirmed_text(spec, text)))
     return found
