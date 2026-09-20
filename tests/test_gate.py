@@ -255,7 +255,9 @@ def test_run_tool_executes_confirmed_tool(monkeypatch, isolated_store, revit_env
     assert isolated_store.load("query_levels").execution_count == 1
 
 
-def test_missing_params_and_reconcile_tools(isolated_store):
+def test_missing_params_and_reconcile_tools(isolated_store, monkeypatch):
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")           # no Revit: best effort, no options
+    monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "1")
     questions = _call("missing_params", tool="create_wall", known={"height": 3000})
     assert [q["param"] for q in questions] == ["level_name"]
     assert questions[0]["id"] == "q_level_name" and questions[0]["options"] == []
@@ -272,6 +274,11 @@ def test_missing_params_and_reconcile_tools(isolated_store):
         "family_types": [], "selection": [], "selection_count": 0, "links": [], "phases": [],
         "warnings": [], "fingerprint": "f" * 16,
     }
+    # a snapshot passed in supplies the options; a broken one is refused
+    questions = _call("missing_params", tool="create_wall", known={}, snapshot=snapshot)
+    assert questions[0]["options"] == [{"label": "L1 (0.0mm)", "value": "L1", "source": "tool:levels"}]
+    assert _call("missing_params", tool="create_wall", snapshot={"nope": 1})["error"] == "invalid_snapshot"
+
     draft = spec_for("create_wall", level_name="l1", height=3000)
     out = _call("reconcile", spec=draft, snapshot=snapshot)
     assert [c["kind"] for c in out["conflicts"]] == ["not_found"]
@@ -421,3 +428,29 @@ def test_main_check_exit_code(monkeypatch, capsys):
     assert server.main(["check"]) == 1
     printed = json.loads(capsys.readouterr().out)
     assert printed["status"] == "disconnected"
+
+
+def test_missing_params_takes_a_snapshot_when_none_is_given(isolated_store, revit_env):
+    """Review C-B: options come from a live snapshot when the caller passes none."""
+    def handler(request):
+        rid, method = request["id"], request["method"]
+        if method == "send_code_to_revit" and "CategoryNames" in request["params"]["code"]:
+            return FakeRevit.code_result(rid, {
+                "Document": {"Title": "P", "RevitVersion": "2026", "IsWorkshared": False},
+                "Levels": [{"Id": 1, "Name": "L1", "ElevationMm": 0.0}, {"Id": 2, "Name": "L2", "ElevationMm": 3600.0}],
+                "CategoryNames": {}, "Warnings": [],
+            })
+        return FakeRevit.default_handler(request)
+
+    async def scenario():
+        async with FakeRevit(handler) as fake:
+            revit_env(fake.port)
+            try:
+                return await _acall("missing_params", tool="create_wall", known={})
+            finally:
+                await RevitClientPool.disconnect()
+
+    questions = asyncio.run(scenario())
+    assert [q["param"] for q in questions] == ["level_name"]
+    assert [o["value"] for o in questions[0]["options"]] == ["L1", "L2"]
+    assert questions[0]["text"].startswith("请选择 level_name")

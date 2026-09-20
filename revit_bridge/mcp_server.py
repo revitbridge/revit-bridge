@@ -221,11 +221,13 @@ async def query(kind: str, args: dict | None = None) -> str:
 # -- TaskSpec tools (no gate) -------------------------------------------------
 
 @mcp.tool(annotations=_READ_ONLY)
-def missing_params(tool: str, known: dict | str | None = None, language: str = "zh") -> str:
+async def missing_params(tool: str, known: dict | str | None = None,
+                         snapshot: dict | str | None = None, language: str = "zh") -> str:
     """The questions still open for a capability pack: one per required parameter
-    not in `known` ({name: value}), with the real options when a snapshot can
-    supply them (levels, family types). Returns a JSON list of
-    {id, param, text, why, options, allow_other}."""
+    not in `known` ({name: value}), with the real options (levels, family types)
+    from `snapshot` - pass the one from get_project_snapshot, or omit it and the
+    server takes one; when Revit cannot be reached the questions come without
+    options. Returns a JSON list of {id, param, text, why, options, allow_other}."""
     pack = _tool_store.load(tool)
     if pack is None:
         return _dumps({"error": "unknown_tool", "tool": tool})
@@ -235,8 +237,19 @@ def missing_params(tool: str, known: dict | str | None = None, language: str = "
         return _dumps({"error": "invalid_args", "message": f"known: {e}"})
     if not isinstance(known_values, dict):
         return _dumps({"error": "invalid_args", "message": "known must be an object {name: value}"})
-    snapshot = None
-    return _dumps([q.model_dump() for q in _missing_params(pack, known_values, snapshot, language)])
+    snap = None
+    if snapshot is not None:
+        try:
+            snap = ProjectSnapshot.model_validate(_parse_json_arg(snapshot, "snapshot"))
+        except (ValidationError, json.JSONDecodeError, TypeError) as e:
+            return _dumps({"error": "invalid_snapshot", "message": str(e)})
+    else:
+        try:
+            client = await RevitClientPool.get_client()
+            snap = await take_snapshot(client)
+        except Exception:  # noqa: BLE001 - best effort: questions still go out, without options
+            snap = None
+    return _dumps([q.model_dump() for q in _missing_params(pack, known_values, snap, language)])
 
 
 @mcp.tool(annotations=_READ_ONLY)
