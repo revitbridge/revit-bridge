@@ -64,9 +64,12 @@ class RevitQueryError(RuntimeError):
 
 
 def _clamp_limit(limit) -> int:
+    """``limit`` as an int in 1..MAX_QUERY_LIMIT; nonsense falls back to the default."""
     try:
         value = int(limit)
-    except (TypeError, ValueError):
+    except OverflowError:                       # 1e400 parses as inf; -inf likewise
+        return MAX_QUERY_LIMIT if limit > 0 else 1
+    except (TypeError, ValueError):             # None, "lots", nan
         return DEFAULT_QUERY_LIMIT
     return max(1, min(value, MAX_QUERY_LIMIT))
 

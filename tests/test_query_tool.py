@@ -93,6 +93,17 @@ def test_limits_are_clamped_and_reported():
     out, _ = ask("view_elements")
     assert out["limit"] == 100
 
+    # json.loads("1e400") is inf: int() raises OverflowError, never surfaces (review B-6)
+    huge = json.loads('{"limit": 1e400}')["limit"]
+    out, fake = ask("view_elements", {"limit": huge})
+    assert out["limit"] == 200 and ".Take(200)" in fake.requests[-1]["params"]["code"]
+    out, _ = ask("view_elements", {"limit": -huge})
+    assert out["limit"] == 1
+    out, _ = ask("view_elements", {"limit": float("nan")})
+    assert out["limit"] == 100
+    out, _ = ask("view_elements", {"limit": None})
+    assert out["limit"] == 100
+
 
 def test_unknown_kind_and_bad_args_never_reach_revit():
     out, fake = ask("walls")
