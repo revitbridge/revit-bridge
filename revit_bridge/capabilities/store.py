@@ -673,7 +673,7 @@ class ToolStore:
         Also returns None if the tool is unhealthy (failing/stale).
         """
         query_lower = user_query.lower()
-        keywords = set(re.findall(r'[一-鿿]+|[a-z_]+', query_lower))
+        keywords = set(re.findall(r'[\u4e00-\u9fff]+|[a-z_]+', query_lower))
         if not keywords:
             return None
 

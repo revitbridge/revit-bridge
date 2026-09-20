@@ -123,7 +123,7 @@ class ParamBinding(BaseModel):
 class Interpretation(BaseModel):
     """A reading the model made that the designer must see and confirm."""
     param: str | None = None       # None: about the task as a whole (a range word)
-    text: str                      # e.g. "3000 按 mm 理解" / "'F2 上' 理解为底部约束为 F2"
+    text: str                      # e.g. "3000 read as mm", "'on F2' read as base level F2"
     confirmed: bool = False
 
 
