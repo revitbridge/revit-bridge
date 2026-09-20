@@ -12,9 +12,13 @@ Each update is a read-modify-write of the whole file, serialised through a
 ``usage.json.lock`` file created with ``O_CREAT | O_EXCL``. A writer that
 cannot take the lock within ``lock_timeout`` seconds goes ahead anyway - a
 lost increment costs less than a stuck host - and a lock older than
-``LOCK_STALE_SECONDS`` is treated as left behind by a dead process. The
-counters are advisory (health checks, listings), not an audit trail; the
-evidence ledger is.
+``LOCK_STALE_SECONDS`` is treated as left behind by a dead process. Only
+``FileExistsError`` means "busy"; a ``PermissionError`` is retried for at
+most ``PERMISSION_RETRY_SECONDS`` (on Windows the create fails that way for
+a moment while the previous holder's unlink is pending) and any other
+``OSError`` (read-only data root, missing directory) skips the lock at
+once. The counters are advisory (health checks, listings), not an audit
+trail; the evidence ledger is.
 """
 from __future__ import annotations
 
@@ -31,6 +35,7 @@ USAGE_FIELDS = ("execution_count", "last_used", "failure_count")
 LOCK_SUFFIX = ".lock"
 LOCK_TIMEOUT_SECONDS = 2.0     # how long a writer waits for another host
 LOCK_STALE_SECONDS = 10.0      # a lock this old belongs to a process that died
+PERMISSION_RETRY_SECONDS = 0.1 # Windows pending-delete window; a read-only root stalls no longer
 _LOCK_POLL_SECONDS = 0.02
 _REPLACE_RETRY_SECONDS = 1.0   # Windows: a reader holding the file blocks os.replace
 
@@ -88,20 +93,31 @@ class UsageStore:
     @contextmanager
     def _locked(self):
         """Hold ``usage.json.lock`` for one read-modify-write (see module doc)."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # the write will report it
         deadline = time.monotonic() + self.lock_timeout
+        denied_until = None
         held = False
         while True:
             try:
                 fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except (FileExistsError, PermissionError):
-                # Busy. On Windows the create also fails with "access denied"
-                # while the previous holder's unlink is still pending.
+            except FileExistsError:
                 if self._lock_is_stale():
                     self._release()
                     continue
                 if time.monotonic() >= deadline:
                     break  # proceed unlocked: a lost increment beats a stuck host
+                time.sleep(_LOCK_POLL_SECONDS)
+                continue
+            except PermissionError:
+                # Either the directory is not writable, or (Windows) the previous
+                # holder's unlink is still pending: wait a moment, not the full timeout.
+                if denied_until is None:
+                    denied_until = time.monotonic() + PERMISSION_RETRY_SECONDS
+                if time.monotonic() >= denied_until:
+                    break
                 time.sleep(_LOCK_POLL_SECONDS)
                 continue
             except OSError:

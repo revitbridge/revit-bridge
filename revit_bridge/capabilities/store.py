@@ -28,6 +28,7 @@ the v1 layout.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field, fields
 from datetime import datetime
@@ -52,6 +53,8 @@ __all__ = [
     "escape_param_value",
     "normalize_pack",
 ]
+
+_log = logging.getLogger("revit_bridge.capabilities.store")
 
 PACK_SCHEMA_VERSION = 1
 DISABLED_SUFFIX = ".disabled"
@@ -463,10 +466,15 @@ class ToolStore:
 
         On success: increment execution_count, reset failure_count.
         On failure: increment failure_count (for health check / auto-degradation).
+        Never raises: a data directory that cannot be written costs the
+        counter, not the result of the run that was just executed.
         """
         if self.path_of(name) is None:
             return
-        self.usage.record(name, success)
+        try:
+            self.usage.record(name, success)
+        except OSError as exc:
+            _log.warning("usage.json not updated for %s: %s", name, exc)
 
     def health_check(self, name: str) -> dict:
         """Check if a tool is healthy or should fall back to writing fresh code.

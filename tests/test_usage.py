@@ -93,3 +93,46 @@ def test_transient_windows_errors_are_retried_not_bypassed(tmp_path, monkeypatch
     assert denied == {"open": 0, "replace": 0}
     assert seen_lock_during_write == [True, True, True]    # never wrote without the lock
     assert not store.lock_path.exists()
+
+
+def test_unwritable_lock_never_stalls_for_the_full_timeout(tmp_path, monkeypatch):
+    """Review B-8: only FileExistsError is "busy"; other failures skip the lock quickly."""
+    from revit_bridge.capabilities import usage as usage_module
+
+    store = UsageStore(tmp_path / "usage.json", lock_timeout=2.0)
+    real_open = os.open
+
+    def read_only_root(path, flags, *args):
+        if str(path) == str(store.lock_path):
+            raise PermissionError(13, "read-only data root")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(os, "open", read_only_root)
+    started = time.monotonic()
+    assert store.record("x")["execution_count"] == 1
+    elapsed = time.monotonic() - started
+    assert usage_module.PERMISSION_RETRY_SECONDS <= elapsed < 0.6     # bounded, not 2 s
+    assert not store.lock_path.exists()
+
+    def no_such_device(path, flags, *args):
+        if str(path) == str(store.lock_path):
+            raise OSError(30, "Read-only file system")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(os, "open", no_such_device)
+    started = time.monotonic()
+    assert store.record("x")["execution_count"] == 2
+    assert time.monotonic() - started < 0.1                            # immediately
+
+
+def test_record_usage_never_fails_the_run(tmp_path, monkeypatch):
+    from revit_bridge.capabilities.store import ToolStore
+
+    store = ToolStore(user_dir=tmp_path / "user")
+
+    def cannot_write(name, success=True):
+        raise PermissionError(13, "usage.json: read-only")
+
+    monkeypatch.setattr(store.usage, "record", cannot_write)
+    store.record_usage("create_wall", success=True)                     # no exception
+    assert store.load("create_wall").execution_count == 0
