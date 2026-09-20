@@ -153,6 +153,53 @@ def test_block_failure_still_returns_a_snapshot_with_types_per_category():
     assert [r["params"].get("categoryList") for r in fake.requests[1:]] == [["OST_Walls"], ["OST_Doors"]]
 
 
+def test_family_types_failure_is_a_warning_not_zero_types():
+    """Review B-2: an add-in failure must not read as "no types of any category"."""
+    def types_fail(request):
+        if request["method"] == "get_available_family_types":
+            return FakeRevit.error(request["id"], -32000, "types: no document")
+        return make_handler()(request)
+
+    snap, _ = snapshot_with(types_fail, ["OST_Walls", "OST_Doors"])
+    assert snap.family_types == []
+    assert snap.warnings == ["family_types: types: no document"]
+    assert snap.document["title"] == "Project1"          # the block itself is fine
+
+    # Per-category fallback (block failed): the failing category is left out, the other kept
+    calls = {"n": 0}
+
+    def second_category_fails(request):
+        if request["method"] == "get_available_family_types":
+            calls["n"] += 1
+            if request["params"]["categoryList"] == ["OST_Doors"]:
+                return FakeRevit.error(request["id"], -32000, "doors: boom")
+        return make_handler(block_ok=False)(request)
+
+    snap, _ = snapshot_with(second_category_fails, ["OST_Walls", "OST_Doors"])
+    assert [t.model_dump() for t in snap.family_types] == [
+        {"category": "OST_Walls", "count": 2, "names": ["Generic - 200mm", "Generic - 300mm"]},
+    ]
+    assert snap.warnings == ["snapshot code failed: CS0103: boom", "family_types OST_Doors: doors: boom"]
+    assert calls["n"] == 2
+
+    # A timeout on the types call is a failure too
+    def types_hang(request):
+        if request["method"] == "get_available_family_types":
+            return []
+        return make_handler()(request)
+
+    async def go():
+        async with FakeRevit(types_hang) as fake:
+            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=0.3)
+            try:
+                return await take_snapshot(client, ["OST_Walls"])
+            finally:
+                await client.disconnect()
+
+    snap = asyncio.run(go())
+    assert snap.family_types == [] and snap.warnings[0].startswith("family_types: Timeout")
+
+
 def test_lists_are_capped_on_this_side_too():
     big = copy.deepcopy(FULL)
     big["Grids"] = {"Count": 70, "Names": [f"G{i}" for i in range(70)]}

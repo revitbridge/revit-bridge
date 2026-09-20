@@ -20,7 +20,13 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from revit_bridge.revit.client import RevitClient
-from revit_bridge.snapshot.query import CATEGORY_RE, RevitQueryExecutor, _type_name, detect_length_unit
+from revit_bridge.snapshot.query import (
+    CATEGORY_RE,
+    RevitQueryError,
+    RevitQueryExecutor,
+    _type_name,
+    detect_length_unit,
+)
 
 DEFAULT_CATEGORIES = [
     "OST_Walls", "OST_StructuralColumns", "OST_StructuralFraming",
@@ -329,29 +335,34 @@ async def _family_types(client: RevitClient, categories: list[str],
 
     The add-in labels each type with its category's display name (localised),
     so the C# block reports that name per OST_* category. Categories the block
-    could not name are queried one by one.
+    could not name are queried one by one. A category whose query failed gets
+    no summary at all (never ``count: 0``) and a ``family_types`` warning.
     """
     executor = RevitQueryExecutor(client)
     named = [c for c in categories if category_names.get(c)]
-    by_display: dict[str, list[str]] = {}
+    by_display: dict[str, list[str]] | None = None
     if named:
         try:
-            for item in await executor.get_family_types(named):
+            by_display = {}
+            for item in await executor.get_family_types(named, strict=True):
                 display = str(item.get("Category") or "") if isinstance(item, dict) else ""
                 by_display.setdefault(display, []).append(_type_name(item))
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"family_types: {type(exc).__name__}: {exc}")
+        except RevitQueryError as exc:
+            warnings.append(f"family_types: {exc}")
+            by_display = None
 
     summaries: list[TypeSummary] = []
     for cat in categories:
         display = category_names.get(cat)
         if display:
+            if by_display is None:
+                continue
             names = by_display.get(str(display), [])
         else:
             try:
-                names = [_type_name(t) for t in await executor.get_family_types([cat])]
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"family_types {cat}: {type(exc).__name__}: {exc}")
-                names = []
+                names = [_type_name(t) for t in await executor.get_family_types([cat], strict=True)]
+            except RevitQueryError as exc:
+                warnings.append(f"family_types {cat}: {exc}")
+                continue
         summaries.append(TypeSummary(category=cat, count=len(names), names=names[:MAX_NAMES]))
     return summaries
