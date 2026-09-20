@@ -32,6 +32,7 @@ LOCK_SUFFIX = ".lock"
 LOCK_TIMEOUT_SECONDS = 2.0     # how long a writer waits for another host
 LOCK_STALE_SECONDS = 10.0      # a lock this old belongs to a process that died
 _LOCK_POLL_SECONDS = 0.02
+_REPLACE_RETRY_SECONDS = 1.0   # Windows: a reader holding the file blocks os.replace
 
 
 def empty_usage() -> dict:
@@ -93,7 +94,9 @@ class UsageStore:
         while True:
             try:
                 fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
+            except (FileExistsError, PermissionError):
+                # Busy. On Windows the create also fails with "access denied"
+                # while the previous holder's unlink is still pending.
                 if self._lock_is_stale():
                     self._release()
                     continue
@@ -136,7 +139,17 @@ class UsageStore:
     def _write(self, data: dict) -> None:
         tmp = self.path.with_name(self.path.name + ".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, self.path)
+        # Readers (list_tools, health_check) do not take the lock; on Windows a
+        # file that one of them has open cannot be replaced, so wait it out.
+        deadline = time.monotonic() + _REPLACE_RETRY_SECONDS
+        while True:
+            try:
+                os.replace(tmp, self.path)
+                return
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(_LOCK_POLL_SECONDS)
 
 
 def _as_int(value) -> int:

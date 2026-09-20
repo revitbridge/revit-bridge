@@ -65,3 +65,31 @@ def test_stale_lock_is_taken_over(tmp_path):
     assert store.record("x")["execution_count"] == 1
     assert time.monotonic() - started < 1.0              # no waiting on a dead lock
     assert not store.lock_path.exists()
+
+
+def test_transient_windows_errors_are_retried_not_bypassed(tmp_path, monkeypatch):
+    """A pending-delete on the lock or a reader holding the file are waits, not failures."""
+    store = UsageStore(tmp_path / "usage.json", lock_timeout=2.0)
+    real_open, real_replace = os.open, os.replace
+    denied = {"open": 2, "replace": 2}
+    seen_lock_during_write = []
+
+    def flaky_open(path, flags, *args):
+        if str(path) == str(store.lock_path) and denied["open"]:
+            denied["open"] -= 1
+            raise PermissionError(13, "pending delete")
+        return real_open(path, flags, *args)
+
+    def flaky_replace(src, dst):
+        seen_lock_during_write.append(store.lock_path.exists())
+        if denied["replace"]:
+            denied["replace"] -= 1
+            raise PermissionError(32, "in use by another process")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "open", flaky_open)
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    assert store.record("x")["execution_count"] == 1
+    assert denied == {"open": 0, "replace": 0}
+    assert seen_lock_during_write == [True, True, True]    # never wrote without the lock
+    assert not store.lock_path.exists()
