@@ -155,7 +155,9 @@ async def get_project_snapshot(categories: list[str] | None = None) -> str:
     levels, grids, selection, links, phases and the family types of the given
     categories (default: walls, structural columns/framing, floors, doors,
     windows). Partial failures are listed in `warnings`; `fingerprint`
-    identifies the model state for `reconcile`."""
+    identifies the model state for `reconcile`. Like every send_code, it runs
+    inside a Revit transaction on the add-in side: it fails on read-only
+    documents and leaves an undo entry (a no-transaction path is planned)."""
     try:
         cats = validate_categories(categories)
     except ValueError as e:
@@ -175,7 +177,9 @@ async def query(kind: str, args: dict | None = None) -> str:
     """Read-only model query, no confirmation needed. kinds: levels, grids,
     family_types (args.categories), elements (args.category, args.limit<=200),
     selection, view_elements (args.limit<=200), units, counts (args.categories).
-    Returns {"error": "unknown_kind", "kinds": [...]} for anything else."""
+    Returns {"error": "unknown_kind", "kinds": [...]} for anything else. Runs
+    inside a Revit transaction on the add-in side: fails on read-only
+    documents and leaves an undo entry (a no-transaction path is planned)."""
     try:
         client = await RevitClientPool.get_client()
         return _dumps(await run_query(RevitQueryExecutor(client), kind, args))
