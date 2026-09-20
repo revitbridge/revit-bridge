@@ -344,6 +344,24 @@ def test_missing_params_and_reconcile_tools(isolated_store, monkeypatch):
     assert _call("reconcile", spec={"task": "x"}, snapshot=snapshot)["error"] == "invalid_spec"
     assert _call("reconcile", spec=draft, snapshot={"nope": 1})["error"] == "invalid_snapshot"
 
+    # without a snapshot the server takes one: unreachable and broken map like get_project_snapshot (C-4)
+    out = _call("reconcile", spec=draft)
+    assert out["error"] == "revit_unreachable"
+
+    class Client:
+        pass
+
+    async def fake_client(*args, **kwargs):
+        return Client()
+
+    async def broken_snapshot(client, cats=None):
+        raise KeyError("Levels")
+
+    monkeypatch.setattr(RevitClientPool, "get_client", fake_client)
+    monkeypatch.setattr(server, "take_snapshot", broken_snapshot)
+    out = _call("reconcile", spec=draft)
+    assert out == {"error": "snapshot_failed", "message": "KeyError: 'Levels'"}
+
 
 def test_hook_denies_calls_without_a_token():
     import importlib.util

@@ -270,16 +270,19 @@ async def reconcile(spec: dict | str, snapshot: dict | str | None = None) -> str
         draft = TaskSpec.model_validate(_parse_json_arg(spec, "spec"))
     except (ValidationError, json.JSONDecodeError, TypeError) as e:
         return _dumps({"error": "invalid_spec", "message": str(e)})
-    try:
-        if snapshot is None:
+    if snapshot is not None:
+        try:
+            snap = ProjectSnapshot.model_validate(_parse_json_arg(snapshot, "snapshot"))
+        except (ValidationError, json.JSONDecodeError, TypeError) as e:
+            return _dumps({"error": "invalid_snapshot", "message": str(e)})
+    else:
+        try:
             client = await RevitClientPool.get_client()
             snap = await take_snapshot(client)
-        else:
-            snap = ProjectSnapshot.model_validate(_parse_json_arg(snapshot, "snapshot"))
-    except (ValidationError, json.JSONDecodeError, TypeError) as e:
-        return _dumps({"error": "invalid_snapshot", "message": str(e)})
-    except OSError as e:
-        return _dumps({"error": "revit_unreachable", "message": str(e) or type(e).__name__})
+        except OSError as e:                     # same mapping as get_project_snapshot
+            return _dumps({"error": "revit_unreachable", "message": str(e) or type(e).__name__})
+        except Exception as e:
+            return _dumps({"error": "snapshot_failed", "message": f"{type(e).__name__}: {e}"})
     pack = _tool_store.load(draft.action.tool) if draft.action.kind == "run_tool" and draft.action.tool else None
     return _dumps(_reconcile(draft, snap, pack).model_dump())
 
