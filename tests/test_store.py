@@ -246,17 +246,18 @@ def test_validate_params_enforces_sources(tmp_path):
             {"name": "type_name", "type": "string", "source": "designer"},
             {"name": "x", "type": "double", "source": "answer"},
             {"name": "h", "type": "double", "source": "default", "default": 3000},
-            {"name": "note", "type": "string", "source": "designer", "required": False},
+            {"name": "note", "type": "string", "source": "designer", "required": False, "default": ""},
         ],
     )
     valid, errors, _ = store.validate_params("probe", {})
     assert not valid
-    assert [e.split("'")[1] if "'" in e else e.rsplit(" ", 1)[1] for e in errors]         == ["level_name", "type_name", "x"]        # default fills itself; optional is optional
+    assert [e.split("'")[1] if "'" in e else e.rsplit(" ", 1)[1] for e in errors] \
+        == ["level_name", "type_name", "x"]        # defaults fill themselves
 
     valid, errors, filled = store.validate_params(
         "probe", {"level_name": "L1", "type_name": "Basic", "x": "12.5"})
     assert valid, errors
-    assert filled["h"] == 3000 and "note" not in filled
+    assert filled["h"] == 3000 and filled["note"] == ""
 
     valid, errors, _ = store.validate_params(
         "probe", {"level_name": "L1", "type_name": "Basic", "x": "twelve"})
@@ -264,6 +265,8 @@ def test_validate_params_enforces_sources(tmp_path):
 
     assert store.render_code("probe", {"level_name": "L1", "type_name": "Basic", "x": 1, "note": "n"}) \
         == 'return "L1-Basic-1-3000-n";'
+    assert store.render_code("probe", {"level_name": "L1", "type_name": "Basic", "x": 1}) \
+        == 'return "L1-Basic-1-3000-";'
     assert store.render_code("probe", {}) is None
 
     # 0.1 vocabulary keeps working through normalisation
@@ -280,3 +283,37 @@ def test_dynamic_params_of_builtin_create_wall():
     store = ToolStore()
     dynamic = store.get_dynamic_params("create_wall")
     assert [(d["name"], d["choices_from"]) for d in dynamic] == [("level_name", "levels")]
+
+
+def test_a_value_the_template_needs_is_never_left_blank(tmp_path):
+    """required: false without a default is still a missing value (review item 1)."""
+    store = ToolStore(user_dir=tmp_path / "user")
+    store.solidify(name="optional", code='return "{note}";', parameters=[
+        {"name": "note", "type": "string", "source": "designer", "required": False},
+    ])
+    valid, errors, filled = store.validate_params("optional", {})
+    assert not valid and errors == ["Missing required parameter: note"] and filled == {}
+    assert store.render("optional", {}) == (None, ["Missing required parameter: note"])
+    assert store.render_code("optional", {}) is None
+    assert store.render("optional", {"note": "n"}) == ('return "n";', [])
+
+
+def test_render_refuses_code_with_a_leftover_placeholder(tmp_path):
+    store = ToolStore(user_dir=tmp_path / "user")
+    store.solidify(name="leaky", code='var n = {count}; return "{label}" + {count};', parameters=[
+        {"name": "label", "type": "string", "source": "designer"},
+    ])
+    code, errors = store.render("leaky", {"label": "x"})
+    assert code is None
+    assert errors == [
+        "Template still contains placeholder(s) ['count']: "
+        "declare them as parameters or remove them from the code"
+    ]
+    assert store.render_code("leaky", {"label": "x"}) is None
+    assert store.render("missing", {}) == (None, ["Tool 'missing' not found"])
+
+    # C# braces that are not placeholders pass through untouched
+    store.solidify(name="braces", code='return new { Status = "Created", Id = {id} };', parameters=[
+        {"name": "id", "type": "integer", "source": "answer"},
+    ])
+    assert store.render("braces", {"id": 7}) == ('return new { Status = "Created", Id = 7 };', [])

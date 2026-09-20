@@ -252,9 +252,8 @@ async def run_tool(name: str, params: str = "{}", spec_confirmed: bool = False) 
             "health": health,
         })
 
-    code = _tool_store.render_code(name, param_dict)
+    code, errors = _tool_store.render(name, param_dict)
     if code is None:
-        valid, errors, _ = _tool_store.validate_params(name, param_dict)
         return _dumps({
             "success": False,
             "error": f"Parameter validation failed: {'; '.join(errors)}",

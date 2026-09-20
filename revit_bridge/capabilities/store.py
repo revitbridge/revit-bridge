@@ -57,6 +57,9 @@ __all__ = [
 PACK_SCHEMA_VERSION = 1
 DISABLED_SUFFIX = ".disabled"
 
+# A ``{name}`` token in a code template; substituted by ``render``.
+PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_]\w*)\}")
+
 # Fields of a v1 pack file, in the order they are written. Parameter ``source``
 # values are "designer", "tool:<kind>", "answer" or "default".
 PACK_FIELDS = (
@@ -520,7 +523,6 @@ class ToolStore:
             source = str(pdef.get("source", ""))
             kind = source.split(":", 1)[0]
             has_default = "default" in pdef
-            required = pdef.get("required", not has_default)
 
             if pname not in params:
                 # Values that must come from Revit: never guessed, never defaulted
@@ -543,10 +545,12 @@ class ToolStore:
                     else:
                         errors.append(f"Parameter '{pname}' has source=default but no default value")
                     continue
-                # designer / answer / legacy ask_user: provided, defaulted, or missing
+                # designer / answer / legacy ask_user: provided or defaulted.
+                # ``required: false`` never means "leave the placeholder empty":
+                # a value the template needs must come from somewhere.
                 if has_default:
                     params[pname] = pdef["default"]
-                elif required:
+                else:
                     errors.append(f"Missing required parameter: {pname}")
                 continue
 
@@ -563,23 +567,37 @@ class ToolStore:
 
     # -- Render ----------------------------------------------------------------
 
-    def render_code(self, name: str, params: dict | None = None) -> str | None:
-        """Load tool and fill parameter placeholders in code template.
+    def render(self, name: str, params: dict | None = None) -> tuple[str | None, list[str]]:
+        """Fill the template's ``{placeholders}``; ``(code, [])`` or ``(None, errors)``.
 
-        Validates params first; returns None if validation fails.
+        Validates the parameters first. Code in which a ``{identifier}`` token
+        survives substitution is refused too: a leftover placeholder would
+        otherwise be shipped to Revit as C#. Templates therefore cannot use
+        ``$"{x}"`` interpolation with a bare identifier unless ``x`` is a
+        declared parameter.
         """
         tool = self.load(name)
         if not tool:
-            return None
+            return None, [f"Tool '{name}' not found"]
 
         valid, errors, filled = self.validate_params(name, params)
         if not valid:
-            return None
+            return None, errors
 
         code = tool.code_template
         for k, v in filled.items():
             code = code.replace(f"{{{k}}}", escape_param_value(v))
-        return code
+        leftover = sorted(set(PLACEHOLDER_RE.findall(code)))
+        if leftover:
+            return None, [
+                f"Template still contains placeholder(s) {leftover}: "
+                "declare them as parameters or remove them from the code"
+            ]
+        return code, []
+
+    def render_code(self, name: str, params: dict | None = None) -> str | None:
+        """0.1 form of ``render``: the code, or None when it must not run."""
+        return self.render(name, params)[0]
 
     def get_dynamic_params(self, name: str) -> list[dict]:
         """Extract parameters that need dynamic choices from Revit.

@@ -116,6 +116,14 @@ def test_run_tool_requires_queried_parameters(monkeypatch, isolated_store):
     assert "level_name" in out["error"]
 
 
+def test_run_tool_never_ships_a_leftover_placeholder(monkeypatch, isolated_store):
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")  # nothing listens: the refusal must come first
+    isolated_store.solidify(name="leaky", code="return {count};", parameters=[])
+    out = _call("run_tool", name="leaky", params="{}", spec_confirmed=True)
+    assert out["success"] is False
+    assert "placeholder(s) ['count']" in out["error"]
+
+
 def test_run_tool_executes_confirmed_tool(monkeypatch, isolated_store, revit_env):
     monkeypatch.delenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", raising=False)
 
