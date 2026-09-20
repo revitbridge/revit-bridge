@@ -273,3 +273,37 @@ def test_mcp_get_project_snapshot_tool(monkeypatch):
     monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "1")
     down = json.loads(asyncio.run(server.mcp.call_tool("get_project_snapshot", {})).content[0].text)
     assert down["error"] == "revit_unreachable" and down["message"]
+
+
+def test_mcp_snapshot_validates_before_connecting_and_separates_failures(monkeypatch):
+    """Review B-7: bad categories never open a connection; a bug is not 'invalid_category'."""
+    connected = []
+
+    async def no_client(*args, **kwargs):
+        connected.append(True)
+        raise AssertionError("should not connect")
+
+    monkeypatch.setattr(RevitClientPool, "get_client", no_client)
+    bad = json.loads(asyncio.run(server.mcp.call_tool("get_project_snapshot", {"categories": ["Walls"]})).content[0].text)
+    assert bad["error"] == "invalid_category" and connected == []
+
+    class Client:  # a connected client whose snapshot blows up inside our own code
+        pass
+
+    async def fake_client(*args, **kwargs):
+        return Client()
+
+    async def broken_snapshot(client, cats):
+        ProjectSnapshot(taken_at="x")          # pydantic ValidationError, a ValueError subclass
+
+    monkeypatch.setattr(RevitClientPool, "get_client", fake_client)
+    monkeypatch.setattr(server, "take_snapshot", broken_snapshot)
+    out = json.loads(asyncio.run(server.mcp.call_tool("get_project_snapshot", {})).content[0].text)
+    assert out["error"] == "snapshot_failed" and out["message"].startswith("ValidationError")
+
+    async def broken_query(executor, kind, args):
+        raise KeyError("Items")
+
+    monkeypatch.setattr(server, "run_query", broken_query)
+    out = json.loads(asyncio.run(server.mcp.call_tool("query", {"kind": "levels"})).content[0].text)
+    assert out == {"error": "query_failed", "kind": "levels", "message": "KeyError: 'Items'"}

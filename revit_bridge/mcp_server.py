@@ -35,7 +35,7 @@ from revit_bridge.revit import sandbox
 from revit_bridge.revit.client import RevitClient
 from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.revit.settings import RevitSettings, env_flag
-from revit_bridge.snapshot.project import take_snapshot
+from revit_bridge.snapshot.project import take_snapshot, validate_categories
 from revit_bridge.snapshot.query import QUERY_KINDS, RevitQueryExecutor, run_query
 
 # Hosts that run their own confirmation flow (the web demo) may lift the gate.
@@ -157,13 +157,17 @@ async def get_project_snapshot(categories: list[str] | None = None) -> str:
     windows). Partial failures are listed in `warnings`; `fingerprint`
     identifies the model state for `reconcile`."""
     try:
-        client = await RevitClientPool.get_client()
-        snapshot = await take_snapshot(client, categories)
-        return snapshot.model_dump_json(indent=2)
+        cats = validate_categories(categories)
     except ValueError as e:
         return _dumps({"error": "invalid_category", "message": str(e)})
-    except Exception as e:
+    try:
+        client = await RevitClientPool.get_client()
+        snapshot = await take_snapshot(client, cats)
+    except OSError as e:                     # refused, timed out, reset: no add-in
         return _dumps({"error": "revit_unreachable", "message": str(e) or type(e).__name__})
+    except Exception as e:                   # a bug in the snapshot itself, never "invalid_category"
+        return _dumps({"error": "snapshot_failed", "message": f"{type(e).__name__}: {e}"})
+    return snapshot.model_dump_json(indent=2)
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -175,8 +179,10 @@ async def query(kind: str, args: dict | None = None) -> str:
     try:
         client = await RevitClientPool.get_client()
         return _dumps(await run_query(RevitQueryExecutor(client), kind, args))
-    except Exception as e:
+    except OSError as e:
         return _dumps({"error": "revit_unreachable", "kind": kind, "message": str(e) or type(e).__name__})
+    except Exception as e:
+        return _dumps({"error": "query_failed", "kind": kind, "message": f"{type(e).__name__}: {e}"})
 
 
 # -- Execution Tools ----------------------------------------------------------
