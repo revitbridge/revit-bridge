@@ -91,17 +91,19 @@ class RevitQueryExecutor:
     def __init__(self, client: RevitClient):
         self.client = client
 
-    async def get_family_types(self, categories: list[str]) -> list[dict]:
+    # The three 0.1 queries return [] when Revit fails (web callers rely on
+    # that); ``strict=True`` raises RevitQueryError instead, so a failure can
+    # never read as "the model has none".
+
+    async def get_family_types(self, categories: list[str], strict: bool = False) -> list[dict]:
         """Query available family types by category via get_available_family_types command."""
         resp = await self.client.send_command(
             "get_available_family_types",
             {"categoryList": categories},
         )
-        if resp.success and resp.result:
-            return resp.result if isinstance(resp.result, list) else [resp.result]
-        return []
+        return _list_result(resp, strict)
 
-    async def get_levels(self) -> list[dict]:
+    async def get_levels(self, strict: bool = False) -> list[dict]:
         """Query all levels via send_code_to_revit (no dedicated command for this)."""
         code = (
             'var levels = new FilteredElementCollector(document)\n'
@@ -114,9 +116,7 @@ class RevitQueryExecutor:
             'return levels;'
         )
         resp = await self.client.send_code(code)
-        if resp.success and resp.result:
-            return resp.result if isinstance(resp.result, list) else [resp.result]
-        return []
+        return _list_result(resp, strict)
 
     async def trigger_selection(self) -> list[dict]:
         """Trigger Revit interactive pick mode — user clicks an element in Revit.
@@ -149,12 +149,10 @@ class RevitQueryExecutor:
             return resp.result if isinstance(resp.result, list) else [resp.result]
         return []
 
-    async def get_selected_elements(self) -> list[dict]:
+    async def get_selected_elements(self, strict: bool = False) -> list[dict]:
         """Get currently selected elements without triggering selection mode."""
         resp = await self.client.send_command("get_selected_elements", {})
-        if resp.success and resp.result:
-            return resp.result if isinstance(resp.result, list) else [resp.result]
-        return []
+        return _list_result(resp, strict)
 
     async def get_project_units(self) -> dict:
         """Read the project's display unit for lengths.
@@ -263,12 +261,7 @@ class RevitQueryExecutor:
         return await self._code_list(code)
 
     async def _code_list(self, code: str) -> list[dict]:
-        resp = await self.client.send_code(code)
-        if not resp.success:
-            raise RevitQueryError(resp.error or "Revit returned no result")
-        if resp.result is None:
-            return []
-        return resp.result if isinstance(resp.result, list) else [resp.result]
+        return _list_result(await self.client.send_code(code), strict=True)
 
     async def _code_dict(self, code: str) -> dict:
         resp = await self.client.send_code(code)
@@ -338,6 +331,17 @@ class RevitQueryExecutor:
 
             choices[param["name"]] = items
         return choices
+
+
+def _list_result(resp, strict: bool) -> list[dict]:
+    """A list reply; ``[]`` on failure, or RevitQueryError when ``strict``."""
+    if not resp.success:
+        if strict:
+            raise RevitQueryError(resp.error or "Revit returned no result")
+        return []
+    if not resp.result:
+        return []
+    return resp.result if isinstance(resp.result, list) else [resp.result]
 
 
 def _type_name(item) -> str:
@@ -415,7 +419,7 @@ def _category_arg(args: dict) -> str:
 async def _q_levels(executor: RevitQueryExecutor, args: dict) -> dict:
     items = [
         {"id": lv.get("Id"), "name": lv.get("Name", ""), "elevation_mm": lv.get("ElevationMm", 0.0)}
-        for lv in await executor.get_levels()
+        for lv in await executor.get_levels(strict=True)
     ]
     return {"kind": "levels", "items": items}
 
@@ -430,7 +434,7 @@ async def _q_family_types(executor: RevitQueryExecutor, args: dict) -> dict:
     items = [
         {"id": t.get("FamilyTypeId"), "family": t.get("FamilyName", ""),
          "name": _type_name(t), "category": t.get("Category", "")}
-        for t in await executor.get_family_types(categories)
+        for t in await executor.get_family_types(categories, strict=True)
         if isinstance(t, dict)
     ]
     return {"kind": "family_types", "categories": categories, "items": items}
@@ -452,7 +456,7 @@ async def _q_elements(executor: RevitQueryExecutor, args: dict) -> dict:
 async def _q_selection(executor: RevitQueryExecutor, args: dict) -> dict:
     items = [
         {"id": e.get("Id"), "name": e.get("Name", ""), "category": e.get("Category") or ""}
-        for e in await executor.get_selected_elements()
+        for e in await executor.get_selected_elements(strict=True)
         if isinstance(e, dict)
     ]
     return {"kind": "selection", "count": len(items), "items": items}

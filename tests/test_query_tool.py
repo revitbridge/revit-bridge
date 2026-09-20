@@ -121,12 +121,59 @@ def test_revit_errors_are_reported_not_raised():
     def failing(request):
         if request["method"] == "send_code_to_revit":
             return FakeRevit.code_result(request["id"], None, success=False, error="no document open")
-        return FakeRevit.default_handler(request)
+        return FakeRevit.error(request["id"], -32000, "no document open")
 
-    for kind, args in (("grids", None), ("elements", {"category": "OST_Walls"}),
+    for kind, args in (("levels", None), ("grids", None), ("family_types", {"categories": ["OST_Walls"]}),
+                       ("elements", {"category": "OST_Walls"}), ("selection", None),
                        ("view_elements", None), ("units", None), ("counts", {"categories": ["OST_Walls"]})):
         out, _ = ask(kind, args, failing)
         assert out == {"error": "revit_error", "kind": kind, "message": "no document open"}, kind
+
+    # A timeout is a failure too, never an empty model
+    def silent(request):
+        return []
+
+    for kind in ("levels", "selection"):
+        async def go():
+            async with FakeRevit(silent) as fake:
+                client = RevitClient(host="127.0.0.1", port=fake.port, timeout=0.3)
+                try:
+                    return await run_query(RevitQueryExecutor(client), kind)
+                finally:
+                    await client.disconnect()
+        out = asyncio.run(go())
+        assert out["error"] == "revit_error" and "Timeout" in out["message"], kind
+
+
+def test_lenient_queries_keep_their_shape_for_the_web_host():
+    """The 0.1 methods still answer [] on failure; strict=True raises."""
+    from revit_bridge.snapshot.query import RevitQueryError
+
+    def failing(request):
+        if request["method"] == "send_code_to_revit":
+            return FakeRevit.code_result(request["id"], None, success=False, error="boom")
+        return FakeRevit.error(request["id"], -32000, "boom")
+
+    async def go():
+        async with FakeRevit(failing) as fake:
+            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=2)
+            ex = RevitQueryExecutor(client)
+            try:
+                assert await ex.get_levels() == []
+                assert await ex.get_family_types(["OST_Walls"]) == []
+                assert await ex.get_selected_elements() == []
+                for call in (ex.get_levels(strict=True), ex.get_family_types(["OST_Walls"], strict=True),
+                             ex.get_selected_elements(strict=True)):
+                    try:
+                        await call
+                    except RevitQueryError as exc:
+                        assert str(exc) == "boom"
+                    else:
+                        raise AssertionError("strict call did not raise")
+            finally:
+                await client.disconnect()
+
+    asyncio.run(go())
 
 
 def test_mcp_query_tool(monkeypatch):
