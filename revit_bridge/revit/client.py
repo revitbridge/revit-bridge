@@ -24,10 +24,9 @@ from dataclasses import dataclass
 
 from revit_bridge.revit.settings import RevitSettings
 
-_log = logging.getLogger("revit_bridge.revit.client")
+from revit_bridge.revit.probe import PING_PROBE
 
-# Read-only snippet used by ping() and `revit-bridge check`.
-PING_PROBE = "return document.Title;"
+_log = logging.getLogger("revit_bridge.revit.client")
 
 
 @dataclass

@@ -42,8 +42,8 @@ from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ENV_ALLOW_UNCONFIRMED, ExecutionResult, run_code, run_pack
 from revit_bridge.execution import gate_refusal as _gate_refusal
 from revit_bridge.execution import revalidate as _revalidate
-from revit_bridge.revit.client import PING_PROBE, RevitClient
 from revit_bridge.revit.pool import RevitClientPool
+from revit_bridge.revit.probe import CHECK_PROBE, check_connection  # noqa: F401 - re-exported
 from revit_bridge.revit.settings import RevitSettings, env_flag
 from revit_bridge.snapshot.project import ProjectSnapshot, take_snapshot, validate_categories
 from revit_bridge.snapshot.query import QUERY_KINDS, RevitQueryExecutor, run_query
@@ -464,41 +464,8 @@ async def connection_status() -> str:
 
 
 # -- check subcommand ---------------------------------------------------------
-
-CHECK_PROBE = PING_PROBE
-
-
-async def check_connection(settings: RevitSettings | None = None) -> dict:
-    """Open a fresh connection, read the open document's title, describe the outcome.
-
-    The probe is a read-only snippet rather than ``say_hello`` (which pops a
-    dialog in Revit). ``reachable`` is true as soon as the add-in answers at
-    all; what it answered is reported separately: ``document`` is the title
-    of the open document, ``document_error`` the add-in's message when the
-    probe could not run (no document open, wrong token, ...). ``error``
-    holds transport failures only.
-    """
-    settings = settings or RevitSettings.from_env()
-    status = settings.describe()
-    status["document"] = None
-    status["document_error"] = None
-    client = RevitClient(settings=settings)
-    try:
-        await client.connect()
-        resp = await client.send_code(CHECK_PROBE)
-        status["reachable"] = bool(resp.success or resp.raw)   # raw: a reply came back
-        status["error"] = None if status["reachable"] else resp.error
-        if resp.success and isinstance(resp.result, str):
-            status["document"] = resp.result
-        elif status["reachable"]:
-            status["document_error"] = resp.error or "probe returned no title"
-    except Exception as exc:
-        status["reachable"] = False
-        status["error"] = str(exc) or type(exc).__name__
-    finally:
-        await client.disconnect()
-    status["status"] = "connected" if status["reachable"] else "disconnected"
-    return status
+# check_connection lives in revit_bridge.revit.probe; it stays importable from
+# here because the 0.1 web host imports it from this module.
 
 
 # -- Entry Point --------------------------------------------------------------

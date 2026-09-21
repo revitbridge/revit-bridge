@@ -140,3 +140,21 @@ def test_pool_reuses_connection_and_survives_new_loop():
 
     asyncio.run(run_all())
     asyncio.run(run_all())  # a second event loop must not trip over the old lock
+
+
+def test_probe_lives_in_revit_probe_and_stays_importable_from_the_server():
+    """Phase 6.0: check_connection moved; the 0.1 web host imports it from mcp_server."""
+    from revit_bridge import mcp_server, revit
+    from revit_bridge.revit import probe
+
+    assert probe.PING_PROBE == "return document.Title;" and probe.CHECK_PROBE == probe.PING_PROBE
+    assert revit.check_connection is probe.check_connection
+    assert mcp_server.check_connection is probe.check_connection
+    assert revit.PING_PROBE is probe.PING_PROBE
+
+    async def scenario():
+        async with FakeRevit() as server:
+            return await probe.check_connection(_settings(server))
+
+    status = asyncio.run(scenario())
+    assert status["reachable"] is True and status["document"] == "Project1"
