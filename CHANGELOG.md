@@ -6,6 +6,13 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-21
+
+The bridge itself: a project snapshot before interpretation, a TaskSpec in
+which every parameter has a source, a one-time confirmation token instead of a
+model-set boolean, a validator that declares completion, and an evidence
+ledger. Breaking for hosts: `spec_confirmed` is gone (see Changed).
+
 ### Added
 
 - Capability pack v1 (`revit_bridge.capabilities.schema`): `validate_pack(data)`
@@ -33,6 +40,14 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   return `evidence_id`, `validation` and `warnings`. MCP `evidence(limit, tool)`,
   `validate(evidence_id)` (re-runs the assertion now) and the resource
   `revit://evidence/recent`.
+- Plugin 0.2.0: `SKILL.md` rewritten for the 0.2 flow (snapshot, `query` for
+  reads, `missing_params` / `reconcile`, `confirm_spec` + `token`, an
+  *Interpretations* section for units and range words, `default:<tool>` in the
+  source table; English trigger phrases first in `description`; requires the
+  0.2 server). `plugin/evals/`: five `claude plugin eval` cases (the three
+  baseline tasks and two second-turn cases) with mocks of the MCP server; run
+  them by hand, they are not part of CI. `SERVER_INSTRUCTIONS` rewritten as the
+  0.2 flow summary.
 - `list_tools` returns JSON with `version`, `parameters` (source, required,
   unit), `preconditions`, `validator`; `solidify_tool` takes `parameters` as a
   list and an optional `validator`, and returns the problems of an invalid pack.
@@ -161,5 +176,6 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/revitbridge/revit-bridge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/revitbridge/revit-bridge/releases/tag/v0.1.0

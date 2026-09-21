@@ -67,18 +67,23 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
    read it) and `"status": "connected"`; the exit code is 0 when the add-in
    answered, 1 otherwise.
 
-3. In your host, work in three steps:
+3. In your host, the flow is snapshot → questions → confirmation → execution →
+   validation:
 
    - `get_project_snapshot` — what the model contains (units, levels, grids,
      family types, selection, …); `query(kind, args)` answers single read-only
      questions (`levels`, `grids`, `family_types`, `elements`, `selection`,
      `view_elements`, `units`, `counts`). Neither needs confirmation.
-   - `list_tools` — see the capability packs (eight built-ins such as
-     `create_wall`, `create_structural_column`, `query_levels`, plus your own).
-   - `get_tool_choices` with a tool name — Revit returns the real levels,
-     family types or elements for that tool's dynamic parameters.
-   - `confirm_spec` with the TaskSpec the designer confirmed, then `run_tool`
-     with the chosen values and the returned `token`.
+   - `list_tools` — the capability packs (eight built-ins such as
+     `create_wall`, `create_structural_column`, `query_levels`, plus your own);
+     `missing_params(tool, known)` — the questions still open, with the real
+     options; `get_tool_choices(name)` — levels, types or elements for a pack's
+     dynamic parameters.
+   - `reconcile(spec, snapshot)` — a draft TaskSpec against the model: values
+     that do not exist, missing parameters, readings to confirm (units, "on
+     F2"), a stale snapshot.
+   - `confirm_spec(spec)` with the TaskSpec the designer confirmed, then
+     `run_tool(name, params, token)` with exactly the confirmed values.
 
    `execute_code` takes arbitrary C# for tasks no pack covers. The code runs
    inside Revit with `document` in scope and a transaction already open; end it
@@ -99,7 +104,14 @@ with it, reusing it, or using it after 10 minutes fails with
 Hosts that run their own confirmation flow can set
 `REVIT_BRIDGE_ALLOW_UNCONFIRMED=1`.
 
-Resources: `revit://stats`, `revit://tools/{name}`, `revit://connection-status`.
+Resources: `revit://stats`, `revit://tools/{name}`, `revit://evidence/recent`,
+`revit://connection-status`.
+
+The plugin ships an eval suite (`plugin/evals/`, the three baseline tasks and
+two second-turn cases, with mocks of the MCP server). Run it by hand from
+`plugin/` with `claude plugin eval .` (on Windows in a UTF-8 console:
+`chcp 65001` first, or the Chinese prompts reach the model garbled); it is not
+part of CI.
 
 ## Configure
 

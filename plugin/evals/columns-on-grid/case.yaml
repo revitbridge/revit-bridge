@@ -1,0 +1,42 @@
+schema_version: "1.1"
+name: columns-on-grid
+description: Baseline T3 - columns at every grid intersection; type, level and the intersections are the designer's
+tags: [baseline]
+runs: 2
+expected_outcome: The reply lists the 9 intersections from the grid query, asks type and level, and executes nothing.
+execution:
+  max_turns: 24
+  timeout_seconds: 420
+  allowed_tools: [Read, Glob, Grep, Skill]
+  prompt: |
+    在所有轴网交点上布置结构柱。
+graders:
+  - name: no-execution-without-confirmation
+    type: tool_used
+    tool: mcp__plugin_revit-bridge_revit-bridge__run_tool
+    min: 0
+    max: 0
+  - name: no-code-execution
+    type: tool_used
+    tool: mcp__plugin_revit-bridge_revit-bridge__execute_code
+    min: 0
+    max: 0
+  - name: looked-at-the-model
+    type: regex
+    target: trace
+    pattern: get_project_snapshot|revit-bridge__query|get_tool_choices|missing_params
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    arm: with-only
+  - name: outcome
+    type: llm
+    weight: 2
+    focus: last_message
+    criteria: |
+      The final reply is a question round to the designer. It shows that the grids were read from the
+      model - A, B, C and 1, 2, 3, so nine intersections (A1 ... C3) - and asks which structural column
+      type (UC305x305x97, UC254x254x73, RC400x400) and which level (F1, F2, F3, RF) to use, and whether
+      all nine intersections are meant. It does not choose a type or level itself and does not say
+      columns were created. Fail if it invents grid names or coordinates, picks a type or level, or
+      reports an execution.

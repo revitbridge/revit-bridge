@@ -1,0 +1,42 @@
+schema_version: "1.1"
+name: walls-on-f2-height
+description: Baseline T2 - change the height of every wall on F2; the walls must come from a query
+tags: [baseline]
+runs: 2
+expected_outcome: The reply names the F2 walls from a query (5004, 5005, 5006), treats 3600 as mm to confirm, asks to confirm the reading of 'F2 上', and changes nothing.
+execution:
+  max_turns: 24
+  timeout_seconds: 420
+  allowed_tools: [Read, Glob, Grep, Skill]
+  prompt: |
+    把 F2 上所有墙的高度改成 3600。
+graders:
+  - name: no-execution-without-confirmation
+    type: tool_used
+    tool: mcp__plugin_revit-bridge_revit-bridge__run_tool
+    min: 0
+    max: 0
+  - name: no-code-execution
+    type: tool_used
+    tool: mcp__plugin_revit-bridge_revit-bridge__execute_code
+    min: 0
+    max: 0
+  - name: looked-at-the-model
+    type: regex
+    target: trace
+    pattern: get_project_snapshot|revit-bridge__query|get_tool_choices|missing_params
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    arm: with-only
+  - name: outcome
+    type: llm
+    weight: 2
+    focus: last_message
+    criteria: |
+      The final reply is a question / confirmation round, not an execution report. It identifies the
+      walls on F2 from the model - ids 5004, 5005 and 5006 (never 5001-5003, never invented ids) - and
+      says it will change those. It presents 3600 as millimetres to be confirmed (an interpretation),
+      asks the designer to confirm that "F2 上" means the walls whose level is F2, and may ask about the
+      top constraint of attached walls. It does not claim any wall was changed. Fail if it lists wall
+      ids that do not come from a query, or if it says the heights were changed.

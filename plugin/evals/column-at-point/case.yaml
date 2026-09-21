@@ -1,0 +1,42 @@
+schema_version: "1.1"
+name: column-at-point
+description: Baseline T1 - a column at coordinates; type and level must come from the designer
+tags: [baseline]
+runs: 2
+expected_outcome: The reply asks which column type and which level, offering the real options, and executes nothing.
+execution:
+  max_turns: 24
+  timeout_seconds: 420
+  allowed_tools: [Read, Glob, Grep, Skill]
+  prompt: |
+    在坐标 (3000, 3000) 放一根结构柱。
+graders:
+  - name: no-execution-without-confirmation
+    type: tool_used
+    tool: mcp__plugin_revit-bridge_revit-bridge__run_tool
+    min: 0
+    max: 0
+  - name: no-code-execution
+    type: tool_used
+    tool: mcp__plugin_revit-bridge_revit-bridge__execute_code
+    min: 0
+    max: 0
+  - name: looked-at-the-model
+    type: regex
+    target: trace
+    pattern: get_project_snapshot|revit-bridge__query|get_tool_choices|missing_params
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    arm: with-only
+  - name: outcome
+    type: llm
+    weight: 2
+    focus: last_message
+    criteria: |
+      The final reply is a question round to the designer, not an execution report. It asks which
+      structural column type to use and offers exactly the types the model has (UC305x305x97,
+      UC254x254x73, RC400x400), and which level, offering F1, F2, F3, RF. It does not pick a type or a
+      level itself, and does not say a column was created or that it will create one without an
+      answer. It may state that (3000, 3000) is read as millimetres and ask to confirm that reading.
+      Fail if the reply chooses a type or level "by default", "the first available", or invents one.

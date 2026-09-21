@@ -1,0 +1,43 @@
+schema_version: "1.1"
+name: column-type-answered
+description: Second turn - the designer answered the type only; the level is still open
+tags: [two-turn]
+runs: 2
+expected_outcome: The reply asks for the level (and the unit if still open), keeps UC305x305x97, and executes nothing.
+execution:
+  max_turns: 24
+  timeout_seconds: 420
+  allowed_tools: [Read, Glob, Grep, Skill]
+  prompt: |
+    柱类型用 UC305x305x97。
+context:
+  history_file: history.jsonl
+graders:
+  - name: no-execution-without-confirmation
+    type: tool_used
+    tool: mcp__plugin_revit-bridge_revit-bridge__run_tool
+    min: 0
+    max: 0
+  - name: no-code-execution
+    type: tool_used
+    tool: mcp__plugin_revit-bridge_revit-bridge__execute_code
+    min: 0
+    max: 0
+  - name: looked-at-the-model
+    type: regex
+    target: trace
+    pattern: get_project_snapshot|revit-bridge__query|get_tool_choices|missing_params
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    arm: with-only
+  - name: outcome
+    type: llm
+    weight: 2
+    focus: last_message
+    criteria: |
+      This is the designer's second message: they answered the column type (UC305x305x97) but not the
+      level. The final reply keeps UC305x305x97 as the type, asks which level (F1, F2, F3 or RF) and
+      does not pick one; it may re-ask the (3000, 3000) mm reading if the designer did not confirm it.
+      It does not execute and does not say a column was created. Fail if it chooses a level itself,
+      asks the type again as if unanswered, or reports an execution.

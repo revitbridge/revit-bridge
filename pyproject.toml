@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "revit-bridge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Intent bridge between designers and AI for Revit: MCP server + Claude Code plugin"
 readme = "README.md"
 license = "MIT"
