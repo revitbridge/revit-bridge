@@ -715,3 +715,35 @@ def test_validate_reruns_the_recorded_execution_now(isolated_store, revit_env):
                 await RevitClientPool.disconnect()
 
     asyncio.run(scenario())
+
+
+COUNTED = """schema_version: 1
+name: counted
+version: 1.0.0
+code_template: return new { Status = "Created", Count = {count} };
+parameters:
+  - {name: count, type: integer, source: default, required: false, default: 2}
+validator: {kind: count_delta, category: OST_Walls, expected: "{count}"}
+"""
+
+
+def test_validator_sees_pack_defaults(isolated_store, revit_env):
+    """Review D-1: a validator may reference a parameter the projection never bound."""
+    drop_pack(isolated_store, "counted", COUNTED)
+
+    async def scenario():
+        async with FakeRevit(counting_handler(1, 3)) as fake:
+            revit_env(fake.port)
+            try:
+                token = (await _acall("confirm_spec", spec=spec_for("counted")))["token"]
+                out = await _acall("run_tool", name="counted", params="{}", token=token)
+                assert out["success"] is True, out
+                assert out["validation"]["checks"][0]["detail"].endswith("delta 2, expected 2")
+                assert isolated_store.load("counted").failure_count == 0
+                assert server._ledger.get(out["evidence_id"])["params"] == {}      # recorded as given
+                again = await _acall("validate", evidence_id=out["evidence_id"])
+                assert again["passed"] is True                                     # defaults filled here too
+            finally:
+                await RevitClientPool.disconnect()
+
+    asyncio.run(scenario())
