@@ -51,6 +51,11 @@ claude mcp add revit-bridge -- uvx revit-bridge
 settings through environment variables (see Configure), for example in the
 `env` block of the host's server entry.
 
+**Your own host** — the same flow is a package API: `revit_bridge.execution`
+(`run_pack`, `run_code`, `revalidate`) with your own `ToolStore`, `Gate`,
+`Ledger` and Revit client, plus `revit_bridge.host_instructions()` for a host
+whose interface does the confirmation.
+
 From a checkout: `uv sync` then `uv run revit-bridge`.
 
 ## Use

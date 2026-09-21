@@ -17,8 +17,12 @@ uvx --from . revit-bridge check   # read the open document's title through the a
 
 ## Layout
 
-- `revit_bridge/mcp_server.py` — MCP tools, `main()` (`serve` | `check`).
-- `revit_bridge/revit/` — TCP JSON-RPC client, connection pool, settings from `REVIT_BRIDGE_*`, sandbox.
+- `revit_bridge/mcp_server.py` — MCP tools (thin wrappers), `main()` (`serve` | `check`).
+- `revit_bridge/execution.py` — the execution flow as a package API (`run_pack`, `run_code`, `revalidate`,
+  `ExecutionResult`), shared by the MCP server and the web host; `instructions.py` — the model instructions
+  (`server_instructions()` / `host_instructions()` from one text).
+- `revit_bridge/revit/` — TCP JSON-RPC client, connection pool, settings from `REVIT_BRIDGE_*`, sandbox,
+  `probe.py` (`check_connection`, `PING_PROBE`).
 - `revit_bridge/snapshot/` — query atoms, model queries (`query.py`, incl. the `query` tool kinds),
   `project.py` (`ProjectSnapshot`, `take_snapshot`).
 - `revit_bridge/paths.py` — per-user data root (`REVIT_BRIDGE_DATA_DIR`), user/built-in pack directories, `skills_dir()`.

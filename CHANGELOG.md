@@ -6,6 +6,44 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-21
+
+The execution flow as a package API, so the web host (phase 6) runs the same
+gate, preconditions, validators and ledger as the MCP server instead of a
+copy.
+
+### Added
+
+- `revit_bridge.execution`: `ExecutionResult` (the MCP tools' JSON shape as a
+  model) and `run_pack(store, gate, ledger, client, name, params, token, host,
+  env)`, `run_code(gate, ledger, client, code, parameters, token, host, env)`,
+  `revalidate(store, ledger, client, evidence_id)`. Dependencies are passed
+  in; the host bypass is read only from the `env` a host passes (none means
+  no bypass); the ledger's `host` column is the `host` argument. `run_tool`,
+  `execute_code` and `validate` are thin wrappers over them.
+- `revit_bridge.host_instructions()`: the model instructions for a host whose
+  interface does the confirmation (`propose_spec` instead of `confirm_spec` /
+  `run_tool` / `execute_code`), rendered from the same source text as
+  `SERVER_INSTRUCTIONS` (`revit_bridge.instructions`).
+- `revit_bridge.revit.probe`: `check_connection`, `PING_PROBE`, `CHECK_PROBE`
+  (moved from `mcp_server` / `revit.client`; re-exported from
+  `revit_bridge.revit`, and `revit_bridge.mcp_server.check_connection` still
+  works).
+
+### Changed
+
+- `run_tool` / `execute_code` replies always carry the `ExecutionResult`
+  keys (`tool`, `result`, `validation`, `preconditions_failed` may be null or
+  empty); refusal payloads (`confirmation_required`, `confirmation_invalid`,
+  not found, unhealthy, invalid parameters, blocked) are unchanged.
+- `RevitClient.connect()` raises `ConnectionError` when the connect times
+  out, instead of `TimeoutError`.
+
+### Removed
+
+- The 0.1 slot models `SlotState`, `SlotStatus`, `SlotSource`, `QuestionItem`,
+  `ActionStep`, `ConstraintViolation` from `revit_bridge.spec`.
+
 ## [0.2.0] - 2026-09-21
 
 The bridge itself: a project snapshot before interpretation, a TaskSpec in
@@ -176,6 +214,7 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/revitbridge/revit-bridge/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/revitbridge/revit-bridge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/revitbridge/revit-bridge/releases/tag/v0.1.0
