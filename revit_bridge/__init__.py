@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
+from revit_bridge.instructions import host_instructions
 from revit_bridge.paths import data_root, skills_dir
 
 try:
@@ -16,4 +17,4 @@ try:
 except PackageNotFoundError:  # running from a source tree without install
     __version__ = "0.0.0"
 
-__all__ = ["__version__", "data_root", "skills_dir"]
+__all__ = ["__version__", "data_root", "host_instructions", "skills_dir"]

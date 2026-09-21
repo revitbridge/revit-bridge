@@ -42,6 +42,7 @@ from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ENV_ALLOW_UNCONFIRMED, ExecutionResult, run_code, run_pack
 from revit_bridge.execution import gate_refusal as _gate_refusal
 from revit_bridge.execution import revalidate as _revalidate
+from revit_bridge.instructions import server_instructions
 from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.revit.probe import CHECK_PROBE, check_connection  # noqa: F401 - re-exported
 from revit_bridge.revit.settings import RevitSettings, env_flag
@@ -102,65 +103,9 @@ def _execution_json(result: ExecutionResult) -> str:
 
 # -- MCP Server ---------------------------------------------------------------
 
-SERVER_INSTRUCTIONS = """\
-You are connected to a running Autodesk Revit through revit-bridge 0.2. The server
-runs capability packs and C# in Revit; it never calls a model. You turn the
-designer's words into a TaskSpec in which every parameter has a source, get it
-confirmed, run it with the token, and report what the validator found.
-
-## Flow (always, in this order)
-
-1. get_project_snapshot - what exists: document, units, levels, grids, family
-   types, selection. Note `fingerprint`.
-2. query(kind, args) for anything else read-only: levels, grids, family_types,
-   elements, selection, view_elements, units, counts. No token needed. Never
-   write C# for a read.
-3. list_tools, then missing_params(tool, known) - the questions still open, with
-   the real options (levels, types). Ask the designer all of them in one round.
-4. reconcile(spec, snapshot) - a draft TaskSpec against the model: values that do
-   not exist, ambiguous names, units and range words to confirm, stale snapshot.
-   Repeat until `ready` is true.
-5. Show the spec card; wait for an explicit yes.
-6. confirm_spec(spec) -> {token, expires_at, card} or {errors}. Errors name the
-   rule: missing_param, no_evidence, unsourced_choice, guessed_value,
-   default_not_declared, bad_preference_ref, unconfirmed_interpretation,
-   blocked_code. Fix the spec; never invent a token.
-7. run_tool(name, params, token) or execute_code(code, parameters, token) with
-   exactly the confirmed values. The token is one-time, expires in 10 minutes and
-   is bound to that tool + params (or code): anything else is confirmation_invalid.
-8. Read the reply. `success` is true only when Revit succeeded AND the pack's
-   validator passed; validation_failed means the model did not change as claimed.
-   Quote `validation.checks`, `error` and `evidence_id`; validate(evidence_id)
-   re-runs the assertion later, evidence(limit, tool) lists past runs.
-
-## TaskSpec
-
-{task, action: {kind: run_tool|execute_code, tool|code}, parameters: [{name,
-value, unit?, source, evidence}], interpretations: [{param?, text, confirmed}],
-snapshot_fingerprint, language}. Sources: designer (evidence = their words),
-tool (evidence = "tool:<name>"), answer (evidence = question id), preference
-(evidence = "preference:<name>"), default (evidence = "default:<tool>", only
-when the pack declares one). A number without a unit for a parameter that has
-one, or a range word such as "on F2", is an interpretation the designer must
-confirm.
-
-## Never
-
-- Guess a level, type, element id or coordinate: query, then ask.
-- Set a value "for now", "as usual" or "probably": it is a question.
-- Claim success on an error or on a failed validation; do not soften errors.
-- Call run_tool / execute_code without a token from confirm_spec.
-
-## Notes
-
-- Revit internal units are feet; packs take millimetres. Code for execute_code
-  runs inside an open transaction with `document` in scope; end with `return`.
-- Read-only tools also run inside a transaction on the add-in: they fail on a
-  read-only document.
-- solidify_tool saves code that worked as a v1 pack (parameters with source,
-  required, unit; optional validator). Resources: revit://stats,
-  revit://tools/{name}, revit://evidence/recent, revit://connection-status.
-"""
+# The instruction text lives in revit_bridge.instructions, shared with the
+# host rendering (host_instructions) so the two cannot drift.
+SERVER_INSTRUCTIONS = server_instructions()
 
 mcp = MCPServer(
     "revit-bridge",
