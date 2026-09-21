@@ -444,14 +444,24 @@ async def execute_code(code: str, parameters: list | None = None, token: str = "
     started = time.monotonic()
     try:
         client = await RevitClientPool.get_client()
-        document = await _document_info(client, warnings)
-        refusal = gate_refusal(token, projection, consume=True)   # the last step before Revit
-        if refusal:
-            return _dumps(refusal)
-        conf = _confirmation_of(token)
+    except Exception as e:                    # nothing reached Revit: nothing to record
+        return _dumps({"success": False, "error": str(e), "warnings": warnings})
+    document = await _document_info(client, warnings)
+    refusal = gate_refusal(token, projection, consume=True)   # the last step before Revit
+    if refusal:
+        return _dumps(refusal)
+    conf = _confirmation_of(token)
+    try:
         resp = await client.send_code(code, parameters)
     except Exception as e:
-        return _dumps({"success": False, "error": str(e), "warnings": warnings})
+        # Revit may or may not have run it: exactly the case that needs a ledger line
+        evidence_id = _record(
+            action="execute_code", tool=None, projection=projection, conf=conf, code=code,
+            document=document, resp=None, validation=None, success=False, error=str(e),
+            duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
+        )
+        return _dumps({"success": False, "result": None, "error": str(e), "validation": None,
+                       "evidence_id": evidence_id, "warnings": warnings})
     duration_ms = int((time.monotonic() - started) * 1000)
     evidence_id = _record(
         action="execute_code", tool=None, projection=projection, conf=conf, code=code,
@@ -600,27 +610,38 @@ async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
     before: dict = {}
     try:
         client = await RevitClientPool.get_client()
-        failed, document = await _preconditions(client, pack, warnings)
-        if failed:
-            return _dumps({"success": False, "tool": name, "error": "preconditions_failed",
-                           "preconditions_failed": failed, "warnings": warnings})
-        if validator is not None:
-            try:
-                before = await validator.before(client, spec, pack.validator)
-            except Exception as e:  # noqa: BLE001
-                # Without the sample, `after` could only fail; running anyway would
-                # invite a retry that duplicates the work. Refuse like a precondition.
-                warnings.append(f"validator.before: {type(e).__name__}: {e}")
-                return _dumps({"success": False, "tool": name, "error": "validator_before_failed",
-                               "warnings": warnings})
-        refusal = gate_refusal(token, projection, consume=True)
-        if refusal:
-            return _dumps(refusal)
-        conf = _confirmation_of(token)
-        resp = await client.send_code(code)
-    except Exception as e:
+    except Exception as e:                    # nothing reached Revit: nothing to record
         _tool_store.record_usage(name, success=False)
         return _dumps({"success": False, "tool": name, "error": str(e), "warnings": warnings})
+    failed, document = await _preconditions(client, pack, warnings)
+    if failed:
+        return _dumps({"success": False, "tool": name, "error": "preconditions_failed",
+                       "preconditions_failed": failed, "warnings": warnings})
+    if validator is not None:
+        try:
+            before = await validator.before(client, spec, pack.validator)
+        except Exception as e:  # noqa: BLE001
+            # Without the sample, `after` could only fail; running anyway would
+            # invite a retry that duplicates the work. Refuse like a precondition.
+            warnings.append(f"validator.before: {type(e).__name__}: {e}")
+            return _dumps({"success": False, "tool": name, "error": "validator_before_failed",
+                           "warnings": warnings})
+    refusal = gate_refusal(token, projection, consume=True)
+    if refusal:
+        return _dumps(refusal)
+    conf = _confirmation_of(token)
+    try:
+        resp = await client.send_code(code)
+    except Exception as e:
+        # Revit may or may not have run it: exactly the case that needs a ledger line
+        _tool_store.record_usage(name, success=False)
+        evidence_id = _record(
+            action="run_tool", tool=pack, projection=projection, conf=conf, code=None,
+            document=document, resp=None, validation=None, success=False, error=str(e),
+            duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
+        )
+        return _dumps({"success": False, "tool": name, "result": None, "error": str(e), "validation": None,
+                       "evidence_id": evidence_id, "warnings": warnings})
 
     validation: ValidationReport | None = None
     if validator is not None and resp.success:

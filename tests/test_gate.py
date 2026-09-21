@@ -777,3 +777,54 @@ def test_run_tool_refuses_when_validator_before_fails_without_consuming_the_toke
                 await RevitClientPool.disconnect()
 
     asyncio.run(scenario())
+
+
+def test_an_execution_that_dies_mid_request_is_still_recorded(isolated_store, revit_env):
+    """Review D-3: "Revit may have run it" is exactly the case that needs a ledger line."""
+    counting = counting_handler(1, 2)
+
+    def dies_on_execute(request):
+        if request["method"] == "send_code_to_revit" and "Wall.Create" in request["params"]["code"]:
+            return FakeRevit.DROP
+        return counting(request)
+
+    async def scenario():
+        async with FakeRevit(dies_on_execute) as fake:
+            revit_env(fake.port)
+            try:
+                token = (await _acall("confirm_spec", spec=spec_for("create_wall", **WALL)))["token"]
+                out = await _acall("run_tool", name="create_wall", params=json.dumps(WALL), token=token)
+                assert out["success"] is False and "closed connection" in out["error"]
+                assert out["evidence_id"] and out["validation"] is None
+                record = server._ledger.get(out["evidence_id"])
+                assert record["success"] is False and record["error"] == out["error"]
+                assert record["tool"] == "create_wall" and record["token_prefix"] == token[:6]
+                assert record["result_summary"] == {"ids": []}
+                assert server._gate.peek(token).used_at                      # consumed: not retried by accident
+                assert isolated_store.load("create_wall").failure_count == 1
+            finally:
+                await RevitClientPool.disconnect()
+
+    asyncio.run(scenario())
+
+    code = "return 1;"
+
+    def dies_on_code(request):
+        if request["method"] == "send_code_to_revit" and request["params"]["code"] == code:
+            return FakeRevit.DROP
+        return counting(request)
+
+    async def scenario_code():
+        async with FakeRevit(dies_on_code) as fake:
+            revit_env(fake.port)
+            try:
+                token = (await _acall("confirm_spec", spec=code_spec(code)))["token"]
+                out = await _acall("execute_code", code=code, token=token)
+                assert out["success"] is False and "closed connection" in out["error"]
+                record = server._ledger.get(out["evidence_id"])
+                assert record["action"] == "execute_code" and record["success"] is False
+                assert record["code_head"] == code and record["document"]["title"] == "Project1"
+            finally:
+                await RevitClientPool.disconnect()
+
+    asyncio.run(scenario_code())

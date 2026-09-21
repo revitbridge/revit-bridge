@@ -19,6 +19,8 @@ class FakeRevit:
     the add-in does.
     """
 
+    DROP = object()   # a handler returns this to close the connection without answering
+
     def __init__(self, handler=None, token: str | None = None):
         self.handler = handler or self.default_handler
         self.token = token
@@ -48,6 +50,8 @@ class FakeRevit:
                                             "Unauthorized: invalid or missing token")]
                 else:
                     result = self.handler(request)
+                    if result is self.DROP:
+                        break   # like an add-in that died mid-request
                     responses = result if isinstance(result, list) else [result]
                 for resp in responses:
                     writer.write(json.dumps(resp).encode("utf-8"))
