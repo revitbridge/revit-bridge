@@ -618,9 +618,20 @@ async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
         _tool_store.record_usage(name, success=False)
         return _dumps({"success": False, "tool": name, "error": str(e), "warnings": warnings})
     failed, document = await _preconditions(client, pack, warnings)
+
+    def refused(error: str) -> str:
+        """A refusal before the token is consumed: no execution, but a ledger line
+        so evidence() shows why the run did not happen."""
+        evidence_id = _record(
+            action="run_tool", tool=pack, projection=projection, conf=_confirmation_of(token), code=None,
+            document=document, resp=None, validation=None, success=False, error=error,
+            duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=failed, warnings=warnings,
+        )
+        return _dumps({"success": False, "tool": name, "error": error, "preconditions_failed": failed,
+                       "evidence_id": evidence_id, "warnings": warnings})
+
     if failed:
-        return _dumps({"success": False, "tool": name, "error": "preconditions_failed",
-                       "preconditions_failed": failed, "warnings": warnings})
+        return refused("preconditions_failed")
     if validator is not None:
         try:
             before = await validator.before(client, spec, pack.validator)
@@ -628,8 +639,7 @@ async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
             # Without the sample, `after` could only fail; running anyway would
             # invite a retry that duplicates the work. Refuse like a precondition.
             warnings.append(f"validator.before: {type(e).__name__}: {e}")
-            return _dumps({"success": False, "tool": name, "error": "validator_before_failed",
-                           "warnings": warnings})
+            return refused("validator_before_failed")
     refusal = gate_refusal(token, projection, consume=True)
     if refusal:
         return _dumps(refusal)

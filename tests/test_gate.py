@@ -636,6 +636,12 @@ def test_run_tool_refuses_when_preconditions_fail_without_consuming_the_token(is
                 assert server._gate.peek(token).used_at is None
                 codes = [r["params"]["code"] for r in fake.requests if r["method"] == "send_code_to_revit"]
                 assert not any("Wall.Create" in c for c in codes)             # nothing was executed
+                # the refusal is on the ledger with its reason (review D-5)
+                record = server._ledger.get(out["evidence_id"])
+                assert record["success"] is False and record["error"] == "preconditions_failed"
+                assert record["preconditions_failed"] == ["levels_min 1: the model has 0 level(s)"]
+                assert record["token_prefix"] == token[:6] and record["document"]["title"] == "Empty"
+                assert (await _acall("evidence", tool="create_wall"))[0]["id"] == out["evidence_id"]
             finally:
                 await RevitClientPool.disconnect()
 
@@ -768,8 +774,10 @@ def test_run_tool_refuses_when_validator_before_fails_without_consuming_the_toke
                 out = await _acall("run_tool", name="create_wall", params=json.dumps(WALL), token=token)
                 assert out["success"] is False and out["error"] == "validator_before_failed"
                 assert out["warnings"] == ["validator.before: ValidatorError: no document open"]
-                assert "validation" not in out
+                assert "validation" not in out and out["preconditions_failed"] == []
                 assert server._gate.peek(token).used_at is None                  # still redeemable
+                record = server._ledger.get(out["evidence_id"])                  # recorded (review D-5)
+                assert record["error"] == "validator_before_failed" and record["warnings"] == out["warnings"]
                 codes = [r["params"]["code"] for r in fake.requests if r["method"] == "send_code_to_revit"]
                 assert not any("Wall.Create" in c for c in codes)               # nothing was executed
                 assert isolated_store.load("create_wall").failure_count == 0
