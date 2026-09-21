@@ -7,7 +7,6 @@ from pathlib import Path
 
 from revit_bridge.revit import sandbox
 from revit_bridge.snapshot.query import sanitize_categories
-from revit_bridge.spec.models import QuestionItem, SlotSource, SlotState, SlotStatus
 
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN = ("openai", "anthropic", "google-genai", "google.generativeai", "cohere", "chromadb", "fastapi", "langchain")
@@ -58,12 +57,12 @@ def test_category_sanitizer():
     assert sanitize_categories("OST_Walls") == []
 
 
-def test_slot_state_transitions():
-    slot = SlotState(name="height")
-    assert slot.status is SlotStatus.empty and slot.source is SlotSource.not_provided
-    slot.set_default(3000)
-    assert slot.status is SlotStatus.defaulted and slot.display == "3000 (default)"
-    slot.fill(3600, SlotSource.follow_up)
-    assert slot.status is SlotStatus.filled and slot.source is SlotSource.follow_up
-    question = QuestionItem(slot="level", text="Which level?")
-    assert question.options == [] and question.allow_custom is False
+def test_the_0_1_slot_models_are_gone():
+    """Phase 6.0: SlotState / QuestionItem / ActionStep / ConstraintViolation were removed."""
+    import revit_bridge.spec as spec
+    import revit_bridge.spec.models as models
+
+    for name in ("SlotState", "SlotStatus", "SlotSource", "QuestionItem", "ActionStep", "ConstraintViolation"):
+        assert not hasattr(models, name), name
+        assert name not in spec.__all__, name
+    assert {"TaskSpec", "ParamBinding", "Source", "Interpretation", "Action", "WorkflowState"} <= set(spec.__all__)
