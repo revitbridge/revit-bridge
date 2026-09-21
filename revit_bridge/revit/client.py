@@ -87,10 +87,16 @@ class RevitClient:
     # -- connection lifecycle --------------------------------------------------
 
     async def connect(self) -> None:
-        self._reader, self._writer = await asyncio.wait_for(
-            asyncio.open_connection(self.host, self.port),
-            timeout=self.connect_timeout,
-        )
+        try:
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port),
+                timeout=self.connect_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            # A connect that never completes is a connection failure, not a
+            # command timeout: callers distinguish the two.
+            raise ConnectionError(
+                f"connect to {self.host}:{self.port} timed out after {self.connect_timeout}s") from exc
 
     async def disconnect(self) -> None:
         if self._writer:

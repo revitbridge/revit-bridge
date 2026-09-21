@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+import revit_bridge.execution as execution
 import revit_bridge.mcp_server as server
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.revit.pool import RevitClientPool
@@ -90,7 +91,7 @@ def counting_handler(before: int, after: int, result=None):
                     "CategoryNames": {}, "Warnings": []})
             if "GetElementCount" in code and "Enum.Parse(typeof(BuiltInCategory)" in code:
                 return FakeRevit.code_result(rid, after if state["ran"] else before)
-            if code == server.DOCUMENT_PROBE:
+            if code == execution.DOCUMENT_PROBE:
                 return FakeRevit.code_result(rid, {"Title": "Project1", "RevitVersion": "2026"})
             state["ran"] = True
             return FakeRevit.code_result(rid, result if result is not None else {"Status": "Created", "ElementId": 4242})
@@ -217,7 +218,7 @@ def test_a_refused_validation_does_not_consume_the_token(monkeypatch, isolated_s
                 assert server._gate.peek(good).used_at
                 fake.requests.clear()
                 blocked = (await _acall("confirm_spec", spec=code_spec("return 1;")))["token"]
-                monkeypatch.setattr(server.sandbox, "review", lambda code: (False, ["Blocked pattern: test"]))
+                monkeypatch.setattr(execution.sandbox, "review", lambda code: (False, ["Blocked pattern: test"]))
                 out = await _acall("execute_code", code="return 1;", token=blocked)
                 assert out["error"] == "blocked" and fake.requests == []
                 assert server._gate.peek(blocked).used_at is None
@@ -649,7 +650,7 @@ def test_run_tool_refuses_when_preconditions_fail_without_consuming_the_token(is
 
 
 def test_run_tool_skips_preconditions_when_the_snapshot_times_out(isolated_store, revit_env, monkeypatch):
-    monkeypatch.setattr(server, "PRECONDITION_SNAPSHOT_TIMEOUT", 0.3)
+    monkeypatch.setattr(execution, "PRECONDITION_SNAPSHOT_TIMEOUT", 0.3)
 
     counting = counting_handler(1, 2)
 
@@ -774,7 +775,7 @@ def test_run_tool_refuses_when_validator_before_fails_without_consuming_the_toke
                 out = await _acall("run_tool", name="create_wall", params=json.dumps(WALL), token=token)
                 assert out["success"] is False and out["error"] == "validator_before_failed"
                 assert out["warnings"] == ["validator.before: ValidatorError: no document open"]
-                assert "validation" not in out and out["preconditions_failed"] == []
+                assert out["validation"] is None and out["preconditions_failed"] == []
                 assert server._gate.peek(token).used_at is None                  # still redeemable
                 record = server._ledger.get(out["evidence_id"])                  # recorded (review D-5)
                 assert record["error"] == "validator_before_failed" and record["warnings"] == out["warnings"]

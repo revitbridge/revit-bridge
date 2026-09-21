@@ -28,8 +28,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
-import time
 from collections.abc import Mapping
 
 from mcp.server.mcpserver import MCPServer
@@ -37,66 +37,38 @@ from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
 from revit_bridge import __version__
-from revit_bridge.capabilities.schema import evaluate_preconditions, precondition_categories
-from revit_bridge.capabilities.store import SolidifiedTool, ToolStore
-from revit_bridge.evidence.ledger import Ledger, code_fields, summarize_result
-from revit_bridge.revit import sandbox
+from revit_bridge.capabilities.store import ToolStore
+from revit_bridge.evidence.ledger import Ledger
+from revit_bridge.execution import ENV_ALLOW_UNCONFIRMED, ExecutionResult, run_code, run_pack
+from revit_bridge.execution import gate_refusal as _gate_refusal
+from revit_bridge.execution import revalidate as _revalidate
 from revit_bridge.revit.client import PING_PROBE, RevitClient
 from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.revit.settings import RevitSettings, env_flag
-from revit_bridge.snapshot.project import DEFAULT_CATEGORIES, ProjectSnapshot, take_snapshot, validate_categories
+from revit_bridge.snapshot.project import ProjectSnapshot, take_snapshot, validate_categories
 from revit_bridge.snapshot.query import QUERY_KINDS, RevitQueryExecutor, run_query
-from revit_bridge.spec.gate import Confirmation, Gate, GateError, confirmation_invalid, confirmation_required
-from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec, projection_hash
+from revit_bridge.spec.gate import Gate
+from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params as _missing_params
 from revit_bridge.spec.rules import reconcile as _reconcile
 from revit_bridge.spec.rules import validate_spec
-from revit_bridge.validators.base import ValidationReport, ValidatorError
-from revit_bridge.validators.builtin import get_validator
-
-# Hosts that run their own confirmation flow (the web demo, until phase 6)
-# may lift the gate.
-ENV_ALLOW_UNCONFIRMED = "REVIT_BRIDGE_ALLOW_UNCONFIRMED"
 
 _tool_store = ToolStore()
 _gate = Gate()
 _ledger = Ledger()
 
-HOST_KIND = "mcp"                  # what this process writes into the ledger's "host"
-PRECONDITION_SNAPSHOT_TIMEOUT = 5.0
-DOCUMENT_PROBE = 'return new { Title = document.Title, RevitVersion = document.Application.VersionNumber };'
-
 
 # -- Confirmation gate --------------------------------------------------------
 
 def unconfirmed_allowed(env: Mapping[str, str] | None = None) -> bool:
-    """True when ``REVIT_BRIDGE_ALLOW_UNCONFIRMED`` lifts the gate."""
+    """True when ``REVIT_BRIDGE_ALLOW_UNCONFIRMED`` lifts the gate (this process's environment by default)."""
     return env_flag(ENV_ALLOW_UNCONFIRMED, env)
 
 
 def gate_refusal(token: str, projection: dict, env: Mapping[str, str] | None = None,
                  consume: bool = False) -> dict | None:
-    """Check ``token`` for ``projection``; the refusal payload when it must not run, else None.
-
-    A token is a one-time credential issued by ``confirm_spec`` and bound to
-    the hash of the execution projection, so a model cannot confirm one
-    thing and run another. With ``consume=False`` the token is only verified;
-    the tools call again with ``consume=True`` right before dispatch, after
-    every check that does not touch Revit, so a refused validation leaves
-    the confirmation redeemable. Only the host bypass lifts the check.
-    """
-    if unconfirmed_allowed(env):
-        return None
-    if not isinstance(token, str) or not token.strip():
-        return confirmation_required()
-    try:
-        if consume:
-            _gate.consume(token.strip(), projection)
-        else:
-            _gate.verify(token.strip(), projection)
-    except GateError as exc:
-        return confirmation_invalid(exc)
-    return None
+    """The package gate check against this server's Gate; ``env`` defaults to the process environment."""
+    return _gate_refusal(_gate, token, projection, os.environ if env is None else env, consume=consume)
 
 
 def _parse_json_arg(value, what: str):
@@ -106,110 +78,26 @@ def _parse_json_arg(value, what: str):
     return value
 
 
-def _confirmation_of(token: str) -> Confirmation | None:
-    """The confirmation behind ``token`` (for the ledger); None under the host bypass."""
-    if not isinstance(token, str) or not token.strip():
-        return None
-    return _gate.peek(token.strip())
+class _PooledClient:
+    """The pooled connection, opened on first use so refusals need no Revit."""
+
+    async def send_code(self, code: str, parameters: list | None = None):
+        client = await RevitClientPool.get_client()
+        return await client.send_code(code, parameters)
+
+    async def send_command(self, method: str, params: dict | None = None):
+        client = await RevitClientPool.get_client()
+        return await client.send_command(method, params)
 
 
-def _spec_from_projection(projection: dict, filled: dict | None = None,
-                          pack: SolidifiedTool | None = None) -> TaskSpec:
-    """A TaskSpec carrying the confirmed values, for validators' {param} references.
-
-    ``filled`` is the parameter set after ``validate_params`` added the pack's
-    defaults: a validator may refer to a defaulted parameter the projection
-    never mentions. Each binding carries the pack parameter's ``unit`` so a
-    validator can convert lengths.
-    """
-    if projection.get("kind") == "run_tool":
-        values = filled if filled is not None else (projection.get("params") or {})
-        units = {p["name"]: p.get("unit") for p in (pack.parameters if pack else [])}
-        return TaskSpec(
-            task=f"run_tool {projection.get('tool')}",
-            action=Action(kind="run_tool", tool=projection.get("tool")),
-            parameters=[ParamBinding(name=k, value=v, unit=units.get(k), source=Source.answer,
-                                     evidence="confirmed projection")
-                        for k, v in values.items()],
-        )
-    return TaskSpec(task="execute_code", parameters=[],
-                    action=Action(kind="execute_code", code=projection.get("code"),
-                                  code_parameters=projection.get("parameters")))
-
-
-async def _document_info(client, warnings: list[str]) -> dict:
-    try:
-        resp = await asyncio.wait_for(client.send_code(DOCUMENT_PROBE), timeout=PRECONDITION_SNAPSHOT_TIMEOUT)
-        if resp.success and isinstance(resp.result, dict):
-            return {"title": resp.result.get("Title"), "revit_version": resp.result.get("RevitVersion")}
-        warnings.append(f"document: {resp.error or 'no result'}")
-    except Exception as exc:  # noqa: BLE001 - the ledger line is still written
-        warnings.append(f"document: {type(exc).__name__}: {exc}")
-    return {"title": None, "revit_version": None}
-
-
-async def _preconditions(client, pack: SolidifiedTool, warnings: list[str]) -> tuple[list[str], dict]:
-    """Evaluate the pack's preconditions on a fresh snapshot (5 s budget).
-
-    Returns (failures, document). A snapshot that times out or fails skips the
-    evaluation with a warning: the execution is not refused for what could
-    not be checked.
-    """
-    if not any(isinstance(item, dict) and "kind" in item for item in pack.preconditions or []):
-        return [], await _document_info(client, warnings)
-    categories = list(DEFAULT_CATEGORIES)
-    for cat in precondition_categories(pack):
-        if cat not in categories:
-            categories.append(cat)
-    try:
-        snapshot = await asyncio.wait_for(take_snapshot(client, categories), timeout=PRECONDITION_SNAPSHOT_TIMEOUT)
-    except asyncio.TimeoutError:
-        warnings.append(f"preconditions skipped: snapshot timed out ({PRECONDITION_SNAPSHOT_TIMEOUT:g} s)")
-        return [], await _document_info(client, warnings)
-    except Exception as exc:  # noqa: BLE001
-        warnings.append(f"preconditions skipped: {type(exc).__name__}: {exc}")
-        return [], await _document_info(client, warnings)
-    warnings.extend(f"snapshot: {w}" for w in snapshot.warnings)
-    document = {"title": snapshot.document.get("title"), "revit_version": snapshot.document.get("revit_version")}
-    return evaluate_preconditions(pack, snapshot), document
-
-
-def _record(*, action: str, tool: SolidifiedTool | None, projection: dict, conf: Confirmation | None,
-            code: str | None, document: dict, resp, validation: ValidationReport | None,
-            success: bool, error: str | None, duration_ms: int, preconditions_failed: list[str],
-            warnings: list[str]) -> str | None:
-    """Append the ledger line; a ledger that cannot be written costs a warning, not the result."""
-    record = {
-        "host": HOST_KIND,
-        "action": action,
-        "tool": tool.name if tool else None,
-        "tool_version": tool.version if tool else None,
-        "spec_hash": conf.spec_hash if conf else None,
-        "projection_hash": projection_hash(projection),
-        "token_prefix": conf.token[:6] if conf else None,
-        "confirmed_by": conf.confirmed_by if conf else ("host_bypass" if unconfirmed_allowed() else None),
-        "channel": conf.channel if conf else None,
-        "params": projection.get("params") if action == "run_tool" else {"parameters": projection.get("parameters") or []},
-        **code_fields(code if action == "execute_code" else None),
-        "document": document,
-        "success": success,
-        "error": error,
-        "result_summary": summarize_result(resp.result if resp is not None else None),
-        "validation": validation.model_dump() if validation else None,
-        "duration_ms": duration_ms,
-        "preconditions_failed": preconditions_failed,
-        "warnings": list(warnings),
-    }
-    try:
-        return _ledger.append(record)
-    except OSError as exc:
-        warnings.append(f"evidence not recorded: {exc}")
-        return None
-
-
-def _validation_error(kind: str, exc: Exception, before: dict) -> ValidationReport:
-    from revit_bridge.validators.base import failed_report
-    return failed_report(kind, f"validator could not run: {type(exc).__name__}: {exc}", before)
+def _execution_json(result: ExecutionResult) -> str:
+    """The tool reply: a refusal payload as is, otherwise the ExecutionResult fields."""
+    if result.refusal is not None:
+        return _dumps(result.refusal)
+    payload = result.model_dump(exclude={"refusal"})
+    if payload["hint"] is None:
+        del payload["hint"]
+    return _dumps(payload)
 
 
 # -- MCP Server ---------------------------------------------------------------
@@ -423,50 +311,9 @@ async def execute_code(code: str, parameters: list | None = None, token: str = "
     Requires a token from confirm_spec for a TaskSpec whose action is
     execute_code with exactly this code and parameters.
     Returns execution result or error message."""
-    projection = {"kind": "execute_code", "code": code, "parameters": list(parameters or [])}
-    refusal = gate_refusal(token, projection)
-    if refusal:
-        return _dumps(refusal)
-    # Security review - always enforced before dispatch (P0-2)
-    safe, review_warnings = sandbox.review(code)
-    if not safe:
-        return _dumps({"success": False, "error": "blocked", "warnings": review_warnings})
-    warnings: list[str] = []
-    started = time.monotonic()
-    try:
-        client = await RevitClientPool.get_client()
-    except Exception as e:                    # nothing reached Revit: nothing to record
-        return _dumps({"success": False, "error": str(e), "warnings": warnings})
-    document = await _document_info(client, warnings)
-    refusal = gate_refusal(token, projection, consume=True)   # the last step before Revit
-    if refusal:
-        return _dumps(refusal)
-    conf = _confirmation_of(token)
-    try:
-        resp = await client.send_code(code, parameters)
-    except Exception as e:
-        # Revit may or may not have run it: exactly the case that needs a ledger line
-        evidence_id = _record(
-            action="execute_code", tool=None, projection=projection, conf=conf, code=code,
-            document=document, resp=None, validation=None, success=False, error=str(e),
-            duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
-        )
-        return _dumps({"success": False, "result": None, "error": str(e), "validation": None,
-                       "evidence_id": evidence_id, "warnings": warnings})
-    duration_ms = int((time.monotonic() - started) * 1000)
-    evidence_id = _record(
-        action="execute_code", tool=None, projection=projection, conf=conf, code=code,
-        document=document, resp=resp, validation=None, success=resp.success, error=resp.error,
-        duration_ms=duration_ms, preconditions_failed=[], warnings=warnings,
-    )
-    return _dumps({
-        "success": resp.success,
-        "result": resp.result,
-        "error": resp.error,
-        "validation": None,
-        "evidence_id": evidence_id,
-        "warnings": warnings,
-    })
+    result = await run_code(gate=_gate, ledger=_ledger, client=_PooledClient(), code=code,
+                            parameters=parameters, token=token, host="mcp", env=os.environ)
+    return _execution_json(result)
 
 
 # -- Solidification Tools -----------------------------------------------------
@@ -555,125 +402,9 @@ async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
         return _dumps({"success": False, "error": f"Invalid params JSON: {params}"})
     if not isinstance(param_dict, dict):
         return _dumps({"success": False, "error": "params must be a JSON object"})
-    projection = {"kind": "run_tool", "tool": name, "params": param_dict}
-    refusal = gate_refusal(token, projection)
-    if refusal:
-        return _dumps(refusal)
-
-    # Health check - warn if tool is stale or failing
-    health = _tool_store.health_check(name)
-    if health["status"] == "not_found":
-        return _dumps({"success": False, "error": f"Tool '{name}' not found."})
-    if health["recommendation"] == "write_new_code":
-        return _dumps({
-            "success": False,
-            "error": f"Tool '{name}' is unhealthy: {'; '.join(health['issues'])}. "
-                     f"Write fresh code and use execute_code instead.",
-            "health": health,
-        })
-
-    code, errors = _tool_store.render(name, param_dict)
-    if code is None:
-        return _dumps({
-            "success": False,
-            "error": f"Parameter validation failed: {'; '.join(errors)}",
-        })
-
-    # Security review of the fully rendered code before dispatch (P0-2)
-    safe, review_warnings = sandbox.review(code)
-    if not safe:
-        return _dumps({"success": False, "error": "blocked", "warnings": review_warnings})
-
-    # Spec 8 flow: preconditions -> validator.before -> consume token -> execute
-    # -> validator.after -> ledger. success means Revit succeeded AND the
-    # validator (if any) passed.
-    pack = _tool_store.load(name)
-    _, _, filled = _tool_store.validate_params(name, param_dict)   # defaults included, for the validator
-    spec = _spec_from_projection(projection, filled, pack)
-    warnings: list[str] = []
-    started = time.monotonic()
-    validator = None
-    if pack.validator:
-        try:
-            validator = get_validator(str(pack.validator.get("kind")))
-        except ValidatorError as e:
-            warnings.append(f"validator: {e}")
-    before: dict = {}
-    try:
-        client = await RevitClientPool.get_client()
-    except Exception as e:                    # nothing reached Revit: nothing to record
-        _tool_store.record_usage(name, success=False)
-        return _dumps({"success": False, "tool": name, "error": str(e), "warnings": warnings})
-    failed, document = await _preconditions(client, pack, warnings)
-
-    def refused(error: str) -> str:
-        """A refusal before the token is consumed: no execution, but a ledger line
-        so evidence() shows why the run did not happen."""
-        evidence_id = _record(
-            action="run_tool", tool=pack, projection=projection, conf=_confirmation_of(token), code=None,
-            document=document, resp=None, validation=None, success=False, error=error,
-            duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=failed, warnings=warnings,
-        )
-        return _dumps({"success": False, "tool": name, "error": error, "preconditions_failed": failed,
-                       "evidence_id": evidence_id, "warnings": warnings})
-
-    if failed:
-        return refused("preconditions_failed")
-    if validator is not None:
-        try:
-            before = await validator.before(client, spec, pack.validator)
-        except Exception as e:  # noqa: BLE001
-            # Without the sample, `after` could only fail; running anyway would
-            # invite a retry that duplicates the work. Refuse like a precondition.
-            warnings.append(f"validator.before: {type(e).__name__}: {e}")
-            return refused("validator_before_failed")
-    refusal = gate_refusal(token, projection, consume=True)
-    if refusal:
-        return _dumps(refusal)
-    conf = _confirmation_of(token)
-    try:
-        resp = await client.send_code(code)
-    except Exception as e:
-        # Revit may or may not have run it: exactly the case that needs a ledger line
-        _tool_store.record_usage(name, success=False)
-        evidence_id = _record(
-            action="run_tool", tool=pack, projection=projection, conf=conf, code=None,
-            document=document, resp=None, validation=None, success=False, error=str(e),
-            duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
-        )
-        return _dumps({"success": False, "tool": name, "result": None, "error": str(e), "validation": None,
-                       "evidence_id": evidence_id, "warnings": warnings})
-
-    validation: ValidationReport | None = None
-    if validator is not None and resp.success:
-        try:
-            validation = await validator.after(client, spec, pack.validator, before, resp.result)
-        except Exception as e:  # noqa: BLE001 - a validator that cannot run is a failed validation
-            validation = _validation_error(validator.kind, e, before)
-    success = bool(resp.success) and (validation is None or validation.passed)
-    error = resp.error if not resp.success else ("validation_failed" if validation and not validation.passed else None)
-    _tool_store.record_usage(name, success=success)
-    duration_ms = int((time.monotonic() - started) * 1000)
-    evidence_id = _record(
-        action="run_tool", tool=pack, projection=projection, conf=conf, code=None,
-        document=document, resp=resp, validation=validation, success=success, error=error,
-        duration_ms=duration_ms, preconditions_failed=[], warnings=warnings,
-    )
-    result = {
-        "success": success,
-        "tool": name,
-        "result": resp.result,
-        "error": error,
-        "validation": validation.model_dump() if validation else None,
-        "evidence_id": evidence_id,
-        "warnings": warnings,
-    }
-    if not resp.success:
-        result["hint"] = (
-            "If this tool fails repeatedly, write fresh code and use execute_code "
-            "instead - the tool definition may be outdated."
-        )
-    return _dumps(result)
+    result = await run_pack(store=_tool_store, gate=_gate, ledger=_ledger, client=_PooledClient(), name=name,
+                            params=param_dict, token=token, host="mcp", env=os.environ)
+    return _execution_json(result)
 
 
 # -- Evidence tools -----------------------------------------------------------
@@ -691,31 +422,11 @@ async def validate(evidence_id: str) -> str:
     """Re-run the validator's assertion for a recorded execution against the model
     as it is now (for the designer's later check). Returns the ValidationReport,
     or {error} when the record, its pack or a validator is missing."""
-    record = _ledger.get(evidence_id)
-    if record is None:
-        return _dumps({"error": "unknown_evidence", "evidence_id": evidence_id})
-    if record.get("action") != "run_tool" or not record.get("tool"):
-        return _dumps({"error": "no_validator", "message": "only run_tool executions carry a validator"})
-    pack = _tool_store.load(record["tool"])
-    if pack is None or not pack.validator:
-        return _dumps({"error": "no_validator", "message": f"pack {record['tool']!r} has no validator now"})
     try:
-        validator = get_validator(str(pack.validator.get("kind")))
-    except ValidatorError as e:
-        return _dumps({"error": "no_validator", "message": str(e)})
-    projection = {"kind": "run_tool", "tool": record["tool"], "params": record.get("params") or {}}
-    _, _, filled = _tool_store.validate_params(record["tool"], projection["params"])
-    spec = _spec_from_projection(projection, filled, pack)
-    before = (record.get("validation") or {}).get("before") or {}
-    result = {"ids": (record.get("result_summary") or {}).get("ids") or []}
-    try:
-        client = await RevitClientPool.get_client()
-        report = await validator.after(client, spec, pack.validator, before, result)
+        return _dumps(await _revalidate(store=_tool_store, ledger=_ledger, client=_PooledClient(),
+                                        evidence_id=evidence_id))
     except OSError as e:
         return _dumps({"error": "revit_unreachable", "message": str(e) or type(e).__name__})
-    except Exception as e:  # noqa: BLE001
-        report = _validation_error(validator.kind, e, before)
-    return _dumps({"evidence_id": evidence_id, "tool": record["tool"], **report.model_dump()})
 
 
 # -- Resources ----------------------------------------------------------------
