@@ -747,3 +747,33 @@ def test_validator_sees_pack_defaults(isolated_store, revit_env):
                 await RevitClientPool.disconnect()
 
     asyncio.run(scenario())
+
+
+def test_run_tool_refuses_when_validator_before_fails_without_consuming_the_token(isolated_store, revit_env):
+    """Review D-2: no sample, no run - otherwise `after` fails and a retry duplicates the work."""
+    counting = counting_handler(1, 2)
+
+    def count_probe_fails(request):
+        if request["method"] == "send_code_to_revit":
+            code = request["params"]["code"]
+            if "GetElementCount" in code and "Enum.Parse(typeof(BuiltInCategory)" in code:
+                return FakeRevit.code_result(request["id"], None, success=False, error="no document open")
+        return counting(request)
+
+    async def scenario():
+        async with FakeRevit(count_probe_fails) as fake:
+            revit_env(fake.port)
+            try:
+                token = (await _acall("confirm_spec", spec=spec_for("create_wall", **WALL)))["token"]
+                out = await _acall("run_tool", name="create_wall", params=json.dumps(WALL), token=token)
+                assert out["success"] is False and out["error"] == "validator_before_failed"
+                assert out["warnings"] == ["validator.before: ValidatorError: no document open"]
+                assert "validation" not in out
+                assert server._gate.peek(token).used_at is None                  # still redeemable
+                codes = [r["params"]["code"] for r in fake.requests if r["method"] == "send_code_to_revit"]
+                assert not any("Wall.Create" in c for c in codes)               # nothing was executed
+                assert isolated_store.load("create_wall").failure_count == 0
+            finally:
+                await RevitClientPool.disconnect()
+
+    asyncio.run(scenario())

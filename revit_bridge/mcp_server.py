@@ -607,8 +607,12 @@ async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
         if validator is not None:
             try:
                 before = await validator.before(client, spec, pack.validator)
-            except (ValidatorError, Exception) as e:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                # Without the sample, `after` could only fail; running anyway would
+                # invite a retry that duplicates the work. Refuse like a precondition.
                 warnings.append(f"validator.before: {type(e).__name__}: {e}")
+                return _dumps({"success": False, "tool": name, "error": "validator_before_failed",
+                               "warnings": warnings})
         refusal = gate_refusal(token, projection, consume=True)
         if refusal:
             return _dumps(refusal)
