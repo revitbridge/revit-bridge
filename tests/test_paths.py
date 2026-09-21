@@ -43,4 +43,4 @@ def test_packaged_resources_resolve_in_the_source_tree():
     assert paths.skills_dir() == ROOT / "plugin" / "skills"
     assert revit_bridge.skills_dir() is not None
     assert (paths.skills_dir() / "revit-bridge" / "SKILL.md").is_file()
-    assert len(list(paths.builtin_capabilities_dir().glob("*.yaml"))) == 11
+    assert len(list(paths.builtin_capabilities_dir().glob("*.yaml"))) == 8

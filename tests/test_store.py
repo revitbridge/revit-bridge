@@ -10,10 +10,11 @@ from revit_bridge.capabilities.store import ToolStore, default_capabilities_dir,
 from revit_bridge.paths import builtin_capabilities_dir, user_capabilities_dir
 
 BUILTIN_NAMES = {
-    "create_beam", "create_column", "create_column_2", "create_floor", "create_room",
-    "create_structural_column", "create_wall", "delete_elements_by_category",
-    "modify_wall_height", "query_levels", "query_model_stats",
+    "create_beam", "create_floor", "create_structural_column", "create_wall",
+    "delete_elements_by_category", "modify_wall_height", "query_levels", "query_model_stats",
 }
+# Demo artefacts with type, level and coordinates hard-coded in C#: kept as examples, never loaded
+EXAMPLE_NAMES = {"create_column", "create_column_2", "create_room", "create_wall_v2"}
 
 
 def names_of(store: ToolStore) -> list[str]:
@@ -29,9 +30,9 @@ def test_builtin_packs_are_found_and_loadable(isolated_data_dir):
     assert store.tools_dir == store.user_dir            # 0.1 name still answers
     assert not store.user_dir.exists()                  # listing creates nothing
     files = sorted(p.name for p in store.builtin_dir.glob("*.yaml"))
-    assert len(files) == 11
+    assert len(files) == 8
     names = names_of(store)
-    assert len(names) == 11 and set(names) == BUILTIN_NAMES
+    assert len(names) == 8 and set(names) == BUILTIN_NAMES
     for name in BUILTIN_NAMES:
         tool = store.load(name)
         assert tool is not None and tool.code_template.strip()
@@ -42,8 +43,9 @@ def test_builtin_packs_are_found_and_loadable(isolated_data_dir):
 def test_examples_subdirectory_and_underscore_files_are_never_loaded(tmp_path):
     store = ToolStore(user_dir=tmp_path / "user")
     examples = store.builtin_dir / "examples"
-    assert examples.is_dir() and any(examples.glob("*.yaml"))
+    assert {p.stem for p in examples.glob("*.yaml")} >= EXAMPLE_NAMES
     assert names_of(store).count("create_wall") == 1
+    assert not {"create_column", "create_column_2", "create_room"} & set(names_of(store))
 
     store.user_dir.mkdir()
     (store.user_dir / "_draft.yaml").write_text("name: draft\ncode_template: return 1;\n", encoding="utf-8")
@@ -87,7 +89,7 @@ def test_user_pack_overrides_builtin_of_the_same_name(tmp_path):
     tool = store.load("create_wall")
     assert tool.description == "mine" and tool.code_template == "return 42;"
     assert store.path_of("create_wall") == store.user_dir / "create_wall.yaml"
-    assert len(names_of(store)) == 11
+    assert len(names_of(store)) == 8
 
 
 def test_delete_builtin_leaves_a_disabled_marker(tmp_path):
@@ -97,7 +99,7 @@ def test_delete_builtin_leaves_a_disabled_marker(tmp_path):
     assert marker.exists() and marker.read_text() == ""
     assert store.load("query_levels") is None
     assert store.path_of("query_levels") is None
-    assert "query_levels" not in names_of(store) and len(names_of(store)) == 10
+    assert "query_levels" not in names_of(store) and len(names_of(store)) == 7
     assert store.delete("query_levels") is False        # already hidden
     assert store.delete("no_such_tool") is False
     assert (store.builtin_dir / "query_levels.yaml").exists()   # built-in untouched
@@ -415,7 +417,7 @@ def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):
     assert store.path_of("query_levels") == store.user_dir / "query_levels.yaml"
     assert store.load("query_levels").code_template == "return 9;"
     listed = {t.name: t for t in store.list_tools()}
-    assert listed["query_levels"].code_template == "return 9;" and len(listed) == 11
+    assert listed["query_levels"].code_template == "return 9;" and len(listed) == 8
     assert (store.user_dir / "query_levels.disabled").exists()   # untouched by reads
 
     # A stale marker for a user-only pack (no built-in) hides nothing either

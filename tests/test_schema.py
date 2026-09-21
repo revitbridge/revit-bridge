@@ -1,4 +1,4 @@
-"""Capability pack v1: validate_pack, the 11 built-ins, preconditions."""
+"""Capability pack v1: validate_pack, the 8 built-ins, preconditions."""
 from __future__ import annotations
 
 import copy
@@ -54,7 +54,7 @@ def param_variant(index: int, **changes) -> dict:
 
 def test_every_builtin_pack_is_valid_v1_with_a_validator():
     files = sorted(builtin_capabilities_dir().glob("*.yaml"))
-    assert len(files) == 11
+    assert len(files) == 8
     for path in files:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert validate_pack(data) == [], path.name

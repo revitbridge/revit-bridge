@@ -73,7 +73,8 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
      family types, selection, …); `query(kind, args)` answers single read-only
      questions (`levels`, `grids`, `family_types`, `elements`, `selection`,
      `view_elements`, `units`, `counts`). Neither needs confirmation.
-   - `list_tools` — see the capability packs (`create_wall`, `query_levels`, …).
+   - `list_tools` — see the capability packs (eight built-ins such as
+     `create_wall`, `create_structural_column`, `query_levels`, plus your own).
    - `get_tool_choices` with a tool name — Revit returns the real levels,
      family types or elements for that tool's dynamic parameters.
    - `confirm_spec` with the TaskSpec the designer confirmed, then `run_tool`

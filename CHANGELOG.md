@@ -13,11 +13,14 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   explicit `source` and `required` on every parameter, `unit`, `choices_from`,
   placeholders declared, `preconditions` of kind `levels_min` /
   `category_present` or `text`, `validator` configuration, `fixtures`).
-  `solidify` / `update` refuse a pack that fails it. The 11 built-in packs are
+  `solidify` / `update` refuse a pack that fails it. The built-in packs are
   v1 files: every parameter carries `source` / `required` / `unit`, coordinates
   and dimensions are the designer's (no more `(0, 0)` defaults), each pack
   declares evaluable preconditions and a validator, and descriptions no longer
-  say "uses first available ...".
+  say "uses first available ...". Eight packs ship as built-ins; the three
+  zero-parameter demo packs (`create_column`, `create_column_2`,
+  `create_room`, with type, level and coordinates hard-coded) moved to
+  `capabilities/examples/`, which the store never loads.
 - `evaluate_preconditions(pack, snapshot)`; `run_tool` takes a snapshot (5 s
   budget) and refuses with `preconditions_failed` before consuming the token.
 - Validators (`revit_bridge.validators`): `created_ids`, `count_delta`,
