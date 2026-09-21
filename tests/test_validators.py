@@ -13,9 +13,11 @@ from revit_bridge.validators.builtin import BUILTIN_VALIDATORS, CountDelta, Crea
 from tests.fake_revit import FakeRevit
 
 
-def spec(**values) -> TaskSpec:
+def spec(_units: dict | None = None, **values) -> TaskSpec:
+    units = _units or {}
     return TaskSpec(task="t", action=Action(kind="run_tool", tool="probe"),
-                    parameters=[ParamBinding(name=k, value=v, source=Source.answer, evidence="q") for k, v in values.items()])
+                    parameters=[ParamBinding(name=k, value=v, unit=units.get(k), source=Source.answer, evidence="q")
+                                for k, v in values.items()])
 
 
 def run(handler, coro_factory):
@@ -190,6 +192,22 @@ def test_param_equals_reads_back_values_with_length_tolerance():
     report, fake = run(handler(rows), go)
     assert report.passed is True
     assert report.checks[0].detail == "got 3000.4 mm, expected 3000 mm"
+
+    # the spec value is converted by its pack unit before the comparison (review D-4)
+    metres = spec(_units={"height": "m"}, height=3.0, note="n1")
+    report, _ = run(handler(rows), lambda c: validator.after(c, metres, cfg, {}, {"ElementId": 7}))
+    assert report.passed is True and report.checks[0].detail == "got 3000.4 mm, expected 3 m = 3000 mm"
+    feet = spec(_units={"height": "feet"}, height=10, note="n1")
+    report, _ = run(handler(rows), lambda c: validator.after(c, feet, cfg, {}, {"ElementId": 7}))
+    assert report.passed is False and report.checks[0].detail == "got 3000.4 mm, expected 10 feet = 3048 mm"
+    wrong = spec(_units={"height": "m"}, height=3000, note="n1")           # 3000 m is not 3000 mm
+    report, _ = run(handler(rows), lambda c: validator.after(c, wrong, cfg, {}, {"ElementId": 7}))
+    assert report.passed is False
+    # non-length readbacks ignore the unit
+    rows_int = [{"Id": 7, "Name": "WALL_USER_HEIGHT_PARAM", "Kind": "int", "Value": 3},
+                {"Id": 7, "Name": "Comments", "Kind": "string", "Value": "n1"}]
+    report, _ = run(handler(rows_int), lambda c: validator.after(c, metres, cfg, {}, {"ElementId": 7}))
+    assert report.passed is True and report.checks[0].detail == "got 3, expected 3"
     code = fake.requests[-1]["params"]["code"]
     assert '"WALL_USER_HEIGHT_PARAM", "Comments"' in code and "Enum.TryParse(name, out bip)" in code
 

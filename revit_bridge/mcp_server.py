@@ -113,19 +113,23 @@ def _confirmation_of(token: str) -> Confirmation | None:
     return _gate.peek(token.strip())
 
 
-def _spec_from_projection(projection: dict, filled: dict | None = None) -> TaskSpec:
+def _spec_from_projection(projection: dict, filled: dict | None = None,
+                          pack: SolidifiedTool | None = None) -> TaskSpec:
     """A TaskSpec carrying the confirmed values, for validators' {param} references.
 
     ``filled`` is the parameter set after ``validate_params`` added the pack's
     defaults: a validator may refer to a defaulted parameter the projection
-    never mentions.
+    never mentions. Each binding carries the pack parameter's ``unit`` so a
+    validator can convert lengths.
     """
     if projection.get("kind") == "run_tool":
         values = filled if filled is not None else (projection.get("params") or {})
+        units = {p["name"]: p.get("unit") for p in (pack.parameters if pack else [])}
         return TaskSpec(
             task=f"run_tool {projection.get('tool')}",
             action=Action(kind="run_tool", tool=projection.get("tool")),
-            parameters=[ParamBinding(name=k, value=v, source=Source.answer, evidence="confirmed projection")
+            parameters=[ParamBinding(name=k, value=v, unit=units.get(k), source=Source.answer,
+                                     evidence="confirmed projection")
                         for k, v in values.items()],
         )
     return TaskSpec(task="execute_code", parameters=[],
@@ -598,7 +602,7 @@ async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
     # validator (if any) passed.
     pack = _tool_store.load(name)
     _, _, filled = _tool_store.validate_params(name, param_dict)   # defaults included, for the validator
-    spec = _spec_from_projection(projection, filled)
+    spec = _spec_from_projection(projection, filled, pack)
     warnings: list[str] = []
     started = time.monotonic()
     validator = None
@@ -704,7 +708,7 @@ async def validate(evidence_id: str) -> str:
         return _dumps({"error": "no_validator", "message": str(e)})
     projection = {"kind": "run_tool", "tool": record["tool"], "params": record.get("params") or {}}
     _, _, filled = _tool_store.validate_params(record["tool"], projection["params"])
-    spec = _spec_from_projection(projection, filled)
+    spec = _spec_from_projection(projection, filled, pack)
     before = (record.get("validation") or {}).get("before") or {}
     result = {"ids": (record.get("result_summary") or {}).get("ids") or []}
     try:

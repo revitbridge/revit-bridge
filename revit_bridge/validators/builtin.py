@@ -19,6 +19,7 @@ from revit_bridge.validators.base import (
 
 CATEGORY_RE = re.compile(r"^OST_[A-Za-z]+$")
 LENGTH_TOLERANCE_MM = 0.5
+MM_PER_UNIT = {"mm": 1.0, "m": 1000.0, "feet": 304.8}   # a spec value's unit -> mm (no unit: mm)
 
 
 def _category(cfg: dict, spec: TaskSpec) -> str:
@@ -185,21 +186,23 @@ class ParamEquals:
         )
         rows = await _probe(client, code)
         rows = rows if isinstance(rows, list) else [rows]
-        by_param = {name: values[spec_param] for name, spec_param in wanted}
+        units = {p.name: p.unit for p in spec.parameters}
+        by_param = {name: (values[spec_param], units.get(spec_param)) for name, spec_param in wanted}
         checks = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
             name = str(row.get("Name"))
-            expected = by_param.get(name)
-            passed, detail = _compare(row, expected)
+            expected, unit = by_param.get(name, (None, None))
+            passed, detail = _compare(row, expected, unit)
             checks.append(Check(name=f"id {row.get('Id')} {name}", passed=passed, detail=detail))
         passed = bool(checks) and all(c.passed for c in checks)
         return ValidationReport(validator=self.kind, passed=passed, checks=checks, before=before,
                                 after={"ids": ids, "category": category})
 
 
-def _compare(row: dict, expected) -> tuple[bool, str]:
+def _compare(row: dict, expected, unit: str | None = None) -> tuple[bool, str]:
+    """Compare a readback with the spec value; lengths in mm after converting by ``unit``."""
     kind, actual = row.get("Kind"), row.get("Value")
     if kind == "missing":
         return False, "element does not exist"
@@ -210,9 +213,14 @@ def _compare(row: dict, expected) -> tuple[bool, str]:
             got, want = float(actual), float(expected)
         except (TypeError, ValueError):
             return False, f"got {actual!r}, expected {expected!r}"
-        tolerance = LENGTH_TOLERANCE_MM if kind == "length_mm" else 1e-6
-        unit = " mm" if kind == "length_mm" else ""
-        return abs(got - want) <= tolerance, f"got {got:g}{unit}, expected {want:g}{unit}"
+        if kind == "length_mm":
+            factor = MM_PER_UNIT.get(unit or "mm")
+            if factor is None:
+                return False, f"got {got:g} mm, expected {want:g} in unknown unit {unit!r}"
+            want_mm = want * factor
+            shown = f"{want:g} {unit} = {want_mm:g} mm" if unit and unit != "mm" else f"{want_mm:g} mm"
+            return abs(got - want_mm) <= LENGTH_TOLERANCE_MM, f"got {got:g} mm, expected {shown}"
+        return abs(got - want) <= 1e-6, f"got {got:g}, expected {want:g}"
     return str(actual) == str(expected), f"got {actual!r}, expected {expected!r}"
 
 

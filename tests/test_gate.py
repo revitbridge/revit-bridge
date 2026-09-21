@@ -828,3 +828,42 @@ def test_an_execution_that_dies_mid_request_is_still_recorded(isolated_store, re
                 await RevitClientPool.disconnect()
 
     asyncio.run(scenario_code())
+
+
+HEIGHT_M = """schema_version: 1
+name: set_height_m
+version: 1.0.0
+code_template: return new { ElementId = {element_id}, Status = "Modified" };
+parameters:
+  - {name: element_id, type: integer, source: tool:elements, choices_from: "elements:OST_Walls", required: true}
+  - {name: height, type: double, unit: m, source: designer, required: true}
+validator:
+  kind: param_equals
+  category: OST_Walls
+  checks: [{param_name: WALL_USER_HEIGHT_PARAM, spec_param: height}]
+"""
+
+
+def test_param_equals_uses_the_pack_units_through_run_tool(isolated_store, revit_env):
+    drop_pack(isolated_store, "set_height_m", HEIGHT_M)
+    counting = counting_handler(0, 0, result={"ElementId": 7, "Status": "Modified"})
+
+    def readback(request):
+        if request["method"] == "send_code_to_revit" and "LookupParameter" in request["params"]["code"]:
+            return FakeRevit.code_result(request["id"], [
+                {"Id": 7, "Name": "WALL_USER_HEIGHT_PARAM", "Kind": "length_mm", "Value": 3600.0}])
+        return counting(request)
+
+    async def scenario():
+        async with FakeRevit(readback) as fake:
+            revit_env(fake.port)
+            try:
+                params = {"element_id": 7, "height": 3.6}
+                token = (await _acall("confirm_spec", spec=spec_for("set_height_m", _units={"height": "m"}, **params)))["token"]
+                out = await _acall("run_tool", name="set_height_m", params=json.dumps(params), token=token)
+                assert out["success"] is True, out
+                assert out["validation"]["checks"][0]["detail"] == "got 3600 mm, expected 3.6 m = 3600 mm"
+            finally:
+                await RevitClientPool.disconnect()
+
+    asyncio.run(scenario())
