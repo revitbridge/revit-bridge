@@ -876,3 +876,18 @@ def test_param_equals_uses_the_pack_units_through_run_tool(isolated_store, revit
                 await RevitClientPool.disconnect()
 
     asyncio.run(scenario())
+
+
+def test_bad_settings_never_consume_the_token(isolated_store, monkeypatch):
+    """Review 6.0-1: a ValueError from the settings is "nothing reached Revit" at the MCP level too."""
+    token = confirm(spec_for("query_levels"))["token"]
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "abc")
+    out = _call("run_tool", name="query_levels", params="{}", token=token)
+    assert out["success"] is False and "REVIT_BRIDGE_PORT" in out["error"]
+    assert out["evidence_id"] is None and out["validation"] is None
+    assert server._gate.peek(token).used_at is None
+    assert server._ledger.recent() == []
+    code_tok = confirm(code_spec("return 1;"))["token"]
+    out = _call("execute_code", code="return 1;", token=code_tok)
+    assert out["success"] is False and "REVIT_BRIDGE_PORT" in out["error"]
+    assert server._gate.peek(code_tok).used_at is None and server._ledger.recent() == []

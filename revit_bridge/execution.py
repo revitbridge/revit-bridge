@@ -14,7 +14,9 @@ none has no bypass), the snapshot for the preconditions has a 5 s budget, a
 failing ``validator.before`` refuses before the token is consumed, and every
 refusal or exception after the token was consumed still leaves a ledger
 line. ``client`` needs ``send_code(code, parameters)`` and
-``send_command(method, params)`` only.
+``send_command(method, params)``; when it also has ``ensure_connected()``,
+that is awaited once, before any timed probe, and any exception from it
+means nothing reached Revit: no token consumed, no ledger line.
 """
 from __future__ import annotations
 
@@ -135,6 +137,19 @@ def spec_from_projection(projection: dict, filled: dict | None = None,
 
 
 # -- helpers around Revit ---------------------------------------------------------------
+
+async def ensure_connected(client) -> None:
+    """Open the client's connection now, outside every timer.
+
+    A connect that never completes must surface as a transport failure here,
+    not as a "probe timed out" warning inside the 5 s budget that would let
+    the flow go on to consume the token. Clients without the hook (the web
+    relay) connect on first use.
+    """
+    ensure = getattr(client, "ensure_connected", None)
+    if ensure is not None:
+        await ensure()
+
 
 async def document_info(client, warnings: list[str]) -> dict:
     """``{title, revit_version}`` of the open document, for the ledger.
@@ -276,8 +291,9 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     before: dict = {}
 
     try:
+        await ensure_connected(client)
         failed, document = await preconditions(client, pack, warnings)
-    except OSError as e:                       # nothing reached Revit: nothing to record
+    except Exception as e:                     # noqa: BLE001 - nothing reached Revit: nothing to record
         store.record_usage(name, success=False)
         return ExecutionResult(success=False, tool=name, error=str(e) or type(e).__name__, warnings=warnings)
 
@@ -357,8 +373,9 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
     warnings: list[str] = []
     started = time.monotonic()
     try:
+        await ensure_connected(client)
         document = await document_info(client, warnings)
-    except OSError as e:                       # nothing reached Revit: nothing to record
+    except Exception as e:                     # noqa: BLE001 - nothing reached Revit: nothing to record
         return ExecutionResult(success=False, error=str(e) or type(e).__name__, warnings=warnings)
     refusal = gate_refusal(gate, token, projection, env, consume=True)   # the last step before Revit
     if refusal:

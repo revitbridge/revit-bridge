@@ -97,6 +97,11 @@ class RevitClient:
             raise ConnectionError(
                 f"connect to {self.host}:{self.port} timed out after {self.connect_timeout}s") from exc
 
+    async def ensure_connected(self) -> None:
+        """Connect now if not connected (the execution flow calls this before its timed probes)."""
+        if not self.connected:
+            await self.connect()
+
     async def disconnect(self) -> None:
         if self._writer:
             self._writer.close()

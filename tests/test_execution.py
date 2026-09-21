@@ -250,3 +250,68 @@ def test_revalidate_reruns_the_recorded_assertion(host):
             await revalidate(store=host["store"], ledger=host["ledger"], client=dead, evidence_id=run.evidence_id)
 
     with_fake(counting, unreachable)
+
+
+# -- review 6.0-1: the connection is opened before any timed probe ------------------------------
+
+class _NeverConnects:
+    """A client whose connect outlives the probe budget and then fails - or fails outright."""
+
+    def __init__(self, delay: float, exc: Exception):
+        self.delay, self.exc = delay, exc
+        self.sends = 0
+
+    async def ensure_connected(self):
+        await asyncio.sleep(self.delay)
+        raise self.exc
+
+    async def send_code(self, code, parameters=None):
+        self.sends += 1
+        raise AssertionError("send_code must not be reached")
+
+    async def send_command(self, method, params=None):
+        self.sends += 1
+        raise AssertionError("send_command must not be reached")
+
+
+@pytest.mark.parametrize("exc", [ConnectionError("connect to 10.0.0.9:18080 timed out after 5.0s"),
+                                 ValueError("REVIT_BRIDGE_PORT must be an integer, got 'abc'")])
+def test_a_connection_that_never_opens_consumes_nothing(host, monkeypatch, exc):
+    import revit_bridge.execution as execution
+
+    monkeypatch.setattr(execution, "PRECONDITION_SNAPSHOT_TIMEOUT", 0.2)
+    client = _NeverConnects(delay=0.4, exc=exc)        # slower than the probe budget
+
+    token = wall_token(host["gate"])
+    result = asyncio.run(run_pack(client=client, name="create_wall", params=dict(WALL), token=token, host="web", **host))
+    assert result.success is False and result.error == str(exc) and result.refusal is None
+    assert result.evidence_id is None and result.warnings == []
+    assert host["gate"].peek(token).used_at is None
+    assert host["ledger"].recent() == [] and client.sends == 0
+    assert host["store"].load("create_wall").failure_count == 1
+
+    token = code_token(host["gate"], "return 1;")
+    result = asyncio.run(run_code(gate=host["gate"], ledger=host["ledger"], client=client, code="return 1;",
+                                  parameters=None, token=token, host="web"))
+    assert result.success is False and result.error == str(exc)
+    assert result.evidence_id is None and host["gate"].peek(token).used_at is None
+    assert host["ledger"].recent() == [] and client.sends == 0
+
+
+def test_revit_client_ensure_connected_opens_the_socket_once():
+    async def scenario():
+        async with FakeRevit() as fake:
+            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=2)
+            try:
+                assert client.connected is False
+                await client.ensure_connected()
+                assert client.connected is True
+                await client.ensure_connected()                 # idempotent
+                return await client.ping()
+            finally:
+                await client.disconnect()
+
+    assert asyncio.run(scenario()) is True
+    dead = RevitClient(host="127.0.0.1", port=1, timeout=1, connect_timeout=0.5)
+    with pytest.raises(OSError):
+        asyncio.run(dead.ensure_connected())

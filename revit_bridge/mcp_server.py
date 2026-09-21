@@ -80,7 +80,16 @@ def _parse_json_arg(value, what: str):
 
 
 class _PooledClient:
-    """The pooled connection, opened on first use so refusals need no Revit."""
+    """The pooled connection, opened on first use so refusals need no Revit.
+
+    ``ensure_connected`` lets the execution flow open it before any timed
+    probe, so a connect that fails or never completes (or a bad setting such
+    as REVIT_BRIDGE_PORT=abc) is "nothing reached Revit" rather than a probe
+    timeout.
+    """
+
+    async def ensure_connected(self) -> None:
+        await RevitClientPool.get_client()
 
     async def send_code(self, code: str, parameters: list | None = None):
         client = await RevitClientPool.get_client()
