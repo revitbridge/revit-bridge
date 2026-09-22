@@ -13,7 +13,10 @@ behaviour: the host bypass is read only from ``env`` (a host that passes
 none has no bypass), the snapshot for the preconditions has a 5 s budget, a
 failing ``validator.before`` refuses before the token is consumed, and every
 refusal or exception after the token was consumed still leaves a ledger
-line. ``client`` needs ``send_code(code, parameters)`` and
+line. ``scope`` is the device the execution runs on (``device_id`` on a
+remote host) or ``"local"``: the token must have been issued for it, the
+ledger line records it, and ``revalidate`` refuses a record from another
+scope. ``client`` needs ``send_code(code, parameters)`` and
 ``send_command(method, params)``; when it also has ``ensure_connected()``,
 that is awaited once, before any timed probe, and any exception from it
 means nothing reached Revit: no token consumed, no ledger line.
@@ -29,7 +32,7 @@ from pydantic import BaseModel, Field
 
 from revit_bridge.capabilities.schema import evaluate_preconditions, precondition_categories
 from revit_bridge.capabilities.store import SolidifiedTool, ToolStore
-from revit_bridge.evidence.ledger import Ledger, code_fields, summarize_result
+from revit_bridge.evidence.ledger import LOCAL_SCOPE, Ledger, code_fields, summarize_result
 from revit_bridge.revit import sandbox
 from revit_bridge.revit.settings import env_flag
 from revit_bridge.snapshot.project import DEFAULT_CATEGORIES, take_snapshot
@@ -72,15 +75,16 @@ def unconfirmed_allowed(env: Mapping[str, str] | None) -> bool:
 
 
 def gate_refusal(gate: Gate, token: str, projection: dict, env: Mapping[str, str] | None = None,
-                 consume: bool = False) -> dict | None:
-    """Check ``token`` for ``projection``; the refusal payload when it must not run, else None.
+                 consume: bool = False, scope: str = LOCAL_SCOPE) -> dict | None:
+    """Check ``token`` for ``projection`` under ``scope``; the refusal payload when it must not run, else None.
 
     A token is a one-time credential issued by ``confirm_spec`` and bound to
-    the hash of the execution projection, so a model cannot confirm one
-    thing and run another. With ``consume=False`` the token is only verified;
-    the flow calls again with ``consume=True`` right before dispatch, after
-    every check that does not touch Revit, so a refused validation leaves
-    the confirmation redeemable.
+    the hash of the execution projection and to the scope it was issued for,
+    so a model cannot confirm one thing and run another, nor run it on
+    another device. With ``consume=False`` the token is only verified; the
+    flow calls again with ``consume=True`` right before dispatch, after every
+    check that does not touch Revit, so a refused validation leaves the
+    confirmation redeemable.
     """
     if unconfirmed_allowed(env):
         return None
@@ -88,9 +92,9 @@ def gate_refusal(gate: Gate, token: str, projection: dict, env: Mapping[str, str
         return confirmation_required()
     try:
         if consume:
-            gate.consume(token.strip(), projection)
+            gate.consume(token.strip(), projection, scope)
         else:
-            gate.verify(token.strip(), projection)
+            gate.verify(token.strip(), projection, scope)
     except GateError as exc:
         return confirmation_invalid(exc)
     return None
@@ -199,13 +203,14 @@ async def preconditions(client, pack: SolidifiedTool, warnings: list[str]) -> tu
     return evaluate_preconditions(pack, snapshot), document
 
 
-def _record(ledger: Ledger, *, host: str, bypass: bool, action: str, tool: SolidifiedTool | None,
+def _record(ledger: Ledger, *, host: str, scope: str, bypass: bool, action: str, tool: SolidifiedTool | None,
             projection: dict, conf: Confirmation | None, code: str | None, document: dict, resp,
             validation: ValidationReport | None, success: bool, error: str | None, duration_ms: int,
             preconditions_failed: list[str], warnings: list[str]) -> str | None:
     """Append the ledger line; a ledger that cannot be written costs a warning, not the result."""
     record = {
         "host": host,
+        "scope": scope,
         "action": action,
         "tool": tool.name if tool else None,
         "tool_version": tool.version if tool else None,
@@ -239,8 +244,9 @@ def _validation_error(kind: str, exc: Exception, before: dict) -> ValidationRepo
 # -- run_pack ---------------------------------------------------------------------------------
 
 async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name: str, params: dict,
-                   token: str, host: str = "mcp", env: Mapping[str, str] | None = None) -> ExecutionResult:
-    """Run capability pack ``name`` with ``params`` under confirmation ``token``.
+                   token: str, host: str = "mcp", env: Mapping[str, str] | None = None,
+                   scope: str = LOCAL_SCOPE) -> ExecutionResult:
+    """Run capability pack ``name`` with ``params`` under confirmation ``token`` on ``scope``.
 
     ``success`` means Revit succeeded AND the pack's validator (if any)
     passed; a failed assertion is ``success: false`` with
@@ -249,7 +255,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     if not isinstance(params, dict):
         return _refused({"success": False, "error": "params must be a JSON object"}, name)
     projection = {"kind": "run_tool", "tool": name, "params": params}
-    refusal = gate_refusal(gate, token, projection, env)
+    refusal = gate_refusal(gate, token, projection, env, scope=scope)
     if refusal:
         return _refused(refusal, name)
 
@@ -301,7 +307,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
         """A refusal before the token is consumed: no execution, but a ledger line
         so evidence() shows why the run did not happen."""
         evidence_id = _record(
-            ledger, host=host, bypass=bypass, action="run_tool", tool=pack, projection=projection,
+            ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection,
             conf=_confirmation_of(gate, token), code=None, document=document, resp=None, validation=None,
             success=False, error=error, duration_ms=int((time.monotonic() - started) * 1000),
             preconditions_failed=failed, warnings=warnings,
@@ -319,7 +325,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
             # invite a retry that duplicates the work. Refuse like a precondition.
             warnings.append(f"validator.before: {type(e).__name__}: {e}")
             return refused("validator_before_failed")
-    refusal = gate_refusal(gate, token, projection, env, consume=True)
+    refusal = gate_refusal(gate, token, projection, env, consume=True, scope=scope)
     if refusal:
         return _refused(refusal, name)
     conf = _confirmation_of(gate, token)
@@ -329,7 +335,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
         # Revit may or may not have run it: exactly the case that needs a ledger line
         store.record_usage(name, success=False)
         evidence_id = _record(
-            ledger, host=host, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
+            ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
             code=None, document=document, resp=None, validation=None, success=False, error=str(e),
             duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
         )
@@ -346,7 +352,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     store.record_usage(name, success=success)
     duration_ms = int((time.monotonic() - started) * 1000)
     evidence_id = _record(
-        ledger, host=host, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
+        ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
         code=None, document=document, resp=resp, validation=validation, success=success, error=error,
         duration_ms=duration_ms, preconditions_failed=[], warnings=warnings,
     )
@@ -359,10 +365,11 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
 # -- run_code -----------------------------------------------------------------------------------
 
 async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters: list | None, token: str,
-                   host: str = "mcp", env: Mapping[str, str] | None = None) -> ExecutionResult:
-    """Run C# ``code`` under confirmation ``token``. No pack, so no preconditions and no validator."""
+                   host: str = "mcp", env: Mapping[str, str] | None = None,
+                   scope: str = LOCAL_SCOPE) -> ExecutionResult:
+    """Run C# ``code`` under confirmation ``token`` on ``scope``. No pack, so no preconditions and no validator."""
     projection = {"kind": "execute_code", "code": code, "parameters": list(parameters or [])}
-    refusal = gate_refusal(gate, token, projection, env)
+    refusal = gate_refusal(gate, token, projection, env, scope=scope)
     if refusal:
         return _refused(refusal)
     # Security review - always enforced before dispatch (P0-2)
@@ -377,7 +384,7 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
         document = await document_info(client, warnings)
     except Exception as e:                     # noqa: BLE001 - nothing reached Revit: nothing to record
         return ExecutionResult(success=False, error=str(e) or type(e).__name__, warnings=warnings)
-    refusal = gate_refusal(gate, token, projection, env, consume=True)   # the last step before Revit
+    refusal = gate_refusal(gate, token, projection, env, consume=True, scope=scope)   # the last step before Revit
     if refusal:
         return _refused(refusal)
     conf = _confirmation_of(gate, token)
@@ -386,15 +393,16 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
     except Exception as e:
         # Revit may or may not have run it: exactly the case that needs a ledger line
         evidence_id = _record(
-            ledger, host=host, bypass=bypass, action="execute_code", tool=None, projection=projection, conf=conf,
+            ledger, host=host, scope=scope, bypass=bypass, action="execute_code", tool=None, projection=projection,
+            conf=conf,
             code=code, document=document, resp=None, validation=None, success=False, error=str(e),
             duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
         )
         return ExecutionResult(success=False, error=str(e), evidence_id=evidence_id, warnings=warnings)
     duration_ms = int((time.monotonic() - started) * 1000)
     evidence_id = _record(
-        ledger, host=host, bypass=bypass, action="execute_code", tool=None, projection=projection, conf=conf,
-        code=code, document=document, resp=resp, validation=None, success=resp.success, error=resp.error,
+        ledger, host=host, scope=scope, bypass=bypass, action="execute_code", tool=None, projection=projection,
+        conf=conf, code=code, document=document, resp=resp, validation=None, success=resp.success, error=resp.error,
         duration_ms=duration_ms, preconditions_failed=[], warnings=warnings,
     )
     return ExecutionResult(success=resp.success, result=resp.result, error=resp.error,
@@ -403,16 +411,20 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
 
 # -- revalidate -----------------------------------------------------------------------------------
 
-async def revalidate(*, store: ToolStore, ledger: Ledger, client, evidence_id: str) -> dict:
+async def revalidate(*, store: ToolStore, ledger: Ledger, client, evidence_id: str,
+                     scope: str | None = None) -> dict:
     """Re-run the validator's assertion for a recorded execution against the model as it is now.
 
     Returns the ValidationReport (plus ``evidence_id`` and ``tool``) or
-    ``{"error": ...}`` when the record, its pack or a validator is missing.
-    Transport failures propagate to the caller.
+    ``{"error": ...}`` when the record, its pack or a validator is missing,
+    or (``scope_mismatch``) when ``scope`` is given and the record belongs
+    to another one. Transport failures propagate to the caller.
     """
     record = ledger.get(evidence_id)
     if record is None:
         return {"error": "unknown_evidence", "evidence_id": evidence_id}
+    if scope is not None and record.get("scope") != scope:
+        return {"error": "scope_mismatch", "evidence_id": evidence_id}
     if record.get("action") != "run_tool" or not record.get("tool"):
         return {"error": "no_validator", "message": "only run_tool executions carry a validator"}
     pack = store.load(record["tool"])

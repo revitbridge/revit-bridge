@@ -315,3 +315,96 @@ def test_revit_client_ensure_connected_opens_the_socket_once():
     dead = RevitClient(host="127.0.0.1", port=1, timeout=1, connect_timeout=0.5)
     with pytest.raises(OSError):
         asyncio.run(dead.ensure_connected())
+
+
+# -- phase 7: scope - the device an execution belongs to ----------------------------------------
+
+DEVICE = "dev_abcdefghijkl"
+
+
+def test_scope_binds_the_token_and_labels_the_ledger_line(host):
+    """A token issued for a device runs only on that device; the line says which."""
+    spec = TaskSpec(task="wall", action=Action(kind="run_tool", tool="create_wall"),
+                    parameters=[ParamBinding(name=k, value=v, unit="mm" if isinstance(v, (int, float)) else None,
+                                             source=Source.answer, evidence=f"q_{k}") for k, v in WALL.items()])
+    remote = host["gate"].issue(spec, scope=DEVICE).token
+    local = host["gate"].issue(spec).token
+
+    async def scenario(client, fake):
+        wrong = await run_pack(client=client, name="create_wall", params=dict(WALL), token=remote, host="web", **host)
+        other = await run_pack(client=client, name="create_wall", params=dict(WALL), token=remote, host="web",
+                               scope="dev_zzzzzzzzzzzz", **host)
+        crossed = await run_pack(client=client, name="create_wall", params=dict(WALL), token=local, host="web",
+                                 scope=DEVICE, **host)
+        assert fake.requests == []                                   # refused before Revit, tokens kept
+        right = await run_pack(client=client, name="create_wall", params=dict(WALL), token=remote, host="web",
+                               scope=DEVICE, **host)
+        return wrong, other, crossed, right
+
+    wrong, other, crossed, right = with_fake(counting_handler(1, 2), scenario)
+    for refused in (wrong, other, crossed):
+        assert refused.error == "confirmation_invalid" and refused.refusal["reason"] == "mismatch"
+        assert refused.refusal["message"] == "the execution does not match the confirmed spec"
+        assert refused.evidence_id is None
+    assert right.success is True
+    record = host["ledger"].get(right.evidence_id)
+    assert record["scope"] == DEVICE and record["host"] == "web" and record["token_prefix"] == remote[:6]
+    assert host["gate"].peek(remote).used_at and host["gate"].peek(local).used_at is None
+    assert [r["id"] for r in host["ledger"].recent(scope=DEVICE)] == [right.evidence_id]
+    assert host["ledger"].recent(scope="local") == []
+
+    # the default scope is local: a token issued with the defaults runs with the defaults
+    plain = with_fake(counting_handler(1, 2), lambda c, f: run_pack(
+        client=c, name="create_wall", params=dict(WALL), token=local, host="web", **host))
+    assert plain.success is True and host["ledger"].get(plain.evidence_id)["scope"] == "local"
+    assert [r["id"] for r in host["ledger"].recent(scope="local")] == [plain.evidence_id]
+    assert [r["id"] for r in host["ledger"].recent()] == [plain.evidence_id, right.evidence_id]
+
+    # run_code: the same binding, and a refusal after the probe still carries the scope
+    code = "return 1;"
+    remote_code = host["gate"].issue(TaskSpec(task="code", action=Action(kind="execute_code", code=code),
+                                              parameters=[]), scope=DEVICE).token
+    mismatch = with_fake(counting_handler(0, 0), lambda c, f: run_code(
+        gate=host["gate"], ledger=host["ledger"], client=c, code=code, parameters=None, token=remote_code, host="web"))
+    assert mismatch.refusal["reason"] == "mismatch" and host["gate"].peek(remote_code).used_at is None
+    ran = with_fake(counting_handler(0, 0), lambda c, f: run_code(
+        gate=host["gate"], ledger=host["ledger"], client=c, code=code, parameters=None, token=remote_code,
+        host="web", scope=DEVICE))
+    assert ran.success is True and host["ledger"].get(ran.evidence_id)["scope"] == DEVICE
+    # the host bypass has no token to bind, but the line still says where it ran
+    bypassed = with_fake(counting_handler(0, 0), lambda c, f: run_code(
+        gate=host["gate"], ledger=host["ledger"], client=c, code=code, parameters=None, token="", host="web",
+        scope=DEVICE, env={"REVIT_BRIDGE_ALLOW_UNCONFIRMED": "1"}))
+    assert bypassed.success is True
+    assert host["ledger"].get(bypassed.evidence_id)["scope"] == DEVICE
+    assert host["ledger"].get(bypassed.evidence_id)["confirmed_by"] == "host_bypass"
+
+
+def test_revalidate_refuses_a_record_from_another_scope(host):
+    spec = TaskSpec(task="wall", action=Action(kind="run_tool", tool="create_wall"),
+                    parameters=[ParamBinding(name=k, value=v, unit="mm" if isinstance(v, (int, float)) else None,
+                                             source=Source.answer, evidence=f"q_{k}") for k, v in WALL.items()])
+    token = host["gate"].issue(spec, scope=DEVICE).token
+
+    async def scenario(client, fake):
+        run = await run_pack(client=client, name="create_wall", params=dict(WALL), token=token, host="web",
+                             scope=DEVICE, **host)
+        assert run.success is True
+        same = await revalidate(store=host["store"], ledger=host["ledger"], client=client,
+                                evidence_id=run.evidence_id, scope=DEVICE)
+        other = await revalidate(store=host["store"], ledger=host["ledger"], client=client,
+                                 evidence_id=run.evidence_id, scope="dev_zzzzzzzzzzzz")
+        local = await revalidate(store=host["store"], ledger=host["ledger"], client=client,
+                                 evidence_id=run.evidence_id, scope="local")
+        admin = await revalidate(store=host["store"], ledger=host["ledger"], client=client,
+                                 evidence_id=run.evidence_id)                       # no scope: any record
+        unknown = await revalidate(store=host["store"], ledger=host["ledger"], client=client,
+                                   evidence_id="ev_20000101T000000_ffffff", scope=DEVICE)
+        return run, same, other, local, admin, unknown
+
+    run, same, other, local, admin, unknown = with_fake(counting_handler(1, 2), scenario)
+    assert same["passed"] is True and same["evidence_id"] == run.evidence_id
+    assert other == {"error": "scope_mismatch", "evidence_id": run.evidence_id}
+    assert local == {"error": "scope_mismatch", "evidence_id": run.evidence_id}
+    assert admin["passed"] is True
+    assert unknown == {"error": "unknown_evidence", "evidence_id": "ev_20000101T000000_ffffff"}

@@ -9,6 +9,12 @@ every check that does not touch Revit (parameter validation, rendering,
 the sandbox review), and ``consume`` it the moment before the code is
 sent. A refused validation therefore leaves the token redeemable.
 
+A token also belongs to a *scope*: the device the execution runs on
+(``device_id`` on a remote host) or ``"local"`` for the add-in on this
+machine. A token redeemed under a different scope is refused with the same
+``mismatch`` as tampered parameters, so a refusal never says whose token it
+was.
+
 Tokens live in memory and, until redeemed or expired, in
 ``<evidence_dir>/pending/<token[:12]>.json`` so a restarted server can still
 honour a confirmation once.
@@ -40,6 +46,7 @@ class Confirmation(BaseModel):
     expires_at: str
     confirmed_by: str                # "designer"
     channel: str                     # "host_ui" | "chat"
+    scope: str = "local"             # device_id | "local" (pending files from 0.2 read as local)
     used_at: str | None = None
 
     def expired(self, now: datetime | None = None) -> bool:
@@ -81,7 +88,8 @@ class Gate:
 
     # -- issue -----------------------------------------------------------------
 
-    def issue(self, spec: TaskSpec, confirmed_by: str = "designer", channel: str = "chat") -> Confirmation:
+    def issue(self, spec: TaskSpec, confirmed_by: str = "designer", channel: str = "chat",
+              scope: str = "local") -> Confirmation:
         self.purge_expired()
         now = _now()
         conf = Confirmation(
@@ -92,6 +100,7 @@ class Gate:
             expires_at=_iso(now + timedelta(seconds=self.ttl_seconds)),
             confirmed_by=confirmed_by,
             channel=channel,
+            scope=scope,
         )
         self._tokens[conf.token] = conf
         self._persist(conf)
@@ -99,9 +108,9 @@ class Gate:
 
     # -- redeem ----------------------------------------------------------------
 
-    def verify(self, token: str, projection: dict | None = None) -> Confirmation:
-        """Check ``token`` (exists, unused, unexpired, and - when given - bound
-        to ``projection``) without consuming it; raises GateError."""
+    def verify(self, token: str, projection: dict | None = None, scope: str = "local") -> Confirmation:
+        """Check ``token`` (exists, unused, unexpired, issued for ``scope`` and - when
+        given - bound to ``projection``) without consuming it; raises GateError."""
         conf = self._tokens.get(token) or self._load(token)
         if conf is None:
             raise GateError("unknown", "no confirmation with this token")
@@ -110,25 +119,25 @@ class Gate:
         if conf.expired():
             self._forget(conf)
             raise GateError("expired", f"confirmation expired at {conf.expires_at}")
-        if projection is not None and projection_hash(projection) != conf.projection_hash:
+        if conf.scope != scope or (projection is not None and projection_hash(projection) != conf.projection_hash):
             raise GateError("mismatch", "the execution does not match the confirmed spec")
         return conf
 
-    def consume(self, token: str, projection: dict | None = None) -> Confirmation:
+    def consume(self, token: str, projection: dict | None = None, scope: str = "local") -> Confirmation:
         """Mark ``token`` used; call it the moment before the execution is sent.
 
         Re-runs ``verify`` so a token that expired between the checks and the
         dispatch is still refused.
         """
-        conf = self.verify(token, projection)
+        conf = self.verify(token, projection, scope)
         conf.used_at = _iso(_now())
         self._tokens[token] = conf
         self._unlink(conf)
         return conf
 
-    def redeem(self, token: str, projection: dict) -> Confirmation:
+    def redeem(self, token: str, projection: dict, scope: str = "local") -> Confirmation:
         """``verify`` + ``consume`` in one step."""
-        return self.consume(token, projection)
+        return self.consume(token, projection, scope)
 
     def peek(self, token: str) -> Confirmation | None:
         return self._tokens.get(token) or self._load(token)

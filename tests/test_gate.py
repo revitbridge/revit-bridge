@@ -891,3 +891,56 @@ def test_bad_settings_never_consume_the_token(isolated_store, monkeypatch):
     out = _call("execute_code", code="return 1;", token=code_tok)
     assert out["success"] is False and "REVIT_BRIDGE_PORT" in out["error"]
     assert server._gate.peek(code_tok).used_at is None and server._ledger.recent() == []
+
+
+# -- phase 7: a token belongs to a scope ---------------------------------------------------------
+
+def test_gate_scope_is_part_of_the_binding(isolated_data_dir):
+    """A token issued for one device is `mismatch` on another - the same code as tampered params."""
+    gate = Gate(ttl_seconds=600)
+    spec = TaskSpec.model_validate(spec_for("query_levels"))
+    projection = spec.execution_projection()
+
+    local = gate.issue(spec)                                        # default: the local add-in
+    assert local.scope == "local"
+    assert gate.verify(local.token, projection).scope == "local"
+    assert gate.verify(local.token, projection, scope="local").scope == "local"
+    with pytest.raises(Exception) as excinfo:
+        gate.verify(local.token, projection, scope="dev_abcdefghijkl")
+    assert excinfo.value.reason == "mismatch"
+    assert str(excinfo.value) == "the execution does not match the confirmed spec"   # nothing about scope
+    assert gate.peek(local.token).used_at is None                   # a mismatch consumes nothing
+
+    remote = gate.issue(spec, scope="dev_abcdefghijkl")
+    assert remote.scope == "dev_abcdefghijkl"
+    for wrong in ("local", "dev_zzzzzzzzzzzz", ""):
+        with pytest.raises(Exception) as excinfo:
+            gate.consume(remote.token, projection, scope=wrong)
+        assert excinfo.value.reason == "mismatch"
+    with pytest.raises(Exception) as excinfo:
+        gate.redeem(remote.token, projection)                       # default scope is not this device
+    assert excinfo.value.reason == "mismatch"
+    assert gate.redeem(remote.token, projection, scope="dev_abcdefghijkl").used_at
+    with pytest.raises(Exception) as excinfo:
+        gate.verify(remote.token, projection, scope="dev_abcdefghijkl")
+    assert excinfo.value.reason == "used"
+
+    # the scope is persisted with the pending file; a 0.2 file without it reads as local
+    kept = gate.issue(spec, scope="dev_abcdefghijkl")
+    pending = isolated_data_dir / "evidence" / "pending" / f"{kept.token[:12]}.json"
+    assert json.loads(pending.read_text(encoding="utf-8"))["scope"] == "dev_abcdefghijkl"
+    assert Gate().verify(kept.token, projection, scope="dev_abcdefghijkl").scope == "dev_abcdefghijkl"
+    old = gate.issue(spec)
+    old_pending = isolated_data_dir / "evidence" / "pending" / f"{old.token[:12]}.json"
+    data = json.loads(old_pending.read_text(encoding="utf-8"))
+    del data["scope"]
+    old_pending.write_text(json.dumps(data), encoding="utf-8")
+    fresh = Gate()
+    assert fresh.verify(old.token, projection).scope == "local"
+    with pytest.raises(Exception) as excinfo:
+        fresh.verify(old.token, projection, scope="dev_abcdefghijkl")
+    assert excinfo.value.reason == "mismatch"
+
+    # the MCP server issues and redeems with the defaults only
+    assert server._gate.issue(spec).scope == "local"
+    assert server.gate_refusal(server._gate.issue(spec).token, projection, {}) is None

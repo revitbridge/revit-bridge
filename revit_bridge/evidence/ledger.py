@@ -3,7 +3,7 @@
 A record (spec 9) says what ran, under which confirmation, against which
 document, what came back and what the validator concluded::
 
-    {"id": "ev_<ts>_<rand6>", "ts": "...Z", "host": "mcp|web",
+    {"id": "ev_<ts>_<rand6>", "ts": "...Z", "host": "mcp|web", "scope": "local|<device_id>",
      "action": "run_tool|execute_code", "tool": ..., "tool_version": ...,
      "spec_hash": ..., "projection_hash": ..., "token_prefix": ...,
      "confirmed_by": ..., "channel": ..., "params": {...},
@@ -14,7 +14,8 @@ document, what came back and what the validator concluded::
      "preconditions_failed": [...], "warnings": [...]}
 
 Parameters are recorded as given (packs carry no secrets); code only as its
-hash and first 200 characters.
+hash and first 200 characters. ``scope`` (0.3) is the device the execution
+ran on, or ``"local"``; lines written before it existed read as ``"local"``.
 """
 from __future__ import annotations
 
@@ -28,12 +29,13 @@ from typing import Any
 from revit_bridge.paths import evidence_dir
 
 RECORD_FIELDS = (
-    "id", "ts", "host", "action", "tool", "tool_version", "spec_hash", "projection_hash",
+    "id", "ts", "host", "scope", "action", "tool", "tool_version", "spec_hash", "projection_hash",
     "token_prefix", "confirmed_by", "channel", "params", "code_sha256", "code_head", "document",
     "success", "error", "result_summary", "validation", "duration_ms", "preconditions_failed", "warnings",
 )
 CODE_HEAD_CHARS = 200
 TOKEN_PREFIX_CHARS = 6
+LOCAL_SCOPE = "local"
 
 
 def new_id(now: datetime | None = None) -> str:
@@ -89,18 +91,21 @@ class Ledger:
             full[field] = list(full[field] or [])
         full["params"] = full["params"] if full["params"] is not None else {}
         full["duration_ms"] = int(full["duration_ms"] or 0)
+        full["scope"] = full["scope"] or LOCAL_SCOPE
         self.directory.mkdir(parents=True, exist_ok=True)
         path = self._file_for(full["id"])
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(full, ensure_ascii=False) + "\n")
         return full["id"]
 
-    def recent(self, limit: int = 20, tool: str | None = None) -> list[dict]:
-        """The newest ``limit`` records, newest first, optionally for one tool."""
+    def recent(self, limit: int = 20, tool: str | None = None, scope: str | None = None) -> list[dict]:
+        """The newest ``limit`` records, newest first, optionally for one tool and/or one scope."""
         found: list[dict] = []
         for path in sorted(self.directory.glob("*.jsonl"), reverse=True):
             for record in reversed(self._read(path)):
                 if tool is not None and record.get("tool") != tool:
+                    continue
+                if scope is not None and record.get("scope") != scope:
                     continue
                 found.append(record)
                 if len(found) >= limit:
@@ -137,6 +142,8 @@ class Ledger:
                 except ValueError:
                     continue
                 if isinstance(record, dict):
+                    if not record.get("scope"):
+                        record["scope"] = LOCAL_SCOPE       # a 0.2 line: the local add-in
                     records.append(record)
         except OSError:
             pass

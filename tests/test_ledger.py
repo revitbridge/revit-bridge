@@ -64,3 +64,36 @@ def test_summaries_and_code_fields():
     fields = code_fields("x" * 300)
     assert len(fields["code_sha256"]) == 64 and fields["code_head"] == "x" * 200
     assert new_id() != new_id()
+
+
+def test_scope_is_written_filtered_and_defaulted(tmp_path):
+    """Phase 7: every line carries `scope`; lines from 0.2 read as `local`."""
+    ledger = Ledger(tmp_path / "evidence")
+    assert "scope" in RECORD_FIELDS and RECORD_FIELDS.index("scope") == RECORD_FIELDS.index("host") + 1
+    local = ledger.append({"action": "run_tool", "tool": "query_levels", "id": "ev_20260922T090000_000001"})
+    dev_a = ledger.append({"action": "execute_code", "scope": "dev_aaaaaaaaaaaa", "id": "ev_20260922T090100_000002"})
+    dev_b = ledger.append({"action": "run_tool", "tool": "query_levels", "scope": "dev_bbbbbbbbbbbb",
+                           "id": "ev_20260922T090200_000003"})
+    dev_a2 = ledger.append({"action": "run_tool", "tool": "create_wall", "scope": "dev_aaaaaaaaaaaa",
+                            "id": "ev_20260922T090300_000004"})
+    lines = [json.loads(l) for l in (tmp_path / "evidence" / "2026-09.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [l["scope"] for l in lines] == ["local", "dev_aaaaaaaaaaaa", "dev_bbbbbbbbbbbb", "dev_aaaaaaaaaaaa"]
+    assert all(list(l) == list(RECORD_FIELDS) for l in lines)
+    assert ledger.get(local)["scope"] == "local" and ledger.get(dev_a)["scope"] == "dev_aaaaaaaaaaaa"
+
+    assert [r["id"] for r in ledger.recent(10)] == [dev_a2, dev_b, dev_a, local]              # no filter: all
+    assert [r["id"] for r in ledger.recent(10, scope="dev_aaaaaaaaaaaa")] == [dev_a2, dev_a]
+    assert [r["id"] for r in ledger.recent(10, scope="local")] == [local]
+    assert [r["id"] for r in ledger.recent(10, tool="query_levels", scope="dev_bbbbbbbbbbbb")] == [dev_b]
+    assert [r["id"] for r in ledger.recent(1, scope="dev_aaaaaaaaaaaa")] == [dev_a2]
+    assert ledger.recent(10, scope="dev_cccccccccccc") == []
+
+    # a 0.2 line has no scope field at all: it belongs to the local add-in
+    with (tmp_path / "evidence" / "2026-08.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"id": "ev_20260819T120000_aaaaaa", "action": "run_tool", "tool": "query_levels",
+                                 "host": "mcp"}) + "\n")
+    old = ledger.get("ev_20260819T120000_aaaaaa")
+    assert old["scope"] == "local" and "scope" not in json.loads(
+        (tmp_path / "evidence" / "2026-08.jsonl").read_text(encoding="utf-8"))
+    assert [r["id"] for r in ledger.recent(10, scope="local")] == [local, "ev_20260819T120000_aaaaaa"]
+    assert ledger.recent(10, scope="dev_aaaaaaaaaaaa")[-1]["id"] == dev_a
