@@ -30,6 +30,9 @@ def test_the_host_rendering_proposes_and_never_executes():
     for call in ("confirm_spec(", "run_tool(", "execute_code("):
         assert call not in host, call
     assert "have no confirm_spec, run_tool or execute_code; you only propose the spec." in host
+    # phase 6 spec 10.10 c: the host reports the execution in a user message, not a tool message
+    assert "comes back to you as a message from the host" in host
+    assert "tool message" not in host and "tool message" not in srv
     assert "propose_spec" not in srv
     # everything else is the same text
     for shared in ("## Flow (always, in this order)", "1. get_project_snapshot", "5. Show the spec card",

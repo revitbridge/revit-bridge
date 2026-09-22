@@ -60,10 +60,11 @@ _FLOW_TAIL = {
 7. Confirmation and execution happen in this host's interface: the designer
    confirms the card there and the host runs exactly what was confirmed. You
    have no confirm_spec, run_tool or execute_code; you only propose the spec.
-8. The execution comes back to you as a tool message. `success` is true only
-   when Revit succeeded AND the pack's validator passed; validation_failed means
-   the model did not change as claimed. Quote `validation.checks`, `error` and
-   `evidence_id`, and report only what that message says.
+8. The execution comes back to you as a message from the host. `success` is
+   true only when Revit succeeded AND the pack's validator passed;
+   validation_failed means the model did not change as claimed. Quote
+   `validation.checks`, `error` and `evidence_id`, and report only what that
+   message says.
 """,
 }
 
