@@ -47,6 +47,7 @@ class Confirmation(BaseModel):
     confirmed_by: str                # "designer"
     channel: str                     # "host_ui" | "chat"
     scope: str = "local"             # device_id | "local" (pending files from 0.2 read as local)
+    card: str | None = None          # the spec card the designer confirmed, shown again on the device
     used_at: str | None = None
 
     def expired(self, now: datetime | None = None) -> bool:
@@ -101,6 +102,7 @@ class Gate:
             confirmed_by=confirmed_by,
             channel=channel,
             scope=scope,
+            card=spec.card(),
         )
         self._tokens[conf.token] = conf
         self._persist(conf)

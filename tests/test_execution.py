@@ -408,3 +408,136 @@ def test_revalidate_refuses_a_record_from_another_scope(host):
     assert local == {"error": "scope_mismatch", "evidence_id": run.evidence_id}
     assert admin["passed"] is True
     assert unknown == {"error": "unknown_evidence", "evidence_id": "ev_20000101T000000_ffffff"}
+
+
+# -- phase 7: ad-hoc code asks the designer on the device; packs, probes and reads do not ----------
+
+def _confirm_fields(fake: FakeRevit) -> list:
+    return [req["params"].get("confirm") for req in fake.requests if req["method"] == "send_code_to_revit"]
+
+
+def test_run_code_carries_confirm_and_run_pack_does_not(host):
+    code = "var a = 1;\nreturn a;"
+    spec = TaskSpec(task="two lines", action=Action(kind="execute_code", code=code, code_parameters=[7]),
+                    parameters=[])
+    token = host["gate"].issue(spec).token
+    assert host["gate"].peek(token).card == spec.card()
+
+    async def scenario(client, fake):
+        assert await client.ping() is True                                   # a probe
+        ran = await run_code(gate=host["gate"], ledger=host["ledger"], client=client, code=code, parameters=[7],
+                             token=token, host="web")
+        confirms = _confirm_fields(fake)
+        assert ran.success is True
+        # the document probe before it and the ping carry nothing; the execution carries the card
+        assert confirms[:-1] == [None, None] and fake.requests[-1]["params"]["code"] == code
+        assert confirms[-1] == {"kind": "execute_code", "title": "revit-bridge", "message": spec.card()}
+        assert fake.requests[-1]["params"]["parameters"] == [7]
+        assert spec.card().startswith("Task: two lines\nCode: execute_code (2 lines)")
+        fake.requests.clear()
+        fake.handler = counting_handler(1, 2)                                # a fresh count for the pack
+        # a capability pack: snapshot, count probes and the execution - none asks the device
+        wall = wall_token(host["gate"])
+        pack = await run_pack(client=client, name="create_wall", params=dict(WALL), token=wall, host="web", **host)
+        assert pack.success is True
+        assert len(fake.requests) >= 3 and all(c is None for c in _confirm_fields(fake))
+        fake.requests.clear()
+        # the host bypass has no card: the code head is the message
+        long_code = "return 1; // " + "x" * 400
+        bypassed = await run_code(gate=host["gate"], ledger=host["ledger"], client=client, code=long_code,
+                                  parameters=None, token="", host="web", env={"REVIT_BRIDGE_ALLOW_UNCONFIRMED": "1"})
+        assert bypassed.success is True
+        assert _confirm_fields(fake)[-1] == {"kind": "execute_code", "title": "revit-bridge",
+                                            "message": long_code[:200]}
+        return ran
+
+    with_fake(counting_handler(1, 2), scenario)
+
+
+def test_a_no_on_the_device_is_declined_on_device_with_the_token_consumed(host):
+    code = "return 1;"
+    token = code_token(host["gate"], code)
+    counting = counting_handler(0, 0)
+
+    def declines(request):
+        if request["method"] == "send_code_to_revit" and request["params"].get("confirm"):
+            return FakeRevit.error(request["id"], -32001, "declined on device")
+        return counting(request)
+
+    result = with_fake(declines, lambda c, f: run_code(
+        gate=host["gate"], ledger=host["ledger"], client=c, code=code, parameters=None, token=token, host="web"))
+    assert result.success is False and result.error == "declined_on_device" and result.result is None
+    assert result.refusal is None and result.evidence_id
+    record = host["ledger"].get(result.evidence_id)
+    assert record["success"] is False and record["error"] == "declined_on_device"
+    assert record["action"] == "execute_code" and record["token_prefix"] == token[:6]
+    assert host["gate"].peek(token).used_at                          # the designer confirmed; the device said no
+    again = with_fake(declines, lambda c, f: run_code(
+        gate=host["gate"], ledger=host["ledger"], client=c, code=code, parameters=None, token=token, host="web"))
+    assert again.error == "confirmation_invalid" and again.refusal["reason"] == "used"
+
+    # any other add-in error keeps its message
+    def fails(request):
+        if request["method"] == "send_code_to_revit" and request["params"].get("confirm"):
+            return FakeRevit.error(request["id"], -32603, "compile error CS1002")
+        return counting(request)
+
+    failed = with_fake(fails, lambda c, f: run_code(
+        gate=host["gate"], ledger=host["ledger"], client=c, code=code, parameters=None,
+        token=code_token(host["gate"], code), host="web"))
+    assert failed.success is False and failed.error == "compile error CS1002"
+
+
+def test_a_request_with_confirm_waits_for_the_designer():
+    """The one request that carries ``confirm`` waits max(REVIT_BRIDGE_TIMEOUT, 180) s."""
+    from revit_bridge.revit.client import CONFIRM_TIMEOUT_SECONDS, DECLINED_ON_DEVICE, RevitResponse
+
+    assert CONFIRM_TIMEOUT_SECONDS == 180 and DECLINED_ON_DEVICE == -32001
+    seen = []
+
+    async def scenario(timeout: float):
+        client = RevitClient(host="127.0.0.1", port=1, timeout=timeout)
+
+        async def fake_send_command(method, params=None, timeout=None):
+            seen.append((method, params, timeout))
+            return RevitResponse(success=True, result={"success": True, "result": "1"})
+
+        client.send_command = fake_send_command
+        await client.send_code("return 1;")
+        await client.send_code("return 1;", [1], confirm={"kind": "execute_code", "title": "t", "message": "m"})
+
+    asyncio.run(scenario(2))
+    asyncio.run(scenario(300))
+    plain, confirmed, plain_long, confirmed_long = seen
+    assert plain == ("send_code_to_revit", {"code": "return 1;", "parameters": []}, None)
+    assert confirmed == ("send_code_to_revit", {"code": "return 1;", "parameters": [1],
+                                                "confirm": {"kind": "execute_code", "title": "t", "message": "m"}}, 180)
+    assert plain_long[2] is None and confirmed_long[2] == 300
+
+
+def test_the_client_reports_the_json_rpc_error_code():
+    async def scenario():
+        def handler(request):
+            rid = request["id"]
+            if request["params"].get("code") == "declined":
+                return FakeRevit.error(rid, -32001, "declined on device")
+            if request["params"].get("code") == "failed":
+                return FakeRevit.code_result(rid, None, success=False, error="boom")
+            return FakeRevit.default_handler(request)
+
+        async with FakeRevit(handler) as fake:
+            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=2)
+            try:
+                ok = await client.send_code("return document.Title;")
+                declined = await client.send_code("declined", confirm={"kind": "execute_code", "title": "t", "message": "m"})
+                failed = await client.send_code("failed")
+                unknown = await client.send_command("no_such_method")
+                return ok, declined, failed, unknown
+            finally:
+                await client.disconnect()
+
+    ok, declined, failed, unknown = asyncio.run(scenario())
+    assert ok.success is True and ok.error_code is None
+    assert declined.success is False and declined.error == "declined on device" and declined.error_code == -32001
+    assert failed.success is False and failed.error == "boom" and failed.error_code is None
+    assert unknown.success is False and unknown.error_code == -32601

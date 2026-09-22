@@ -944,3 +944,38 @@ def test_gate_scope_is_part_of_the_binding(isolated_data_dir):
     # the MCP server issues and redeems with the defaults only
     assert server._gate.issue(spec).scope == "local"
     assert server.gate_refusal(server._gate.issue(spec).token, projection, {}) is None
+
+
+def test_execute_code_asks_the_device_and_run_tool_does_not(monkeypatch, revit_env, isolated_store):
+    """Through the MCP tools: the policy is the package's, not a client switch."""
+    monkeypatch.delenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", raising=False)
+
+    async def scenario():
+        async with FakeRevit(counting_handler(1, 2)) as fake:
+            revit_env(fake.port)
+            try:
+                issued = await _acall("confirm_spec", spec=code_spec("return 1;"))
+                out = await _acall("execute_code", code="return 1;", token=issued["token"])
+                assert out["success"] is True
+                sent = [r["params"] for r in fake.requests if r["method"] == "send_code_to_revit"]
+                assert sent[-1]["confirm"] == {"kind": "execute_code", "title": "revit-bridge",
+                                               "message": issued["card"]}
+                assert all("confirm" not in p for p in sent[:-1])
+                fake.requests.clear()
+                fake.handler = counting_handler(1, 2)
+                token = (await _acall("confirm_spec", spec=spec_for("create_wall", **WALL)))["token"]
+                out = await _acall("run_tool", name="create_wall", params=json.dumps(WALL), token=token)
+                assert out["success"] is True
+                assert all("confirm" not in r["params"] for r in fake.requests)
+                fake.requests.clear()
+                fake.handler = lambda req: (FakeRevit.error(req["id"], -32001, "declined on device")
+                                            if req["params"].get("confirm") else counting_handler(1, 2)(req))
+                issued = await _acall("confirm_spec", spec=code_spec("return 2;"))
+                out = await _acall("execute_code", code="return 2;", token=issued["token"])
+                assert out["success"] is False and out["error"] == "declined_on_device"
+                assert server._ledger.get(out["evidence_id"])["error"] == "declined_on_device"
+                assert server._gate.peek(issued["token"]).used_at
+            finally:
+                await RevitClientPool.disconnect()
+
+    asyncio.run(scenario())

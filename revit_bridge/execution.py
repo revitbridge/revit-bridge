@@ -16,10 +16,23 @@ refusal or exception after the token was consumed still leaves a ledger
 line. ``scope`` is the device the execution runs on (``device_id`` on a
 remote host) or ``"local"``: the token must have been issued for it, the
 ledger line records it, and ``revalidate`` refuses a record from another
-scope. ``client`` needs ``send_code(code, parameters)`` and
-``send_command(method, params)``; when it also has ``ensure_connected()``,
-that is awaited once, before any timed probe, and any exception from it
-means nothing reached Revit: no token consumed, no ledger line.
+scope.
+
+One policy is fixed here, not in any client setting: ad-hoc code
+(``run_code``) asks the designer on the device before it runs - the
+``send_code_to_revit`` request carries ``confirm`` (``{kind, title,
+message}``, the message being the confirmed spec card) and a No from the
+device (JSON-RPC error ``-32001``) is ``error: "declined_on_device"`` with
+the token consumed and a ledger line; capability packs (``run_pack``),
+probes and reads never carry ``confirm``.
+
+``client`` needs ``send_code(code, parameters, confirm=None)`` - a client
+that receives ``confirm`` sends it in the request params, waits at least
+``CONFIRM_TIMEOUT_SECONDS`` for the answer and reports a JSON-RPC error's
+code as ``error_code`` - and ``send_command(method, params)``; when it also
+has ``ensure_connected()``, that is awaited once, before any timed probe,
+and any exception from it means nothing reached Revit: no token consumed,
+no ledger line.
 """
 from __future__ import annotations
 
@@ -32,8 +45,9 @@ from pydantic import BaseModel, Field
 
 from revit_bridge.capabilities.schema import evaluate_preconditions, precondition_categories
 from revit_bridge.capabilities.store import SolidifiedTool, ToolStore
-from revit_bridge.evidence.ledger import LOCAL_SCOPE, Ledger, code_fields, summarize_result
+from revit_bridge.evidence.ledger import CODE_HEAD_CHARS, LOCAL_SCOPE, Ledger, code_fields, summarize_result
 from revit_bridge.revit import sandbox
+from revit_bridge.revit.client import DECLINED_ON_DEVICE
 from revit_bridge.revit.settings import env_flag
 from revit_bridge.snapshot.project import DEFAULT_CATEGORIES, take_snapshot
 from revit_bridge.spec.gate import Confirmation, Gate, GateError, confirmation_invalid, confirmation_required
@@ -51,6 +65,8 @@ RETRY_HINT = (
     "If this tool fails repeatedly, write fresh code and use execute_code "
     "instead - the tool definition may be outdated."
 )
+CONFIRM_TITLE = "revit-bridge"
+DECLINED_ERROR = "declined_on_device"
 
 
 class ExecutionResult(BaseModel):
@@ -241,6 +257,20 @@ def _validation_error(kind: str, exc: Exception, before: dict) -> ValidationRepo
     return failed_report(kind, f"validator could not run: {type(exc).__name__}: {exc}", before)
 
 
+def device_confirmation(code: str, conf: Confirmation | None) -> dict:
+    """The ``confirm`` field of an ad-hoc execution: what the device shows before it runs.
+
+    The message is the spec card the designer confirmed; under the host
+    bypass (no confirmation) it is the head of the code.
+    """
+    message = conf.card if conf is not None and conf.card else code[:CODE_HEAD_CHARS]
+    return {"kind": "execute_code", "title": CONFIRM_TITLE, "message": message}
+
+
+def _declined(resp) -> bool:
+    return getattr(resp, "error_code", None) == DECLINED_ON_DEVICE
+
+
 # -- run_pack ---------------------------------------------------------------------------------
 
 async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name: str, params: dict,
@@ -389,7 +419,7 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
         return _refused(refusal)
     conf = _confirmation_of(gate, token)
     try:
-        resp = await client.send_code(code, parameters)
+        resp = await client.send_code(code, parameters, confirm=device_confirmation(code, conf))
     except Exception as e:
         # Revit may or may not have run it: exactly the case that needs a ledger line
         evidence_id = _record(
@@ -400,12 +430,13 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
         )
         return ExecutionResult(success=False, error=str(e), evidence_id=evidence_id, warnings=warnings)
     duration_ms = int((time.monotonic() - started) * 1000)
+    error = DECLINED_ERROR if _declined(resp) else resp.error       # the designer said No on the device
     evidence_id = _record(
         ledger, host=host, scope=scope, bypass=bypass, action="execute_code", tool=None, projection=projection,
-        conf=conf, code=code, document=document, resp=resp, validation=None, success=resp.success, error=resp.error,
+        conf=conf, code=code, document=document, resp=resp, validation=None, success=resp.success, error=error,
         duration_ms=duration_ms, preconditions_failed=[], warnings=warnings,
     )
-    return ExecutionResult(success=resp.success, result=resp.result, error=resp.error,
+    return ExecutionResult(success=resp.success, result=resp.result, error=error,
                            evidence_id=evidence_id, warnings=warnings)
 
 

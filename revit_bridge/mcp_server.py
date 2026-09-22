@@ -91,9 +91,9 @@ class _PooledClient:
     async def ensure_connected(self) -> None:
         await RevitClientPool.get_client()
 
-    async def send_code(self, code: str, parameters: list | None = None):
+    async def send_code(self, code: str, parameters: list | None = None, confirm: dict | None = None):
         client = await RevitClientPool.get_client()
-        return await client.send_code(code, parameters)
+        return await client.send_code(code, parameters, confirm=confirm)
 
     async def send_command(self, method: str, params: dict | None = None):
         client = await RevitClientPool.get_client()

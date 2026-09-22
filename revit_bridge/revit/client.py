@@ -9,6 +9,10 @@ Protocol (from the add-in's SocketService.cs):
 - Optional pre-shared token: sent as a top-level "token" field; the add-in
   rejects the request when its configured token does not match
 - send_code_to_revit timeout: 60s (add-in side RaiseAndWaitForCompletion)
+- Optional "confirm" field in the send_code_to_revit params (phase 7): the
+  add-in shows the designer a Yes/No dialog first and answers a declined
+  run with JSON-RPC error -32001; such a request waits at least
+  CONFIRM_TIMEOUT_SECONDS for the designer
 
 Connection settings default to the ``REVIT_BRIDGE_*`` environment variables
 (see :mod:`revit_bridge.revit.settings`).
@@ -28,6 +32,11 @@ from revit_bridge.revit.probe import PING_PROBE
 
 _log = logging.getLogger("revit_bridge.revit.client")
 
+# A request that carries ``confirm`` waits for a person: never less than this.
+CONFIRM_TIMEOUT_SECONDS = 180.0
+# The add-in's JSON-RPC error code when the designer answered No on the device.
+DECLINED_ON_DEVICE = -32001
+
 
 @dataclass
 class RevitResponse:
@@ -36,6 +45,7 @@ class RevitResponse:
     result: dict | list | str | None = None
     error: str | None = None
     raw: str = ""
+    error_code: int | None = None    # the JSON-RPC error code, when the add-in answered with an error
 
 
 _DECODER = json.JSONDecoder()
@@ -133,14 +143,17 @@ class RevitClient:
             payload["token"] = self.token
         return payload
 
-    async def send_command(self, method: str, params: dict | None = None) -> RevitResponse:
+    async def send_command(self, method: str, params: dict | None = None,
+                           timeout: float | None = None) -> RevitResponse:
         """Send a JSON-RPC 2.0 command and wait for the response.
 
         Uses a lock to prevent concurrent commands from interleaving on the
         same TCP connection.  Validates that the response id matches the
         request id - stale responses from previous commands (e.g. a late
-        health-check reply) are discarded automatically.
+        health-check reply) are discarded automatically. ``timeout`` (seconds)
+        replaces the client's timeout for this one request.
         """
+        timeout = self.timeout if timeout is None else timeout
         async with self._lock:
             if not self.connected:
                 await self.connect()
@@ -157,7 +170,7 @@ class RevitClient:
             # Several objects may share one chunk (e.g. a late reply followed by
             # ours); the leftover bytes stay in `buf` for the next iteration.
             # Loop to skip stale responses whose id doesn't match request_id.
-            deadline = time.monotonic() + self.timeout
+            deadline = time.monotonic() + timeout
             buf = b""
             while True:
                 try:
@@ -167,7 +180,7 @@ class RevitClient:
                             break
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
-                            return RevitResponse(success=False, error=f"Timeout after {self.timeout}s")
+                            return RevitResponse(success=False, error=f"Timeout after {timeout}s")
                         chunk = await asyncio.wait_for(
                             self._reader.read(8192),
                             timeout=remaining,
@@ -176,7 +189,7 @@ class RevitClient:
                             raise ConnectionError("Revit add-in closed connection")
                         buf += chunk
                 except asyncio.TimeoutError:
-                    return RevitResponse(success=False, error=f"Timeout after {self.timeout}s")
+                    return RevitResponse(success=False, error=f"Timeout after {timeout}s")
 
                 # Validate response id matches our request
                 resp_id = resp.get("id")
@@ -191,13 +204,16 @@ class RevitClient:
                 if "error" in resp and resp["error"]:
                     err = resp["error"]
                     msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                    return RevitResponse(success=False, error=msg, raw=json.dumps(resp))
+                    code = err.get("code") if isinstance(err, dict) else None
+                    return RevitResponse(success=False, error=msg, raw=json.dumps(resp),
+                                         error_code=code if isinstance(code, int) else None)
 
                 return RevitResponse(success=True, result=resp.get("result"), raw=json.dumps(resp))
 
     # -- high-level: send code -------------------------------------------------
 
-    async def send_code(self, code: str, parameters: list | None = None) -> RevitResponse:
+    async def send_code(self, code: str, parameters: list | None = None,
+                        confirm: dict | None = None) -> RevitResponse:
         """Send C# code to Revit for dynamic compilation and execution.
 
         Maps to the send_code_to_revit command. The add-in wraps user code in:
@@ -205,13 +221,20 @@ class RevitClient:
         and compiles it with Roslyn. A Transaction is already active - user code
         must NOT create its own Transaction.
 
+        ``confirm`` (``{kind, title, message}``) asks the add-in to show the
+        designer a Yes/No dialog before running; the request then waits
+        ``max(timeout, CONFIRM_TIMEOUT_SECONDS)`` and a No comes back as
+        ``error_code == DECLINED_ON_DEVICE``. Without it nothing is shown.
+
         The add-in returns: {"success": bool, "result": "JSON string", "errorMessage": ""}
         We unwrap this nested structure so callers get parsed data directly.
         """
-        resp = await self.send_command("send_code_to_revit", {
-            "code": code,
-            "parameters": parameters or [],
-        })
+        params: dict = {"code": code, "parameters": parameters or []}
+        timeout = None
+        if confirm is not None:
+            params["confirm"] = confirm
+            timeout = max(self.timeout, CONFIRM_TIMEOUT_SECONDS)
+        resp = await self.send_command("send_code_to_revit", params, timeout=timeout)
 
         _log.debug(f"[send_code] resp.success={resp.success} result_type={type(resp.result).__name__}")
 
