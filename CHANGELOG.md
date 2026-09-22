@@ -6,6 +6,69 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-22
+
+Authorization per device: a pairing code turns one add-in installation into a
+device with its own token, a confirmation and a ledger line say which device
+they belong to, and ad-hoc code asks the designer on the device before it
+runs.
+
+### Added
+
+- `revit_bridge.auth.devices`: `DeviceStore` (`<data dir>/auth/devices.json`)
+  with `create_pairing`, `redeem`, `verify_device`, `verify_browser`,
+  `revoke`, `touch`, `list`, `purge`, and the models `PairingCode`, `Device`,
+  `Redeemed` plus `DeviceError("invalid_code")`. A pairing code is
+  `XXXX-XXXX` from an alphabet without `0/O/1/I` and lasts ten minutes; the
+  code, the device token and the browser key are returned once in plain text
+  and stored only as sha256, compared in constant time. Exported from
+  `revit_bridge.auth`.
+- `revit_bridge.paths.auth_dir()` - `<data dir>/auth`.
+- `revit_bridge.jsonfile.LockedJsonFile`: the locked read-modify-write and
+  atomic replace `usage.json` had, now shared with `devices.json`.
+- `RevitClient.send_code(code, parameters, confirm=...)` and
+  `send_command(method, params, timeout=...)`; `RevitResponse.error_code`
+  carries the JSON-RPC error code the add-in answered with.
+
+### Changed
+
+- **Breaking (hosts that call the package API).** A confirmation and an
+  execution belong to a *scope*: the `device_id` it runs on, or `"local"`
+  for the add-in on this machine.
+  - `Confirmation` gains `scope` (default `"local"`) and `card`;
+    `Gate.issue(spec, confirmed_by, channel, scope="local")` and
+    `verify` / `consume` / `redeem(token, projection, scope="local")` refuse
+    another scope with `GateError("mismatch")` - the same reason as tampered
+    parameters, so a refusal never says whose token it was.
+  - The ledger record gains `scope` (after `host`);
+    `Ledger.recent(limit, tool, scope=None)` filters on it. Lines written by
+    0.2 have no `scope` and read as `"local"`.
+  - `run_pack` / `run_code(..., scope="local")` verify, consume and record
+    under that scope; `revalidate(..., scope=None)` answers
+    `{"error": "scope_mismatch"}` for a record from another one.
+  - The MCP server passes none of them and keeps the local defaults, so its
+    tool replies are unchanged.
+- **Breaking (the add-in protocol).** `run_code` adds `confirm`
+  (`{kind: "execute_code", title: "revit-bridge", message: <the confirmed
+  spec card, else the first 200 characters of the code>}`) to the
+  `send_code_to_revit` params, and that one request waits
+  `max(REVIT_BRIDGE_TIMEOUT, 180)` seconds for the designer's answer.
+  `run_pack`, the probes and the reads send no `confirm`, so the policy is
+  the package's and does not depend on a client setting. An add-in that
+  answers `-32001` ("declined on device") gives
+  `ExecutionResult(success=False, error="declined_on_device")` with the
+  token consumed and a ledger line. A client of `run_code` must accept the
+  `confirm` keyword in its `send_code`.
+- `host_instructions()`: the execution comes back "as a message from the
+  host" instead of "as a tool message".
+
+### Deprecated
+
+- `revit_bridge.auth.tokens` (the slot helpers `slot_token_required`,
+  `load_slot_tokens`, `verify_slot_token`, `parse_handshake_token`) and with
+  them the `MCP_BRIDGE_SLOT_TOKEN*` environment variables: devices replace
+  slots. They still work in 0.3 and are removed in 0.4.
+
 ## [0.2.1] - 2026-09-21
 
 The execution flow as a package API, so the web host (phase 6) runs the same

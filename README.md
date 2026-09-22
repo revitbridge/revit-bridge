@@ -99,6 +99,23 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
    the assertion held, and every execution leaves a line in the evidence ledger
    (`evidence`, `validate(evidence_id)`).
 
+**Devices and the dialog in Revit.** A host that reaches Revit over the
+network (the web demo) pairs each add-in installation once:
+`DeviceStore.create_pairing()` hands out a `XXXX-XXXX` code that is valid for
+ten minutes, the add-in redeems it with `DeviceStore.redeem(code)` and keeps
+the device token it gets back, and the browser that asked for the pairing
+keeps a browser key. Only sha256 digests of the code, the token and the key
+are stored (`<data dir>/auth/devices.json`); `verify_device`,
+`verify_browser` and `revoke` are how a host authorises a request afterwards.
+Each confirmation and each ledger line then carries the `scope` it belongs to
+- the `device_id`, or `local` for the add-in on this machine - and a token
+confirmed for one device cannot be redeemed on another. Independently of any
+client setting, `execute_code` asks the designer once more *in Revit*: the
+request carries the confirmed spec card, the add-in shows it with Yes/No and
+waits up to three minutes, and a No comes back as
+`error: "declined_on_device"` (the token is spent and the run is in the
+ledger). `run_tool` runs capability packs without that dialog.
+
 **Confirmation gate.** `execute_code` and `run_tool` return
 `confirmation_required` without a `token`. A token comes only from
 `confirm_spec(spec)`: the TaskSpec lists every parameter with its value, source
@@ -129,7 +146,7 @@ part of CI.
 | `REVIT_BRIDGE_ALLOW_UNCONFIRMED` | *(unset)* | `1` lifts the confirmation-token gate (host-internal flows only) |
 | `REVIT_BRIDGE_CONFIRM_TTL` | `600` | Seconds a confirmation token stays valid |
 | `REVIT_BRIDGE_DATA_DIR` | `%LOCALAPPDATA%
-evit-bridge` (Windows), `~/.local/share/revit-bridge` (else) | Per-user data: solidified packs, `usage.json`, later the evidence ledger |
+evit-bridge` (Windows), `~/.local/share/revit-bridge` (else) | Per-user data: solidified packs, `usage.json`, the evidence ledger, `auth/devices.json` |
 | `REVIT_BRIDGE_CAPABILITIES_DIR` | `<data dir>/capabilities` | User pack directory; the packs shipped in the wheel stay visible, a user pack of the same name replaces one |
 | `REVIT_BRIDGE_EVIDENCE_DIR` | `<data dir>/evidence` | Evidence ledger (`<YYYY-MM>.jsonl`) and pending confirmations |
 

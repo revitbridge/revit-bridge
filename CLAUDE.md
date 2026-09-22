@@ -25,13 +25,15 @@ uvx --from . revit-bridge check   # read the open document's title through the a
   `probe.py` (`check_connection`, `PING_PROBE`).
 - `revit_bridge/snapshot/` — query atoms, model queries (`query.py`, incl. the `query` tool kinds),
   `project.py` (`ProjectSnapshot`, `take_snapshot`).
-- `revit_bridge/paths.py` — per-user data root (`REVIT_BRIDGE_DATA_DIR`), user/built-in pack directories, `skills_dir()`.
+- `revit_bridge/paths.py` — per-user data root (`REVIT_BRIDGE_DATA_DIR`), user/built-in pack directories,
+  `auth_dir()`, `skills_dir()`; `revit_bridge/jsonfile.py` — the locked read-modify-write both JSON stores use.
 - `revit_bridge/capabilities/` — capability pack store (built-in v1 packs in `capabilities/` at repo root, user
   packs and `usage.json` in the data root; a user pack overrides a built-in one of the same name); `schema.py`
   validates pack files and evaluates preconditions.
 - `revit_bridge/spec/` — `models.py` (TaskSpec), `rules.py` (validation, missing params, reconcile), `gate.py`
   (confirmation tokens). `validators/` — post-execution assertions; `evidence/` — the JSONL ledger;
-  `auth/` — slot token helpers.
+  `auth/` — `devices.py` (pairing codes, device tokens and browser keys, hashed; `DeviceStore` in
+  `<data dir>/auth/devices.json`), `tokens.py` (the 0.1 slot helpers, deprecated, removed in 0.4).
 - `tests/` — pytest; `tests/fake_revit.py` fakes the add-in.
 - `plugin/` — Claude Code plugin: `skills/revit-bridge/SKILL.md` (+ `references/`), `.mcp.json`,
   `hooks/hooks.json` + `hooks/spec_gate.py`. `.claude-plugin/marketplace.json` at the repo root
