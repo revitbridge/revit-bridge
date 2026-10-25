@@ -58,6 +58,20 @@ whose interface does the confirmation.
 
 From a checkout: `uv sync` then `uv run revit-bridge`.
 
+**Develop a standalone C# add-in** — the `revit-addin-dev` skill in
+`plugin/skills/` continues an existing project or creates a minimal command
+project for Revit 2024, 2025, or 2026, including the 2025.5/2026.5 .NET 10
+updates. Select the exact installed release, not just its year. It uses bridge tools for relevant model
+context and prototype checks, then delivers a DLL that runs independently
+of the bridge. Coding and building can proceed without a live connection.
+
+From a checkout, load both skills with `claude --plugin-dir ./plugin`, or
+copy the complete `plugin/skills/revit-addin-dev` folder into your agent's
+skills directory. Example request: "Use revit-addin-dev to continue my C#
+plugin, inspect the selected walls through revit-bridge where needed, and
+build an independent command." The bundled `scripts/new_addin.py --help`
+describes the starter generator; it does not install or launch the add-in.
+
 ## Use
 
 1. Start Revit, open a project and make sure the add-in is listening.

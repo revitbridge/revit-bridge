@@ -1,0 +1,38 @@
+using System;
+using Autodesk.Revit.Attributes;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+
+namespace __PROJECT_NAME__
+{
+    [Transaction(TransactionMode.ReadOnly)]
+    public sealed class Command : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        {
+            try
+            {
+                UIDocument? uidoc = commandData.Application.ActiveUIDocument;
+                if (uidoc == null)
+                {
+                    message = "Open a Revit document before running this command.";
+                    return Result.Failed;
+                }
+
+                Document document = uidoc.Document;
+                int count = uidoc.Selection.GetElementIds().Count;
+                TaskDialog.Show("__PROJECT_NAME__", $"Document: {document.Title}\nSelected elements: {count}");
+                return Result.Succeeded;
+            }
+            catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+            {
+                return Result.Cancelled;
+            }
+            catch (Exception exception)
+            {
+                message = exception.Message;
+                return Result.Failed;
+            }
+        }
+    }
+}

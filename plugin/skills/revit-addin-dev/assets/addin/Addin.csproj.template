@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>__TARGET_FRAMEWORK__</TargetFramework>
+    <RevitVersion>__REVIT_VERSION__</RevitVersion>
+    <RevitRelease>__REVIT_RELEASE__</RevitRelease>
+    <AssemblyName>__PROJECT_NAME__</AssemblyName>
+    <RootNamespace>__PROJECT_NAME__</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <OutputPath>bin\$(Configuration)\$(RevitRelease)\</OutputPath>
+    <RevitApiDir Condition="'$(RevitApiDir)' == ''">$(ProgramW6432)\Autodesk\Revit $(RevitVersion)</RevitApiDir>
+    <RevitAPIPath Condition="'$(RevitAPIPath)' == ''">$(RevitApiDir)\RevitAPI.dll</RevitAPIPath>
+    <RevitAPIUIPath Condition="'$(RevitAPIUIPath)' == ''">$(RevitApiDir)\RevitAPIUI.dll</RevitAPIUIPath>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(TargetFramework)' != 'net48'">
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="RevitAPI">
+      <HintPath>$(RevitAPIPath)</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>$(RevitAPIUIPath)</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+  <Target Name="CheckRevitReferences" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(RevitAPIPath)')" Text="RevitAPI.dll not found. Set RevitApiDir or RevitAPIPath to Revit __REVIT_VERSION__ reference assemblies." />
+    <Error Condition="!Exists('$(RevitAPIUIPath)')" Text="RevitAPIUI.dll not found. Set RevitApiDir or RevitAPIUIPath to Revit __REVIT_VERSION__ reference assemblies." />
+    <GetAssemblyIdentity AssemblyFiles="$(RevitAPIPath);$(RevitAPIUIPath)">
+      <Output TaskParameter="Assemblies" ItemName="RevitReferenceIdentity" />
+    </GetAssemblyIdentity>
+    <Error Condition="'%(RevitReferenceIdentity.Version)' &lt; '__API_MAJOR__.0.0.0' Or '%(RevitReferenceIdentity.Version)' &gt;= '__NEXT_API_MAJOR__.0.0.0'" Text="API year mismatch: %(RevitReferenceIdentity.Identity). Select references for Revit __REVIT_VERSION__." />
+    <Error Condition="'$(TargetFramework)' == 'net8.0-windows' And '%(RevitReferenceIdentity.Version)' &gt;= '__API_MAJOR__.5.0.0'" Text="These Revit __REVIT_VERSION__.5 APIs require .NET 10. Use --revit-version __REVIT_VERSION__.5 and a .NET 10 SDK." />
+    <Error Condition="'$(TargetFramework)' == 'net10.0-windows' And '%(RevitReferenceIdentity.Version)' &lt; '__API_MAJOR__.5.0.0'" Text="This project targets Revit __REVIT_VERSION__.5. Supply the matching .5 API assemblies instead of earlier .NET 8 references." />
+  </Target>
+  <Target Name="WriteLocalManifest" AfterTargets="Build">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\__PROJECT_NAME__.addin" DestinationFiles="$(TargetDir)__PROJECT_NAME__.addin" />
+    <XmlPoke XmlInputPath="$(TargetDir)__PROJECT_NAME__.addin" Query="/RevitAddIns/AddIn/Assembly" Value="$(TargetPath)" />
+  </Target>
+</Project>

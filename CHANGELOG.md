@@ -8,6 +8,12 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- `revit-addin-dev` skill for developing independent C# Revit add-ins with
+  optional bridge context and prototype checks. Includes existing-project
+  guidance, snippet-to-command conversion, and a standalone project generator
+  for Revit 2024/2025/2026, including the 2025.5/2026.5 .NET 10 updates,
+  with no automatic installation. Generated builds reject incompatible API
+  years and .NET 8/.NET 10 reference combinations before dependency resolution.
 - `check_code(code, parameters)` MCP tool (read-only, no token): compiles C#
   for `execute_code` inside Revit without running it, through the add-in's
   `check_code_in_revit`, after the local sandbox review (a blocked pattern
