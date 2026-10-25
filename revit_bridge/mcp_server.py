@@ -3,7 +3,8 @@ revit-bridge MCP server - code execution and capability packs for Revit.
 
 Usage:
     revit-bridge            run the MCP server on stdio (what hosts call)
-    revit-bridge check      ping the Revit add-in and print the connection status
+    revit-bridge check      ping the Revit add-in and print the connection status,
+                            its capability and environment
     python -m revit_bridge.mcp_server
 
 Tools:
@@ -12,6 +13,7 @@ Tools:
     - missing_params       : the questions a pack still needs answered
     - reconcile            : a draft TaskSpec against a snapshot
     - confirm_spec         : validate a TaskSpec, issue a confirmation token
+    - check_code        : compile C# in Revit without running it (no gate)
     - execute_code      : send C# code to Revit (confirmation token)
     - solidify_tool     : save successful code as a reusable named tool
     - list_tools        : list all solidified tools
@@ -37,12 +39,14 @@ from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
 from revit_bridge import __version__
+from revit_bridge import checking
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ENV_ALLOW_UNCONFIRMED, ExecutionResult, run_code, run_pack
 from revit_bridge.execution import gate_refusal as _gate_refusal
 from revit_bridge.execution import revalidate as _revalidate
 from revit_bridge.instructions import server_instructions
+from revit_bridge.revit.capabilities import Capabilities
 from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.revit.probe import CHECK_PROBE, check_connection  # noqa: F401 - re-exported
 from revit_bridge.revit.settings import RevitSettings, env_flag
@@ -136,7 +140,8 @@ def _dumps(payload) -> str:
 async def get_project_snapshot(categories: list[str] | None = None) -> str:
     """Read-only picture of the open Revit model: document, units, active view,
     levels, grids, selection, links, phases and the family types of the given
-    categories (default: walls, structural columns/framing, floors, doors,
+    categories - BuiltInCategory OST_* names such as "OST_Walls", nothing else
+    (default: walls, structural columns/framing, floors, doors,
     windows). Partial failures are listed in `warnings`; `fingerprint`
     identifies the model state for `reconcile`. Like every send_code, it runs
     inside a Revit transaction on the add-in side: it fails on read-only
@@ -160,6 +165,7 @@ async def query(kind: str, args: dict | None = None) -> str:
     """Read-only model query, no confirmation needed. kinds: levels, grids,
     family_types (args.categories), elements (args.category, args.limit<=200),
     selection, view_elements (args.limit<=200), units, counts (args.categories).
+    Categories are BuiltInCategory OST_* names, e.g. "OST_Walls" (not "Walls").
     Returns {"error": "unknown_kind", "kinds": [...]} for anything else. Runs
     inside a Revit transaction on the add-in side: fails on read-only
     documents and leaves an undo entry (a no-transaction path is planned)."""
@@ -258,6 +264,29 @@ def confirm_spec(spec: dict | str, confirmed_by: str = "designer", channel: str 
 
 
 # -- Execution Tools ----------------------------------------------------------
+
+@mcp.tool(annotations=_READ_ONLY)
+async def check_code(code: str, parameters: list | None = None) -> str:
+    """Compile C# for execute_code inside Revit WITHOUT running it: only
+    compiles, never executes, needs no token or confirmation, changes nothing
+    (same wrapper, references and blocked symbols as execute_code). Call it
+    before showing the card for execute_code and fix the code until
+    `compiled` is true. Returns {schema_version, checked, compiled, blocked,
+    capability, reason, diagnostics: [{id, severity, line, column, message,
+    symbol, in_wrapper}], truncated, fingerprint, hints, guidance, environment,
+    warnings}; line/column count from the first line of your code.
+    `checked: false` means NO local pre-compilation happened (older add-in,
+    or the capability is unknown - see `reason`): say "not pre-compiled
+    locally" on the card."""
+    refused = checking.blocked_reply(code)            # the sandbox needs no Revit
+    if refused is not None:
+        return _dumps(refused)
+    try:
+        client = await RevitClientPool.get_client()
+    except Exception as e:                            # refused, timed out, bad settings: not checked
+        return _dumps(checking.not_checked(Capabilities.from_exception(e)))
+    return _dumps(await checking.check_code(client, code, parameters))
+
 
 @mcp.tool(annotations=_MUTATING)
 async def execute_code(code: str, parameters: list | None = None, token: str = "") -> str:
@@ -413,8 +442,8 @@ def evidence_recent() -> str:
 
 @mcp.resource("revit://connection-status")
 async def connection_status() -> str:
-    """Check whether the Revit add-in is reachable."""
-    return json.dumps(await check_connection(), indent=2, ensure_ascii=False)
+    """Check whether the Revit add-in is reachable; with its capability and environment."""
+    return json.dumps(await check_connection(environment=True), indent=2, ensure_ascii=False)
 
 
 # -- check subcommand ---------------------------------------------------------
@@ -432,11 +461,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"revit-bridge {__version__}")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("serve", help="run the MCP server on stdio (default)")
-    sub.add_parser("check", help="ping the Revit add-in and print the connection status")
+    sub.add_parser("check", help="ping the Revit add-in and print the connection status, "
+                                 "its capability and environment")
     args = parser.parse_args(argv)
 
     if args.command == "check":
-        status = asyncio.run(check_connection())
+        status = asyncio.run(check_connection(environment=True))
         print(json.dumps(status, indent=2, ensure_ascii=False))
         return 0 if status["reachable"] else 1
 

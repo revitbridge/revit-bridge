@@ -69,8 +69,11 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
 
    Prints host, port, whether a token is set, the open document's title
    (`document`, or `document_error` when the add-in answered but could not
-   read it) and `"status": "connected"`; the exit code is 0 when the add-in
-   answered, 1 otherwise.
+   read it) and `"status": "connected"`, plus `capability` (`supported` when
+   the add-in answers `get_bridge_capabilities`, `unsupported` for an older
+   add-in, `unknown` with the `reason` otherwise) and `environment` (Revit
+   version and runtime); the exit code is 0 when the add-in answered, 1
+   otherwise.
 
 3. In your host, the flow is snapshot → questions → confirmation → execution →
    validation:
@@ -87,6 +90,9 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
    - `reconcile(spec, snapshot)` — a draft TaskSpec against the model: values
      that do not exist, missing parameters, readings to confirm (units, "on
      F2"), a stale snapshot.
+   - `check_code(code, parameters)` — compiles C# for `execute_code` in Revit
+     without running it (no token): `diagnostics` with lines in your code and
+     `hints`; `checked: false` when the add-in cannot (an older add-in).
    - `confirm_spec(spec)` with the TaskSpec the designer confirmed, then
      `run_tool(name, params, token)` with exactly the confirmed values.
 

@@ -6,6 +6,46 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `check_code(code, parameters)` MCP tool (read-only, no token): compiles C#
+  for `execute_code` inside Revit without running it, through the add-in's
+  `check_code_in_revit`, after the local sandbox review (a blocked pattern
+  never reaches Revit). The reply (`schema_version` 1) has `checked`,
+  `compiled`, `blocked`, `capability`, `reason`, `diagnostics` (line and
+  column in the user's code), `truncated`, `fingerprint`, `hints` (for
+  CS1061, CS0117, CS0246, CS0103, CS1501, CS1503 and CS7036, naming the
+  Revit version), `guidance` (always empty for now), `environment` and
+  `warnings`. `checked: false` means the code was not pre-compiled: an older
+  add-in, or the capability is unknown. Package API:
+  `revit_bridge.checking.check_code(client, code, parameters)`.
+- `revit_bridge.revit.capabilities.discover(client)`: the add-in's
+  `get_bridge_capabilities` as `supported`, `unsupported` (JSON-RPC -32601:
+  an older add-in) or `unknown` (no connection, wrong token, timeout, any
+  other error), the original error kept in `reason`. Cached per connection;
+  `RevitClient.connection_generation` counts connects.
+- `revit_bridge.revit.environment.get_environment(client)`: Revit version,
+  runtime and Kit from the capabilities, or on an older add-in from a probe
+  snippet over `send_code_to_revit` (needs an open document, runs in a
+  transaction). `error` names why facts are missing (`no_document`,
+  `read_only`, `auth`, `timeout`, `unreachable`, ...), never "no Kit".
+
+### Changed
+
+- `revit-bridge check` and `revit://connection-status` also report
+  `capability` and `environment`; the exit code still follows `reachable`.
+  `check_connection(settings, environment=False)` keeps its reply unless
+  asked, so a host's health check sends no extra request.
+- Instructions, both renderings: a snippet contract in Notes (`document` and
+  `parameters` in scope, the default usings, the reference whitelist without
+  a JSON library, the refused symbols, the open transaction,
+  `return <object>;`, OST_* categories). The server rendering has the model
+  call `check_code` for `execute_code` before the card, and write "not
+  pre-compiled locally" on the card when `checked` is false; the
+  `revit-bridge` skill follows the same flow. Both say 0.3.
+- `get_project_snapshot` and `query` say categories are OST_* names
+  (`OST_Walls`).
+
 ## [0.3.0] - 2026-09-22
 
 Authorization per device: a pairing code turns one add-in installation into a
