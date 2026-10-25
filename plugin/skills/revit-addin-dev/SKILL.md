@@ -9,7 +9,7 @@ Deliver an ordinary C# add-in that runs inside Revit. Use revit-bridge during de
 
 ## Continue the user's project
 
-Read the project's instructions, Git changes, solution/project files, shared MSBuild properties, manifests, command entry points, and relevant tests first. Establish the exact Revit release (including its update), .NET target, API reference source, UI approach, build command, and any build targets that install files or start processes. Revit 2025.5/2026.5 use .NET 10; earlier 2025/2026 releases use .NET 8. Check the installed API file version and `RevitAPI.runtimeconfig.json` when available rather than relying only on the year. Preserve existing work, add-in identity, dependencies, and architecture.
+Read the project's instructions, Git changes, solution/project files, shared MSBuild properties, manifests, command entry points, and relevant tests first. Establish the exact Revit release (including its update), .NET target, API reference source, UI approach, build command, and any build targets that install files or start processes. Revit 2025.5/2026.5 use .NET 10; earlier 2025/2026 releases use .NET 8; Revit 2027 runs only on .NET 10. Check the installed API file version and `RevitAPI.runtimeconfig.json` when available rather than relying only on the year. Preserve existing work, add-in identity, dependencies, and architecture.
 
 Infer these details from the repository before asking. If the target year cannot be determined and changes implementation, ask once; continue version-independent work. For an existing project, implement the requested feature in its current structure. Use the starter below only for a new project or an explicitly requested isolated prototype.
 
@@ -46,9 +46,9 @@ The bundled generator creates a minimal read-only external command, a project, a
 python "<skill-dir>/scripts/new_addin.py" --name WallInspector --revit-version 2026.5 --vendor-id MYCO --output "<workspace>/WallInspector"
 ```
 
-Choose the actual project name, target release, and developer's vendor identity. The starter supports 2024, 2025, 2025.5, 2026, and 2026.5. A bare 2025/2026 selects the pre-.5 .NET 8 target; .5 requires a .NET 10 SDK. Other versions require checking their SDK before adapting it. It creates a fresh AddInId for a new project; preserve that identity on subsequent edits.
+Choose the actual project name, target release, and developer's vendor identity. The starter supports 2024, 2025, 2025.5, 2026, 2026.5, and 2027. A bare 2025/2026 selects the pre-.5 .NET 8 target; .5 and 2027 require a .NET 10 SDK, and 2027 has no .NET 8 build. Other versions require checking their SDK before adapting it. It creates a fresh AddInId for a new project; preserve that identity on subsequent edits. It also writes a `global.json`: for .NET 10 targets Autodesk's sample values (`10.0.100`, `rollForward: minor`, a .NET 10 SDK), for .NET 8 targets `8.0.100` with `rollForward: latestMajor` (any SDK 8 or newer; a newer SDK downloads the `net8.0` targeting pack on first restore); 2024 gets none.
 
-The starter assets live in [assets/addin](assets/addin). Build the generated project with `dotnet build WallInspector.csproj -c Release -p:RevitApiDir="<matching Revit installation>"`. It generates a local `.addin` beside the DLL, pointing to that DLL, and does not install or launch anything. Replace the sample selection summary with the requested feature, including its appropriate transaction mode.
+The starter assets live in [assets/addin](assets/addin). Build the generated project from its directory, so that `global.json` applies, with `dotnet build WallInspector.csproj -c Release -p:RevitApiDir="<matching Revit installation>"`. It generates a local `.addin` beside the DLL, pointing to that DLL, and does not install or launch anything. Replace the sample selection summary with the requested feature, including its appropriate transaction mode.
 
 ## Verify and hand over
 

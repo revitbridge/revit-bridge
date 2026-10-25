@@ -60,8 +60,8 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
 
 **Develop a standalone C# add-in** — the `revit-addin-dev` skill in
 `plugin/skills/` continues an existing project or creates a minimal command
-project for Revit 2024, 2025, or 2026, including the 2025.5/2026.5 .NET 10
-updates. Select the exact installed release, not just its year. It uses bridge tools for relevant model
+project for Revit 2024, 2025, 2026, or 2027, including the 2025.5/2026.5 .NET 10
+updates (2027 is .NET 10 only). Select the exact installed release, not just its year. It uses bridge tools for relevant model
 context and prototype checks, then delivers a DLL that runs independently
 of the bridge. Coding and building can proceed without a live connection.
 
