@@ -42,7 +42,9 @@ The starter writes exactly this `global.json` for 2027 (and for 2025.5/2026.5). 
 
 Revit 2027 also adds assembly isolation and dependency handling: new types such as `AddInDependencyBase`, `ClientIdDependency`, and `ContextNameDependency`, and the manifest settings `PublicAssemblies`, `Dependencies`, and `UseAllContextsForDependencyResolution`. The starter's `.addin` uses none of them. When an add-in needs them, follow Autodesk's post and the complete sample in the Revit 2027 SDK rather than reconstructing the XML from these names.
 
-See [Autodesk's Revit 2027 SDK post](https://blog.autodesk.io/revit-2027-sdk-net-10-api-changes-and-additions/) for these changes. This skill's 2027 starter has been compiled against Revit 2027 API assemblies but not yet loaded or run in Revit 2027; report a 2027 build as build passed, not as a loaded add-in, until that check is done.
+See [Autodesk's Revit 2027 SDK post](https://blog.autodesk.io/revit-2027-sdk-net-10-api-changes-and-additions/) for these changes. This skill's 2027 starter has been compiled against Revit 2027 API assemblies, loaded in Revit 2027.0.1 (manifest parsed with `AddInLoadFailureMessage: NoError`, push button registered) and its read-only command run once from the External Tools dropdown. That check covers the unchanged starter only; report any modified 2027 add-in as build passed until it has been loaded and run itself.
+
+Revit 2027 refuses all-users manifests under `C:\ProgramData\Autodesk\Revit\Addins\2027`; its journal reports that such files "won't be loaded" and must be installed to `C:\Program Files\Autodesk\Revit\Addins\2027`. Per-user manifests in `%APPDATA%\Autodesk\Revit\Addins\2027` are unaffected. Earlier releases accept the `ProgramData` location, so an installer that targets several releases must choose the folder per release.
 
 ## Entry points and changes
 
