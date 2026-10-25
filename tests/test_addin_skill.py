@@ -109,16 +109,18 @@ def test_revit_2027_project_is_dotnet10_only(tmp_path):
     assert "has no .NET 8 build" not in split.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("release,sdk", [("2025", "8.0.100"), ("2025.5", "10.0.100"),
-                                         ("2026", "8.0.100"), ("2026.5", "10.0.100"),
-                                         ("2027", "10.0.100")])
-def test_global_json_pins_the_sdk_major_of_the_target(tmp_path, release, sdk):
+NET8_GLOBAL_JSON = '{\n  "sdk": {\n    "version": "8.0.100",\n    "rollForward": "latestMajor"\n  }\n}\n'
+# Exactly the global.json of Autodesk's Revit 2027 sample.
+NET10_GLOBAL_JSON = '{\n  "sdk": {\n    "version": "10.0.100",\n    "rollForward": "minor"\n  }\n}\n'
+
+
+@pytest.mark.parametrize("release,expected", [("2025", NET8_GLOBAL_JSON), ("2025.5", NET10_GLOBAL_JSON),
+                                              ("2026", NET8_GLOBAL_JSON), ("2026.5", NET10_GLOBAL_JSON),
+                                              ("2027", NET10_GLOBAL_JSON)])
+def test_global_json_selects_an_sdk_for_the_target(tmp_path, release, expected):
     result = create_project(tmp_path / "new", "WallInspector", release, "MYCO")
-    text = (tmp_path / "new" / "global.json").read_text(encoding="utf-8")
-    # The shape of Autodesk's Revit 2027 sample global.json, rollForward "minor".
-    assert text == '{\n  "sdk": {\n    "version": "%s",\n    "rollForward": "minor"\n  }\n}\n' % sdk
-    assert json.loads(text) == {"sdk": {"version": sdk, "rollForward": "minor"}}
-    assert result["sdk"] == sdk
+    assert (tmp_path / "new" / "global.json").read_text(encoding="utf-8") == expected
+    assert result["sdk"] == json.loads(expected)["sdk"]["version"]
     assert "global.json" in result["files"]
 
 

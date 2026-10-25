@@ -11,11 +11,11 @@ from uuid import uuid4
 
 FRAMEWORKS = {"2024": "net48", "2025": "net8.0-windows", "2025.5": "net10.0-windows",
               "2026": "net8.0-windows", "2026.5": "net10.0-windows", "2027": "net10.0-windows"}
-# global.json next to the project: the shape of Autodesk's Revit 2027 sample
-# (SDK 10.0.100, rollForward "minor"), with the SDK major matching the target.
-# "minor" stays within that major, so a net8 project needs a .NET 8 SDK.
-# net48 (2024) gets no global.json.
-SDKS = {"net8.0-windows": "8.0.100", "net10.0-windows": "10.0.100"}
+# global.json next to the project, in the shape of Autodesk's Revit 2027 sample.
+# .NET 10 targets use the sample's values (SDK 10.0.100, rollForward "minor":
+# any .NET 10 SDK). .NET 8 targets accept SDK 8.0.100 or any newer major
+# ("latestMajor"). net48 (2024) gets no global.json.
+SDKS = {"net8.0-windows": ("8.0.100", "latestMajor"), "net10.0-windows": ("10.0.100", "minor")}
 ASSETS = Path(__file__).resolve().parents[1] / "assets" / "addin"
 # Optional template blocks: <!--name--> ... <!--/name-->, kept or dropped per release.
 SECTION = re.compile(r"[ \t]*<!--(?P<name>[a-z0-9-]+)-->\n(?P<body>.*?)[ \t]*<!--/(?P=name)-->\n", re.S)
@@ -71,9 +71,9 @@ def create_project(output: Path, name: str, revit_version: int | str, vendor_id:
             raise ValueError(f"unresolved template marker in {template}")
         files[destination] = content
     files[".gitignore"] = "bin/\nobj/\n.vs/\n*.user\n*.suo\n"
-    sdk = SDKS.get(FRAMEWORKS[release])
+    sdk, roll_forward = SDKS.get(FRAMEWORKS[release], (None, None))
     if sdk:
-        files["global.json"] = json.dumps({"sdk": {"version": sdk, "rollForward": "minor"}}, indent=2) + "\n"
+        files["global.json"] = json.dumps({"sdk": {"version": sdk, "rollForward": roll_forward}}, indent=2) + "\n"
 
     # Claim a new directory exclusively. Never merge with an existing project,
     # empty directory, symlink, or manifest, and never overwrite existing files.

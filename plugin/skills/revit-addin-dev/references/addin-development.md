@@ -4,20 +4,20 @@
 
 Use the existing repository's target and reference strategy. For a new project, the bundled starter uses the following explicit targets:
 
-| Revit | Target framework | Starter `global.json` SDK |
+| Revit | Target framework | Starter `global.json` |
 | --- | --- | --- |
 | 2024 | `net48` | none |
-| 2025 before 2025.5 | `net8.0-windows` | `8.0.100` |
-| 2025.5 | `net10.0-windows` | `10.0.100` |
-| 2026 before 2026.5 | `net8.0-windows` | `8.0.100` |
-| 2026.5 | `net10.0-windows` | `10.0.100` |
-| 2027 | `net10.0-windows` | `10.0.100` |
+| 2025 before 2025.5 | `net8.0-windows` | `8.0.100`, `latestMajor` |
+| 2025.5 | `net10.0-windows` | `10.0.100`, `minor` |
+| 2026 before 2026.5 | `net8.0-windows` | `8.0.100`, `latestMajor` |
+| 2026.5 | `net10.0-windows` | `10.0.100`, `minor` |
+| 2027 | `net10.0-windows` | `10.0.100`, `minor` |
 
 Match both `RevitAPI.dll` and `RevitAPIUI.dll` to that Revit release and runtime. Retain pinned reference packages if the project already uses them; the starter instead references a supplied installation directory and uses `Private=false` for Autodesk assemblies. Do not redistribute those assemblies with the plugin. Check unsupported releases separately rather than extrapolating the table.
 
 The starter uses x64, a Windows desktop framework reference for .NET 8/10, and no third-party runtime package. Override `RevitApiDir` for a nonstandard installation; `RevitAPIPath` and `RevitAPIUIPath` can independently point to matching reference assemblies. The build rejects missing files, a mismatched API year, and .NET 8 versus .5/.NET 10 reference mismatches before resolving dependencies; a 2027 project also rejects any target other than `net10.0-windows`. Output directories include the update version so the two runtime builds remain separate.
 
-For .NET 8 and .NET 10 targets the starter writes a `global.json` next to the project in the shape of Autodesk's Revit 2027 sample (below): the SDK version from the table and `"rollForward": "minor"`. `minor` takes the latest patch of the requested feature band, otherwise a higher feature band or minor version of the same major; it never selects another major. A 2025.5/2026.5/2027 project therefore builds with any installed .NET 10 SDK, and a 2025/2026 project needs a .NET 8 SDK even when only newer SDKs are installed (`dotnet` then stops with "A compatible .NET SDK was not found. Requested SDK version: 8.0.100"). Install a .NET 8 SDK, or relax `rollForward` deliberately (for example `latestMajor`) if a newer SDK may build the .NET 8 target. A 2024 (`net48`) project gets no `global.json`. `dotnet` looks for `global.json` from the current directory upward, so run builds from the project directory. In an existing repository, keep its own SDK policy.
+For .NET 8 and .NET 10 targets the starter writes a `global.json` next to the project in the shape of Autodesk's Revit 2027 sample (below), with the SDK version and `rollForward` from the table. .NET 10 targets use the sample's values: `minor` resolves to a .NET 10 SDK at or above 10.0.100 and never selects another major, so a 2025.5/2026.5/2027 project needs a .NET 10 SDK. .NET 8 targets use `latestMajor`: the newest installed SDK of major 8 or later builds them, so a .NET 9 or .NET 10 SDK also builds a 2025/2026 project. A newer SDK does not carry the `net8.0` targeting packs (`Microsoft.NETCore.App.Ref`, `Microsoft.WindowsDesktop.App.Ref`); the first restore downloads them from the configured NuGet feed, so an offline machine needs them in its package cache. A 2024 (`net48`) project gets no `global.json`. `dotnet` looks for `global.json` from the current directory upward, so run builds from the project directory. In an existing repository, keep its own SDK policy.
 
 For a local installation, inspect the API DLL file version and `RevitAPI.runtimeconfig.json`, then check `dotnet --list-sdks`. The runtime installed with Revit is not a development SDK. [Autodesk's .NET 10 transition notice](https://www.autodesk.com/support/technical/article/caas/sfdcarticles/sfdcarticles/Revit--Requirements-for-products-affected-by-the-Microsoft--NET-10-transition.html) covers the 2025.5/2026.5 change. Do not substitute 2026.0 reference packages merely to get a successful build against a 2026.5 requirement. If an SDK is missing, prepare the appropriate SDK within the user's installation permissions.
 
