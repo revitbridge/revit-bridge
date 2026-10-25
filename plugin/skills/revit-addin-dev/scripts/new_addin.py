@@ -11,6 +11,11 @@ from uuid import uuid4
 
 FRAMEWORKS = {"2024": "net48", "2025": "net8.0-windows", "2025.5": "net10.0-windows",
               "2026": "net8.0-windows", "2026.5": "net10.0-windows", "2027": "net10.0-windows"}
+# global.json next to the project: the shape of Autodesk's Revit 2027 sample
+# (SDK 10.0.100, rollForward "minor"), with the SDK major matching the target.
+# "minor" stays within that major, so a net8 project needs a .NET 8 SDK.
+# net48 (2024) gets no global.json.
+SDKS = {"net8.0-windows": "8.0.100", "net10.0-windows": "10.0.100"}
 ASSETS = Path(__file__).resolve().parents[1] / "assets" / "addin"
 # Optional template blocks: <!--name--> ... <!--/name-->, kept or dropped per release.
 SECTION = re.compile(r"[ \t]*<!--(?P<name>[a-z0-9-]+)-->\n(?P<body>.*?)[ \t]*<!--/(?P=name)-->\n", re.S)
@@ -66,6 +71,9 @@ def create_project(output: Path, name: str, revit_version: int | str, vendor_id:
             raise ValueError(f"unresolved template marker in {template}")
         files[destination] = content
     files[".gitignore"] = "bin/\nobj/\n.vs/\n*.user\n*.suo\n"
+    sdk = SDKS.get(FRAMEWORKS[release])
+    if sdk:
+        files["global.json"] = json.dumps({"sdk": {"version": sdk, "rollForward": "minor"}}, indent=2) + "\n"
 
     # Claim a new directory exclusively. Never merge with an existing project,
     # empty directory, symlink, or manifest, and never overwrite existing files.
@@ -75,8 +83,8 @@ def create_project(output: Path, name: str, revit_version: int | str, vendor_id:
         with (output / relative).open("x", encoding="utf-8", newline="\n") as stream:
             stream.write(content)
     return {"project": str(output / f"{name}.csproj"), "revit_version": year,
-            "revit_release": release, "target_framework": FRAMEWORKS[release], "addin_id": addin_id,
-            "files": sorted(files), "installed": False}
+            "revit_release": release, "target_framework": FRAMEWORKS[release], "sdk": sdk,
+            "addin_id": addin_id, "files": sorted(files), "installed": False}
 
 
 def main() -> int:

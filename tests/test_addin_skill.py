@@ -109,6 +109,26 @@ def test_revit_2027_project_is_dotnet10_only(tmp_path):
     assert "has no .NET 8 build" not in split.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("release,sdk", [("2025", "8.0.100"), ("2025.5", "10.0.100"),
+                                         ("2026", "8.0.100"), ("2026.5", "10.0.100"),
+                                         ("2027", "10.0.100")])
+def test_global_json_pins_the_sdk_major_of_the_target(tmp_path, release, sdk):
+    result = create_project(tmp_path / "new", "WallInspector", release, "MYCO")
+    text = (tmp_path / "new" / "global.json").read_text(encoding="utf-8")
+    # The shape of Autodesk's Revit 2027 sample global.json, rollForward "minor".
+    assert text == '{\n  "sdk": {\n    "version": "%s",\n    "rollForward": "minor"\n  }\n}\n' % sdk
+    assert json.loads(text) == {"sdk": {"version": sdk, "rollForward": "minor"}}
+    assert result["sdk"] == sdk
+    assert "global.json" in result["files"]
+
+
+def test_revit_2024_project_has_no_global_json(tmp_path):
+    result = create_project(tmp_path / "new", "WallInspector", 2024, "MYCO")
+    assert not (tmp_path / "new" / "global.json").exists()
+    assert result["sdk"] is None
+    assert "global.json" not in result["files"]
+
+
 def test_generated_addin_id_is_unique_across_projects(tmp_path):
     first = create_project(tmp_path / "one", "WallInspector", 2026, "MYCO")
     second = create_project(tmp_path / "two", "WallInspector", 2026, "MYCO")
@@ -122,6 +142,7 @@ def test_existing_directory_is_never_modified(tmp_path, populated):
     if populated:
         (output / "WallInspector.addin").write_bytes(b"existing identity")
         (output / "Command.cs").write_bytes(b"user work")
+        (output / "global.json").write_bytes(b'{"sdk": {"version": "9.0.100"}}')
     before = {p.name: p.read_bytes() for p in output.iterdir()}
     with pytest.raises(FileExistsError):
         create_project(output, "WallInspector", 2026, "MYCO")
@@ -159,7 +180,8 @@ def test_copied_skill_cli_works_from_an_unrelated_working_directory(tmp_path, re
     assert Path(result["project"]).is_file()
     assert result["revit_version"] == int(release.split(".")[0])
     assert result["revit_release"] == release
-    assert len(list(output.iterdir())) == 4
+    assert sorted(p.name for p in output.iterdir()) == result["files"]
+    assert (output / "global.json").is_file()
     before = {p.name: p.read_bytes() for p in output.iterdir()}
     again = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True)
     assert again.returncode == 2

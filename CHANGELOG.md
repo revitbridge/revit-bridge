@@ -24,6 +24,11 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   .NET 8's end of support on 2026-11-10, and the bridge's
   `environment`/`capability` reply as the source of the connected Revit
   version. The 2027 starter has not been loaded in Revit 2027 yet.
+- `revit-addin-dev` starter writes a `global.json` next to the project in
+  the shape of Autodesk's Revit 2027 sample: SDK `10.0.100` for 2025.5,
+  2026.5 and 2027, `8.0.100` for 2025 and 2026, `rollForward: minor` (stays
+  within the major, so a .NET 8 project needs a .NET 8 SDK); none for 2024.
+  The generated `.csproj` and `.addin` are unchanged.
 - `check_code(code, parameters)` MCP tool (read-only, no token): compiles C#
   for `execute_code` inside Revit without running it, through the add-in's
   `check_code_in_revit`, after the local sandbox review (a blocked pattern
