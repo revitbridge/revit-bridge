@@ -35,8 +35,13 @@
       <Output TaskParameter="Assemblies" ItemName="RevitReferenceIdentity" />
     </GetAssemblyIdentity>
     <Error Condition="'%(RevitReferenceIdentity.Version)' &lt; '__API_MAJOR__.0.0.0' Or '%(RevitReferenceIdentity.Version)' &gt;= '__NEXT_API_MAJOR__.0.0.0'" Text="API year mismatch: %(RevitReferenceIdentity.Identity). Select references for Revit __REVIT_VERSION__." />
+    <!--net8-split-->
     <Error Condition="'$(TargetFramework)' == 'net8.0-windows' And '%(RevitReferenceIdentity.Version)' &gt;= '__API_MAJOR__.5.0.0'" Text="These Revit __REVIT_VERSION__.5 APIs require .NET 10. Use --revit-version __REVIT_VERSION__.5 and a .NET 10 SDK." />
     <Error Condition="'$(TargetFramework)' == 'net10.0-windows' And '%(RevitReferenceIdentity.Version)' &lt; '__API_MAJOR__.5.0.0'" Text="This project targets Revit __REVIT_VERSION__.5. Supply the matching .5 API assemblies instead of earlier .NET 8 references." />
+    <!--/net8-split-->
+    <!--net10-only-->
+    <Error Condition="'$(TargetFramework)' != 'net10.0-windows'" Text="Revit __REVIT_VERSION__ runs on .NET 10 and has no .NET 8 build. Target net10.0-windows and build with a .NET 10 SDK." />
+    <!--/net10-only-->
   </Target>
   <Target Name="WriteLocalManifest" AfterTargets="Build">
     <Copy SourceFiles="$(MSBuildProjectDirectory)\__PROJECT_NAME__.addin" DestinationFiles="$(TargetDir)__PROJECT_NAME__.addin" />

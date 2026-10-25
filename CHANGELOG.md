@@ -14,6 +14,16 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   for Revit 2024/2025/2026, including the 2025.5/2026.5 .NET 10 updates,
   with no automatic installation. Generated builds reject incompatible API
   years and .NET 8/.NET 10 reference combinations before dependency resolution.
+- `revit-addin-dev`: Revit 2027 starter (`--revit-version 2027`,
+  `net10.0-windows`, .NET 10 only; `2027.5` and other unlisted releases are
+  rejected). A 2027 build accepts only 27.x API assemblies and rejects any
+  target other than `net10.0-windows`; it omits the 2025/2026 .NET 8/.5
+  checks, which would reject the Revit 2027 API (27.0.x) as earlier .NET 8
+  references. The references add the .NET 10 SDK, `global.json`, the 2027
+  isolation types and manifest settings (not used by the starter manifest),
+  .NET 8's end of support on 2026-11-10, and the bridge's
+  `environment`/`capability` reply as the source of the connected Revit
+  version. The 2027 starter has not been loaded in Revit 2027 yet.
 - `check_code(code, parameters)` MCP tool (read-only, no token): compiles C#
   for `execute_code` inside Revit without running it, through the add-in's
   `check_code_in_revit`, after the local sandbox review (a blocked pattern

@@ -11,14 +11,36 @@ Use the existing repository's target and reference strategy. For a new project, 
 | 2025.5 | `net10.0-windows` |
 | 2026 before 2026.5 | `net8.0-windows` |
 | 2026.5 | `net10.0-windows` |
+| 2027 | `net10.0-windows` |
 
 Match both `RevitAPI.dll` and `RevitAPIUI.dll` to that Revit release and runtime. Retain pinned reference packages if the project already uses them; the starter instead references a supplied installation directory and uses `Private=false` for Autodesk assemblies. Do not redistribute those assemblies with the plugin. Check unsupported releases separately rather than extrapolating the table.
 
-The starter uses x64, a Windows desktop framework reference for .NET 8/10, and no third-party runtime package. Override `RevitApiDir` for a nonstandard installation; `RevitAPIPath` and `RevitAPIUIPath` can independently point to matching reference assemblies. The build rejects missing files, a mismatched API year, and .NET 8 versus .5/.NET 10 reference mismatches before resolving dependencies. Output directories include the update version so the two runtime builds remain separate.
+The starter uses x64, a Windows desktop framework reference for .NET 8/10, and no third-party runtime package. Override `RevitApiDir` for a nonstandard installation; `RevitAPIPath` and `RevitAPIUIPath` can independently point to matching reference assemblies. The build rejects missing files, a mismatched API year, and .NET 8 versus .5/.NET 10 reference mismatches before resolving dependencies; a 2027 project also rejects any target other than `net10.0-windows`. Output directories include the update version so the two runtime builds remain separate.
 
 For a local installation, inspect the API DLL file version and `RevitAPI.runtimeconfig.json`, then check `dotnet --list-sdks`. The runtime installed with Revit is not a development SDK. [Autodesk's .NET 10 transition notice](https://www.autodesk.com/support/technical/article/caas/sfdcarticles/sfdcarticles/Revit--Requirements-for-products-affected-by-the-Microsoft--NET-10-transition.html) covers the 2025.5/2026.5 change. Do not substitute 2026.0 reference packages merely to get a successful build against a 2026.5 requirement. If an SDK is missing, prepare the appropriate SDK within the user's installation permissions.
 
+Microsoft ends .NET 8 support on 2026-11-10 ([.NET support policy](https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core)). Projects for 2025/2026 before .5 still target .NET 8; plan their move to the .5 update and `net10.0-windows`, which also requires their users to run that Revit update.
+
 [Autodesk's .NET migration guide](https://help.autodesk.com/cloudhelp/2026/ENU/Revit-API/files/Revit_API_Developers_Guide/Introduction/Getting_Started/Using_the_Autodesk_Revit_API/Revit_API_Revit_API_Developers_Guide_Introduction_Getting_Started_Using_the_Autodesk_Revit_API_NET8_Update_html.html) describes the Revit 2025 transition to .NET 8 and dependency migration. Compile each supported Revit target; one successful build does not establish cross-version compatibility.
+
+## Revit 2027
+
+Revit 2027 runs on .NET 10 and has no .NET 8 build: a bare `2027` targets `net10.0-windows`, and the starter offers no 2027.5 variant. Build with a .NET 10 SDK. Reference packages such as `Nice3point.Revit.Api.RevitAPI` 2027.x also target `net10.0-windows`. Autodesk's sample pins the SDK in `global.json`:
+
+```json
+{
+  "sdk": {
+    "version": "10.0.100",
+    "rollForward": "minor"
+  }
+}
+```
+
+The starter does not write a `global.json`; add one when the repository pins its SDK. Its reference check accepts any 27.x API assembly; the 2025/2026 .5 checks do not apply.
+
+Revit 2027 also adds assembly isolation and dependency handling: new types such as `AddInDependencyBase`, `ClientIdDependency`, and `ContextNameDependency`, and the manifest settings `PublicAssemblies`, `Dependencies`, and `UseAllContextsForDependencyResolution`. The starter's `.addin` uses none of them. When an add-in needs them, follow Autodesk's post and the complete sample in the Revit 2027 SDK rather than reconstructing the XML from these names.
+
+See [Autodesk's Revit 2027 SDK post](https://blog.autodesk.io/revit-2027-sdk-net-10-api-changes-and-additions/) for these changes. This skill's 2027 starter has been compiled against Revit 2027 API assemblies but not yet loaded or run in Revit 2027; report a 2027 build as build passed, not as a loaded add-in, until that check is done.
 
 ## Entry points and changes
 
