@@ -58,6 +58,20 @@ whose interface does the confirmation.
 
 From a checkout: `uv sync` then `uv run revit-bridge`.
 
+**Develop a standalone C# add-in** — the `revit-addin-dev` skill in
+`plugin/skills/` continues an existing project or creates a minimal command
+project for Revit 2024, 2025, or 2026, including the 2025.5/2026.5 .NET 10
+updates. Select the exact installed release, not just its year. It uses bridge tools for relevant model
+context and prototype checks, then delivers a DLL that runs independently
+of the bridge. Coding and building can proceed without a live connection.
+
+From a checkout, load both skills with `claude --plugin-dir ./plugin`, or
+copy the complete `plugin/skills/revit-addin-dev` folder into your agent's
+skills directory. Example request: "Use revit-addin-dev to continue my C#
+plugin, inspect the selected walls through revit-bridge where needed, and
+build an independent command." The bundled `scripts/new_addin.py --help`
+describes the starter generator; it does not install or launch the add-in.
+
 ## Use
 
 1. Start Revit, open a project and make sure the add-in is listening.
@@ -69,8 +83,11 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
 
    Prints host, port, whether a token is set, the open document's title
    (`document`, or `document_error` when the add-in answered but could not
-   read it) and `"status": "connected"`; the exit code is 0 when the add-in
-   answered, 1 otherwise.
+   read it) and `"status": "connected"`, plus `capability` (`supported` when
+   the add-in answers `get_bridge_capabilities`, `unsupported` for an older
+   add-in, `unknown` with the `reason` otherwise) and `environment` (Revit
+   version and runtime); the exit code is 0 when the add-in answered, 1
+   otherwise.
 
 3. In your host, the flow is snapshot → questions → confirmation → execution →
    validation:
@@ -87,6 +104,9 @@ From a checkout: `uv sync` then `uv run revit-bridge`.
    - `reconcile(spec, snapshot)` — a draft TaskSpec against the model: values
      that do not exist, missing parameters, readings to confirm (units, "on
      F2"), a stale snapshot.
+   - `check_code(code, parameters)` — compiles C# for `execute_code` in Revit
+     without running it (no token): `diagnostics` with lines in your code and
+     `hints`; `checked: false` when the add-in cannot (an older add-in).
    - `confirm_spec(spec)` with the TaskSpec the designer confirmed, then
      `run_tool(name, params, token)` with exactly the confirmed values.
 

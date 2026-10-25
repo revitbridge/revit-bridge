@@ -43,3 +43,24 @@ def test_the_host_rendering_proposes_and_never_executes():
     # every numbered step is present once in each
     for text in (srv, host):
         assert [int(m) for m in re.findall(r"^(\d)\. ", text, flags=re.M)] == [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_both_renderings_carry_the_snippet_contract_and_the_version():
+    for text in (server_instructions(), host_instructions()):
+        assert "revit-bridge 0.3." in text and "revit-bridge 0.2" not in text
+        notes = text[text.index("## Notes"):]
+        for term in ("Snippet contract (execute_code)", "`document` and `parameters`",
+                     "already inside a transaction (never open one)", "System, System.Linq",
+                     "System.Collections.Generic", "Autodesk.Revit.DB", "Autodesk.Revit.UI",
+                     "RevitAPI and RevitAPIUI", "(no JSON library)", "IO, Process, Assembly, DllImport",
+                     "File, Registry, reflection", "threading are refused", "`return <object>;`",
+                     "categories are OST_*"):
+            assert term in notes, term
+
+
+def test_the_server_checks_code_before_the_card_the_host_has_no_check_code():
+    srv, host = server_instructions(), host_instructions()
+    check = srv.index("check_code(code, parameters)")
+    assert srv.index("4. reconcile(") < check < srv.index("5. Show the spec card")
+    assert "until `compiled` is true" in srv and '"not pre-compiled locally" on the card' in srv
+    assert "check_code" not in host and "Repeat until `ready` is true." in host

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Command">
+    <Assembly>__PROJECT_NAME__.dll</Assembly>
+    <AddInId>__ADDIN_ID__</AddInId>
+    <FullClassName>__PROJECT_NAME__.Command</FullClassName>
+    <Text>__PROJECT_NAME__</Text>
+    <VendorId>__VENDOR_ID__</VendorId>
+    <VendorDescription>__VENDOR_ID__</VendorDescription>
+  </AddIn>
+</RevitAddIns>

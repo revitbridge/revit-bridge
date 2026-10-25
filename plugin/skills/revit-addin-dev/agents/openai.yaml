@@ -1,0 +1,4 @@
+interface:
+  display_name: "Revit Add-in Developer"
+  short_description: "Build standalone C# Revit add-ins with bridge context"
+  default_prompt: "Use $revit-addin-dev to continue my existing C# Revit add-in, using revit-bridge for model context and focused verification."

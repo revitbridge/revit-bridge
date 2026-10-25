@@ -92,6 +92,9 @@ class RevitClient:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()  # prevent concurrent command interleaving
+        # Counts successful connects: what is cached per connection (the
+        # add-in's capabilities) is stale once this changes.
+        self.connection_generation = 0
 
     # -- connection lifecycle --------------------------------------------------
 
@@ -106,6 +109,7 @@ class RevitClient:
             # command timeout: callers distinguish the two.
             raise ConnectionError(
                 f"connect to {self.host}:{self.port} timed out after {self.connect_timeout}s") from exc
+        self.connection_generation += 1
 
     async def ensure_connected(self) -> None:
         """Connect now if not connected (the execution flow calls this before its timed probes)."""

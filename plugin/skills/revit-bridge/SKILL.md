@@ -5,7 +5,7 @@ description: Use whenever the designer wants something built, changed, queried o
 
 # revit-bridge
 
-You are connected to a live Revit model through the `revit-bridge` MCP server (**0.2 or newer**: it has `get_project_snapshot`, `query`, `confirm_spec`; if those tools are missing, tell the designer to update with `uvx --refresh revit-bridge` and stop). You are not the designer. Your job is to turn their words into a TaskSpec in which **every parameter has a source**, get that spec confirmed, run it with the token, and report what the validator found.
+You are connected to a live Revit model through the `revit-bridge` MCP server (**0.3 or newer**: it has `get_project_snapshot`, `query`, `confirm_spec`; if those tools are missing, tell the designer to update with `uvx --refresh revit-bridge` and stop). You are not the designer. Your job is to turn their words into a TaskSpec in which **every parameter has a source**, get that spec confirmed, run it with the token, and report what the validator found.
 
 Answer in the designer's language. Keep questions short; keep the spec card complete.
 
@@ -17,7 +17,7 @@ Always in this order. Do not skip a step because the task looks simple.
 2. **Read** - anything else you need to know is `query(kind, args)`: `levels`, `grids`, `family_types` (`categories`), `elements` (`category`, `limit`), `selection`, `view_elements`, `units`, `counts`. Reads need no token. Never write C# to read.
 3. **Choose the pack** - `list_tools`. If one matches, `missing_params(tool, known)` returns the questions still open with the real options (levels, types). Only when no pack fits do you write `execute_code` C#.
 4. **Ask** - one round covering every open question (see *Questions*). Do not execute while a question is open.
-5. **Reconcile** - build the draft TaskSpec, call `reconcile(spec, snapshot)`. Fix every `conflict` and answer every `question`; add every `interpretations_required` item to the spec and get it confirmed. Repeat until `ready` is true.
+5. **Reconcile** - build the draft TaskSpec, call `reconcile(spec, snapshot)`. Fix every `conflict` and answer every `question`; add every `interpretations_required` item to the spec and get it confirmed. Repeat until `ready` is true. For `execute_code`, then call `check_code(code, parameters)` - it only compiles the code in Revit: nothing runs, no token, no confirmation - and fix the code until `compiled` is true (read `diagnostics` and `hints`; lines count from your first line). If `checked` is false (an older add-in, or the capability is unknown - see `reason`), or the server has no `check_code`, the code was not pre-compiled: write "not pre-compiled locally" on the card.
 6. **Confirm** - show the spec card (below) and wait for an explicit "yes / confirm / go ahead". A silent designer has not confirmed. Then `confirm_spec(spec)` returns `{token, expires_at, card}` - or `{errors}`, which you fix in the spec, never by arguing.
 7. **Execute** - `run_tool(name, params, token)` or `execute_code(code, parameters, token)` with **exactly** the confirmed values (same numbers, same code, byte for byte). The token is one-time, expires in 10 minutes and is bound to that tool + params; anything else is refused as `confirmation_invalid`. A hook denies both calls without a token. Never invent a token.
 8. **Verify and report** - read `success`, `error`, `validation` and `evidence_id`. `success` is true only when Revit succeeded **and** the pack's validator passed; `validation_failed` means the model did not change as claimed - say so. Quote ids, counts and `validation.checks`. `validate(evidence_id)` re-runs the assertion later; `evidence()` lists past runs.
@@ -123,7 +123,7 @@ Report exactly what the tool response says. If `success` is false, say it failed
 3. Did every `choices_from` / `tool:*` value come from a snapshot, a query or `get_tool_choices`? Not = you guessed a name.
 4. Is every unit and range word an interpretation line, confirmed?
 5. For N > 1, are there N sets of per-element values?
-6. Is `reconcile` `ready`? Is the execution step last, after the token?
+6. Is `reconcile` `ready`? For `execute_code`, did `check_code` return `compiled: true`, or does the card say "not pre-compiled locally"? Is the execution step last, after the token?
 
 ## References
 
