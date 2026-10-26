@@ -48,7 +48,7 @@ from revit_bridge.execution import ENV_ALLOW_UNCONFIRMED, ExecutionResult, run_c
 from revit_bridge.execution import gate_refusal as _gate_refusal
 from revit_bridge.execution import revalidate as _revalidate
 from revit_bridge.instructions import server_instructions
-from revit_bridge.paths import guidance_dir
+from revit_bridge.paths import guidance_dir, guidance_layer_dirs
 from revit_bridge.revit.capabilities import Capabilities
 from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.revit.probe import CHECK_PROBE, check_connection  # noqa: F401 - re-exported
@@ -68,10 +68,13 @@ _guidance_library: _guidance.Library | None = None   # loaded on first use, then
 
 
 def guidance_library() -> _guidance.Library:
-    """The framework guidance, validated on first use and cached; raises GuidanceError."""
+    """The guidance layers, validated on first use and cached; raises GuidanceError when the
+    framework layer is invalid. The company, project and personal directories are read from
+    the environment here, once per load (``paths.guidance_layer_dirs``); a bad one is left out
+    with a ``layer_invalid`` warning."""
     global _guidance_library
     if _guidance_library is None:
-        _guidance_library = _guidance.load(guidance_dir())
+        _guidance_library = _guidance.load_layers(guidance_dir(), **guidance_layer_dirs())
     return _guidance_library
 
 

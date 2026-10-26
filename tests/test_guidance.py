@@ -717,15 +717,17 @@ def test_get_guidance_reports_invalid_content_instead_of_raising(tmp_path, monke
 def test_the_library_is_loaded_once(monkeypatch):
     monkeypatch.setattr(server, "_guidance_library", None)
     calls = []
-    real = guidance.load
+    real = guidance.load_layers
 
-    def counting(root):
-        calls.append(root)
-        return real(root)
+    def counting(root, **layers):
+        calls.append((root, layers))
+        return real(root, **layers)
 
-    monkeypatch.setattr(server._guidance, "load", counting)
+    monkeypatch.setattr(server._guidance, "load_layers", counting)
     first = server.guidance_library()
     assert server.guidance_library() is first and len(calls) == 1
+    root, layers = calls[0]
+    assert root == paths.guidance_dir() and layers == paths.guidance_layer_dirs()
 
 
 def test_guidance_index_resource(seed):

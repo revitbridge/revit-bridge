@@ -17,12 +17,14 @@ same reply, byte for byte once serialized.
     3. Order: lessons with an ``error:`` hit first, then the rest; inside
        each group ``guidance.yaml`` category order, the lesson's ``order``,
        its id.
-    4. A lesson whose ``revit`` range excludes ``revit_version`` goes to
-       ``omitted`` (``version``); one whose hash is in ``seen_hashes`` goes to
-       ``omitted`` (``seen``) and uses no budget. The rest are taken in order
-       while they fit ``budget.items`` and ``budget.utf8_bytes``; one that
-       does not fit goes to ``omitted`` (``budget``) and a later, smaller one
-       may still fit. Bodies are never cut, except with ``inline=True``.
+    4. A lesson that a lesson in force supersedes goes to ``omitted``
+       (``superseded_by:<id>``); one whose ``revit`` range excludes
+       ``revit_version`` goes to ``omitted`` (``version``); one whose hash is
+       in ``seen_hashes`` goes to ``omitted`` (``seen``) and uses no budget.
+       The rest are taken in order while they fit ``budget.items`` and
+       ``budget.utf8_bytes``; one that does not fit goes to ``omitted``
+       (``budget``) and a later, smaller one may still fit. Bodies are never
+       cut, except with ``inline=True``.
     5. ``inline=True`` (compile failures, D12): at most ``fix_inline_items``
        lessons, each body cut to ``fix_inline_bytes`` UTF-8 bytes including a
        last line ``[truncated: get_guidance(mode="read", ids=["<id>"])]``;
@@ -30,13 +32,18 @@ same reply, byte for byte once serialized.
 
 ``pointers`` the lessons ``recommend`` would choose, without bodies: the
            ``index`` item (``summary``) with ``why``, at most ``budget.items``;
-           body sizes do not count and a version-excluded lesson is left out.
-``index``  every lesson without its body (plus ``summary``), in order.
+           body sizes do not count and a superseded or version-excluded
+           lesson is left out.
+``index``  every lesson in force without its body (plus ``summary``), in
+           order; a lesson a higher layer replaced is in ``omitted``
+           (``overridden_by:<layer>``).
 ``read``   the full text of the given ids, ignoring budget and seen hashes;
            unknown ids are listed in ``missing``.
 
 ``applicability`` is ``verified`` when ``revit_version`` is given and inside
-the lesson's range, else ``unknown``.
+the lesson's range, else ``unknown``. ``layer`` and ``hash`` are those of the
+lesson in force. Every reply's ``warnings`` start with the library's layer
+warnings (``layer_invalid``, ``enforced_kept``, ``enforced_ignored``).
 """
 from __future__ import annotations
 
@@ -169,7 +176,7 @@ def _reply(mode: str, stage: str | None, library: Library | None = None, *, item
             "utf8_bytes": bytes_budget if bytes_budget is not None else (budget.utf8_bytes if budget else 0),
             "used_bytes": used,
         },
-        "warnings": warnings or [],
+        "warnings": (list(library.layer_warnings) if library is not None else []) + (warnings or []),
         "error": error,
     }
 
@@ -240,6 +247,10 @@ def recommend(library: Library, stage: str | None, *, skill_categories: Iterable
     max_bytes = budget.utf8_bytes
     items, omitted, used = [], [], 0
     for lesson, hits in _matches(library, stage, signals):
+        superseder = library.superseded_by(lesson.id)
+        if superseder is not None:
+            omitted.append(_omitted(lesson, f"superseded_by:{superseder}"))
+            continue
         if _excluded(lesson, version):
             omitted.append(_omitted(lesson, "version"))
             continue
@@ -258,8 +269,11 @@ def recommend(library: Library, stage: str | None, *, skill_categories: Iterable
 
 
 def summary(library: Library, lesson: Lesson) -> str:
-    """The lesson's line in its category's SKILL.md index, or its title."""
-    category = library.category(lesson.category)
+    """The lesson's ``summary`` key, else its line in the SKILL.md index of its category in its
+    own layer, else its title. (``guidance index`` writes the index lines from the key.)"""
+    if lesson.summary:
+        return lesson.summary
+    category = library.category(lesson.category, lesson.layer)
     text = category.summary_of(lesson.slug) if category is not None else None
     return text or lesson.title
 
@@ -269,15 +283,16 @@ def pointers(library: Library, stage: str, *, skill_categories: Iterable[str] | 
              errors: Iterable[str] | None = None, exceptions: Iterable[str] | None = None,
              revit_version: str | None = None, error_symbols: Iterable[str] | None = None) -> list[dict]:
     """The lessons ``recommend`` would choose, as pointers: each the ``index`` item (``summary``,
-    no ``body``) with ``why``, at most ``budget.items``. Body sizes do not count; a lesson whose
-    range excludes ``revit_version`` is left out. ``get_guidance(mode="read")`` reads one."""
+    no ``body``) with ``why``, at most ``budget.items``. Body sizes do not count; a superseded
+    lesson and one whose range excludes ``revit_version`` are left out.
+    ``get_guidance(mode="read")`` reads one."""
     if stage not in STAGES:
         raise ValueError(f"invalid_stage: {stage!r} is not one of {', '.join(STAGES)}")
     signals = _signals(skill_categories, revit_categories, symbols, errors, exceptions, error_symbols, [])
     version = _version(revit_version, [])
     items: list[dict] = []
     for lesson, hits in _matches(library, stage, signals):
-        if _excluded(lesson, version):
+        if library.superseded_by(lesson.id) is not None or _excluded(lesson, version):
             continue
         if len(items) >= library.config.budget.items:
             break
@@ -288,7 +303,9 @@ def pointers(library: Library, stage: str, *, skill_categories: Iterable[str] | 
 
 
 def index(library: Library, *, revit_version: str | None = None, stage: str | None = None) -> dict:
-    """Every lesson without its body, in order; a version that a range excludes goes to ``omitted``."""
+    """Every lesson in force without its body, in order; one whose range excludes the version goes
+    to ``omitted`` (``version``), and so does each lesson a higher layer replaced
+    (``overridden_by:<layer>``)."""
     warnings: list[str] = []
     version = _version(revit_version, warnings)
     items, omitted = [], []
@@ -299,6 +316,7 @@ def index(library: Library, *, revit_version: str | None = None, stage: str | No
         item = _head(lesson, _applicability(lesson, version), [])
         item["summary"] = summary(library, lesson)
         items.append(item)
+    omitted.extend(_omitted(lesson, f"overridden_by:{layer}") for lesson, layer in library.overridden)
     return _reply("index", stage, library, items=items, omitted=omitted, warnings=warnings)
 
 
