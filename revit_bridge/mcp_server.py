@@ -25,6 +25,8 @@ Tools:
     - run_tool          : execute a solidified tool (confirmation token)
     - evidence          : recent execution records from the ledger
     - validate          : re-run a recorded execution's validator now
+    - plan_verification : before an execute_code: pick a read-back template (no gate)
+    - verify_execution  : after it: read the model back against the plan (no gate)
     - get_guidance      : lessons for writing Revit code, by stage (read-only)
 
 The server never calls a model: the host does. Connection settings come from
@@ -64,10 +66,14 @@ from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params as _missing_params
 from revit_bridge.spec.rules import reconcile as _reconcile
 from revit_bridge.spec.rules import validate_spec
+from revit_bridge.verification import VerificationStore
+from revit_bridge.verification import plan as _plan_verification
+from revit_bridge.verification import verify as _verify_execution
 
 _tool_store = ToolStore()
 _gate = Gate()
 _ledger = Ledger()
+_verifications = VerificationStore()               # <data root>/verifications, resolved at each call
 _guidance_library: _guidance.Library | None = None   # loaded on first use, then kept
 
 
@@ -444,6 +450,52 @@ async def validate(evidence_id: str) -> str:
                                         evidence_id=evidence_id))
     except OSError as e:
         return _dumps({"error": "revit_unreachable", "message": str(e) or type(e).__name__})
+
+
+# -- Read-back verification (execute_code) ------------------------------------
+
+@mcp.tool(annotations=_READ_ONLY)
+async def plan_verification(template: str, params: dict | str) -> str:
+    """Plan how the result of an execute_code will be read back, BEFORE confirm_spec.
+    Runs only the bridge's own read-only probes, never your code; no token.
+    template / params (category: a BuiltInCategory OST_* name such as "OST_Walls"):
+    - created_ids: {"category"} - every id the result returns (ElementId / Ids /
+      ElementIds fields) exists and is of that category.
+    - count_delta: {"category", "expected": int} - the number of instances of the
+      category moves by exactly expected (negative for deletions); the count is
+      sampled now, as the baseline.
+    - param_equals: {"category", "checks": [{"param", "expected", "unit", "tolerance"}]}
+      - on every id the result returns, parameter `param` (a BuiltInParameter name
+      such as "WALL_USER_HEIGHT_PARAM", or a display name) equals `expected`;
+      `unit` (mm | m | feet | null = mm) is the unit of `expected` for lengths,
+      `tolerance` (in that unit; null = 0.5 mm for lengths, 1e-6 otherwise).
+    The code must return the ids for created_ids and param_equals. No template
+    fits: plan nothing and say the result will not be verified. Show the plan to
+    the designer in one line under the spec card. Returns {verification_id,
+    template, params, baseline: {count} | null, document, created_at, expires_at}
+    (valid 30 minutes, for one verify_execution) or {error: "invalid_template",
+    problems} | {error: "revit_unreachable" | "probe_failed" | "store_failed", message}."""
+    try:
+        params_value = _parse_json_arg(params, "params")
+    except json.JSONDecodeError as e:
+        return _dumps({"error": "invalid_template", "problems": [f"params: {e}"]})
+    return _dumps(await _plan_verification(_verifications, _PooledClient(), template, params_value))
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def verify_execution(evidence_id: str, verification_id: str) -> str:
+    """After execute_code: read the model back against the plan from plan_verification.
+    Runs only the bridge's own read-only probes; no token. Returns {verified,
+    template, checks: [{name, passed, detail}], before, after, evidence_id,
+    verification_id, verification_evidence_id, error}. `verified` is true only when
+    the read-back passed. `error` (plan not used, nothing recorded): unknown_evidence,
+    not_executed (the execution failed), unknown_verification, verification_expired,
+    verification_used, document_changed, revit_unreachable. Report exactly one of:
+    executed and verified (verified true) / executed but verification failed (quote
+    checks[].detail) / executed, not verified (no plan, or an error). The check is a
+    ledger line of its own: evidence(tool="verify_execution")."""
+    return _dumps(await _verify_execution(_verifications, _ledger, _PooledClient(), evidence_id,
+                                          verification_id, host="mcp"))
 
 
 # -- Guidance -----------------------------------------------------------------

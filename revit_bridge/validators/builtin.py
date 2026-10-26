@@ -133,14 +133,21 @@ class CountDelta:
 # -- param_equals ------------------------------------------------------------------------------
 
 class ParamEquals:
-    """Parameters read back from the result's elements equal the spec's values."""
+    """Parameters read back from the result's elements equal the spec's values.
+
+    ``tolerances`` ({spec_param: number}, keyword only) widens the comparison
+    for those parameters, in the spec value's unit; only ``verify_execution``
+    passes it. Without it - every capability pack - lengths match within
+    ``LENGTH_TOLERANCE_MM`` and other numbers within 1e-6.
+    """
 
     kind = "param_equals"
 
     async def before(self, client, spec: TaskSpec, cfg: dict) -> dict:
         return {}
 
-    async def after(self, client, spec: TaskSpec, cfg: dict, before: dict, result) -> ValidationReport:
+    async def after(self, client, spec: TaskSpec, cfg: dict, before: dict, result, *,
+                    tolerances: dict[str, float] | None = None) -> ValidationReport:
         category = _category(cfg, spec)
         ids = extract_ids(result)
         if not ids:
@@ -187,22 +194,29 @@ class ParamEquals:
         rows = await _probe(client, code)
         rows = rows if isinstance(rows, list) else [rows]
         units = {p.name: p.unit for p in spec.parameters}
-        by_param = {name: (values[spec_param], units.get(spec_param)) for name, spec_param in wanted}
+        tolerances = tolerances or {}
+        by_param = {name: (values[spec_param], units.get(spec_param), tolerances.get(spec_param))
+                    for name, spec_param in wanted}
         checks = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
             name = str(row.get("Name"))
-            expected, unit = by_param.get(name, (None, None))
-            passed, detail = _compare(row, expected, unit)
+            expected, unit, tolerance = by_param.get(name, (None, None, None))
+            passed, detail = _compare(row, expected, unit, tolerance)
             checks.append(Check(name=f"id {row.get('Id')} {name}", passed=passed, detail=detail))
         passed = bool(checks) and all(c.passed for c in checks)
         return ValidationReport(validator=self.kind, passed=passed, checks=checks, before=before,
                                 after={"ids": ids, "category": category})
 
 
-def _compare(row: dict, expected, unit: str | None = None) -> tuple[bool, str]:
-    """Compare a readback with the spec value; lengths in mm after converting by ``unit``."""
+def _compare(row: dict, expected, unit: str | None = None,
+             tolerance: float | None = None) -> tuple[bool, str]:
+    """Compare a readback with the spec value; lengths in mm after converting by ``unit``.
+
+    ``tolerance`` (in ``unit`` for a length) replaces the default margin and is
+    named in the detail; None keeps the defaults and the detail as they were.
+    """
     kind, actual = row.get("Kind"), row.get("Value")
     if kind == "missing":
         return False, "element does not exist"
@@ -219,8 +233,13 @@ def _compare(row: dict, expected, unit: str | None = None) -> tuple[bool, str]:
                 return False, f"got {got:g} mm, expected {want:g} in unknown unit {unit!r}"
             want_mm = want * factor
             shown = f"{want:g} {unit} = {want_mm:g} mm" if unit and unit != "mm" else f"{want_mm:g} mm"
-            return abs(got - want_mm) <= LENGTH_TOLERANCE_MM, f"got {got:g} mm, expected {shown}"
-        return abs(got - want) <= 1e-6, f"got {got:g}, expected {want:g}"
+            if tolerance is None:
+                return abs(got - want_mm) <= LENGTH_TOLERANCE_MM, f"got {got:g} mm, expected {shown}"
+            margin = tolerance * factor
+            return abs(got - want_mm) <= margin, f"got {got:g} mm, expected {shown} +/- {margin:g} mm"
+        if tolerance is None:
+            return abs(got - want) <= 1e-6, f"got {got:g}, expected {want:g}"
+        return abs(got - want) <= tolerance, f"got {got:g}, expected {want:g} +/- {tolerance:g}"
     return str(actual) == str(expected), f"got {actual!r}, expected {expected!r}"
 
 
