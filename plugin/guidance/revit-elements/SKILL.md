@@ -11,4 +11,4 @@ Lessons in this category are chosen and ordered by the revit-bridge MCP server's
 
 ## Lessons
 
-None yet.
+- [floor-ceiling-type-and-level-ids](lessons/floor-ceiling-type-and-level-ids.md) - `Floor.Create(document, loops, floorType.Id, level.Id)`: another kind of id throws `ArgumentException`

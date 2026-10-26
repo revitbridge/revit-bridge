@@ -211,6 +211,39 @@ def test_the_addin_skill_settles_five_things_before_building():
     assert "runtime input" in block
 
 
+# -- E3: a run that threw (server rendering and skill) -------------------------------------
+
+E3_LINE = "If `hint` names get_guidance: call it before fixing, then check_code and confirm again."
+
+
+def test_the_server_reads_the_lessons_of_a_run_that_threw_the_host_does_not():
+    srv, host = server_instructions(), host_instructions()
+    rendered = [line.strip() for line in lines(srv)]
+    step8 = next(i for i, line in enumerate(rendered) if line.startswith("8. Read the reply"))
+    verify = next(i for i, line in enumerate(rendered) if line.startswith("After execute_code: verify_execution"))
+    assert rendered[step8:verify].count(E3_LINE) == 1 and rendered[verify - 1] == E3_LINE    # one line
+    assert E3_LINE not in host and "get_guidance" not in host
+    assert "revit://connection-status" in srv and len(lines(srv)) <= 60
+    # the hint the bridge writes starts the way both texts say
+    from revit_bridge.execution import EXCEPTION_HINT
+    assert EXCEPTION_HINT.startswith('call get_guidance(stage="fix", exceptions=')
+
+
+def test_the_skill_says_what_to_do_after_a_run_that_threw():
+    import pathlib
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    step8 = text[text.index("8. **Verify and report**"):text.index("## Parameter source protocol")]
+    paragraph = step8[step8.index("**A run that threw.**"):]
+    assert len(paragraph.strip().splitlines()) <= 5
+    for phrase in ('`call get_guidance(stage="fix", exceptions=[...])`', "Report the failure as it is",
+                   "read the lessons before you change anything", "`check_code` until it compiles",
+                   "plan the verification again", "get a new confirmation", "the old token is spent",
+                   "write `execute_code` C# instead"):
+        assert phrase in paragraph, phrase
+
+
 # -- S5: API lookup (revit-api-docs) and the version the skill needs ------------------------
 
 def test_the_skill_needs_0_4_and_says_how_to_work_with_a_0_3_server():

@@ -35,9 +35,9 @@ def test_check_the_seed_content(capsys):
     code, out = run(capsys, "check", str(CONTENT))
     assert code == 0
     lines = out.splitlines()
-    assert lines[0] == f"layer framework: loaded, 13 lessons: {CONTENT}"
+    assert lines[0] == f"layer framework: loaded, 15 lessons: {CONTENT}"
     assert lines[1:4] == ["layer company: not set", "layer project: not set", "layer personal: not set"]
-    assert lines[-1] == "result: 0 problems, 0 warnings, 13 lessons"                 # S3b: every seed <= 2300 bytes
+    assert lines[-1] == "result: 0 problems, 0 warnings, 15 lessons"                 # S3b: every seed <= 2300 bytes
     assert not any(line.startswith("problem:") for line in lines)
 
 
@@ -263,7 +263,7 @@ def test_explain_inline_version_and_omitted(capsys):
     assert code == 0 and "budget: 2 items, 12000 bytes" in out
     assert "1. revit-core/snippet-contract" in out and "2. revit-core/transaction-owned-by-bridge" in out
     assert "omitted: revit-core/internal-units-feet (version)" in out
-    code, out = run(capsys, "explain", "--stage", "write", "--categories", "OST_Floors")
+    code, out = run(capsys, "explain", "--stage", "write", "--categories", "OST_Roofs")
     assert code == 0 and "no lessons" in out
     code, out = run(capsys, "explain", "--stage", "fix", "--code", "no-such-file.cs")
     assert code == 2 and out.startswith("problem: --code no-such-file.cs")

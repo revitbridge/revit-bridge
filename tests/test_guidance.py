@@ -614,6 +614,8 @@ EXPECTED_LESSONS = {
     "revit-collect": {"collector-needs-filter", "instances-vs-types", "selection-get-element-ids"},
     "revit-params": {"lookup-parameter-storage-type", "builtin-parameter-first"},
     "revit-geometry": {"wall-length-from-location", "curve-length-property", "line-create-bound"},
+    "revit-families": {"activate-symbol-before-placement"},             # batch 5: runtime exceptions (E3)
+    "revit-elements": {"floor-ceiling-type-and-level-ids"},
 }
 
 

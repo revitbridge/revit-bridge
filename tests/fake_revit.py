@@ -81,6 +81,17 @@ class FakeRevit:
         }
         return cls.ok(request_id, inner)
 
+    # The add-in's execute handler reports code that threw as its prefix
+    # ("execution failed: ", in Chinese), the exception's type name and its
+    # message. The add-in names the inner exception's short type
+    # (``ArgumentException``); tests pass full names (``Autodesk.Revit...``) too.
+    THROWN_PREFIX = "\u6267\u884c\u5931\u8d25: "
+
+    @classmethod
+    def thrown(cls, request_id, exception: str, message: str) -> dict:
+        """A send_code_to_revit reply for code that threw ``exception`` while it ran."""
+        return cls.code_result(request_id, None, success=False, error=f"{cls.THROWN_PREFIX}{exception}: {message}")
+
     @classmethod
     def default_handler(cls, request: dict) -> dict:
         method = request.get("method")

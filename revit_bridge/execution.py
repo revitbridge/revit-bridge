@@ -26,6 +26,12 @@ device (JSON-RPC error ``-32001``) is ``error: "declined_on_device"`` with
 the token consumed and a ledger line; capability packs (``run_pack``),
 probes and reads never carry ``confirm``.
 
+A run that failed - not a refusal - and whose ``error`` names .NET exception
+types (``guidance.scan.exception_types``) gets a ``hint`` pointing at the fix
+lessons for them: ``call get_guidance(stage="fix", exceptions=[...])`` and
+what to do after (``failure_hint``, E3); a pack's retry advice follows it.
+Without such a name the ``hint`` is what it was. The reply keeps its keys.
+
 ``client`` needs ``send_code(code, parameters, confirm=None)`` - a client
 that receives ``confirm`` sends it in the request params, waits at least
 ``CONFIRM_TIMEOUT_SECONDS`` for the answer and reports a JSON-RPC error's
@@ -37,6 +43,7 @@ no ledger line.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -46,6 +53,7 @@ from pydantic import BaseModel, Field
 from revit_bridge.capabilities.schema import evaluate_preconditions, precondition_categories
 from revit_bridge.capabilities.store import SolidifiedTool, ToolStore
 from revit_bridge.evidence.ledger import CODE_HEAD_CHARS, LOCAL_SCOPE, Ledger, code_fields, summarize_result
+from revit_bridge.guidance.scan import exception_types
 from revit_bridge.revit import sandbox
 from revit_bridge.revit.client import DECLINED_ON_DEVICE
 from revit_bridge.revit.settings import env_flag
@@ -68,6 +76,9 @@ RETRY_HINT = (
 )
 CONFIRM_TITLE = "revit-bridge"
 DECLINED_ERROR = "declined_on_device"
+# E3: a failed run whose error names .NET exception types points at the fix lessons for them.
+EXCEPTION_HINT = ('call get_guidance(stage="fix", exceptions={exceptions}) and read those lessons before '
+                  'changing the code; the changed code needs check_code and a new confirmation.')
 
 
 class ExecutionResult(BaseModel):
@@ -310,6 +321,20 @@ def _declined(resp) -> bool:
     return getattr(resp, "error_code", None) == DECLINED_ON_DEVICE
 
 
+def failure_hint(error: str | None, hint: str | None = None) -> str | None:
+    """``hint`` for a failed run (E3): when ``error`` names .NET exception types,
+    ``EXCEPTION_HINT`` with them (``hint``, if any, after it); otherwise ``hint`` as is.
+
+    Only the failures of a run that was not refused use it: a refusal
+    (``confirmation_*``, ``blocked``, a pack check) keeps its own hint.
+    """
+    names = exception_types(error)
+    if not names:
+        return hint
+    call = EXCEPTION_HINT.format(exceptions=json.dumps(names))
+    return f"{call} {hint}" if hint else call
+
+
 # -- run_pack ---------------------------------------------------------------------------------
 
 async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name: str, params: dict,
@@ -370,7 +395,8 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
         failed, document = await preconditions(client, pack, warnings)
     except Exception as e:                     # noqa: BLE001 - nothing reached Revit: nothing to record
         store.record_usage(name, success=False)
-        return ExecutionResult(success=False, tool=name, error=str(e) or type(e).__name__, warnings=warnings)
+        error = str(e) or type(e).__name__
+        return ExecutionResult(success=False, tool=name, error=error, warnings=warnings, hint=failure_hint(error))
 
     def refused(error: str) -> ExecutionResult:
         """A refusal before the token is consumed: no execution, but a ledger line
@@ -408,7 +434,8 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
             code=None, document=document, resp=None, validation=None, success=False, error=str(e),
             duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
         )
-        return ExecutionResult(success=False, tool=name, error=str(e), evidence_id=evidence_id, warnings=warnings)
+        return ExecutionResult(success=False, tool=name, error=str(e), evidence_id=evidence_id, warnings=warnings,
+                               hint=failure_hint(str(e)))
 
     validation: ValidationReport | None = None
     if validator is not None and resp.success:
@@ -427,7 +454,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     )
     return ExecutionResult(
         success=success, tool=name, result=resp.result, error=error, validation=validation,
-        evidence_id=evidence_id, warnings=warnings, hint=None if resp.success else RETRY_HINT,
+        evidence_id=evidence_id, warnings=warnings, hint=None if resp.success else failure_hint(error, RETRY_HINT),
     )
 
 
@@ -452,7 +479,8 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
         await ensure_connected(client)
         document = await document_info(client, warnings)
     except Exception as e:                     # noqa: BLE001 - nothing reached Revit: nothing to record
-        return ExecutionResult(success=False, error=str(e) or type(e).__name__, warnings=warnings)
+        error = str(e) or type(e).__name__
+        return ExecutionResult(success=False, error=error, warnings=warnings, hint=failure_hint(error))
     refusal = gate_refusal(gate, token, projection, env, consume=True, scope=scope)   # the last step before Revit
     if refusal:
         return _refused(refusal)
@@ -467,7 +495,8 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
             code=code, document=document, resp=None, validation=None, success=False, error=str(e),
             duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
         )
-        return ExecutionResult(success=False, error=str(e), evidence_id=evidence_id, warnings=warnings)
+        return ExecutionResult(success=False, error=str(e), evidence_id=evidence_id, warnings=warnings,
+                               hint=failure_hint(str(e)))
     duration_ms = int((time.monotonic() - started) * 1000)
     error = DECLINED_ERROR if _declined(resp) else resp.error       # the designer said No on the device
     evidence_id = _record(
@@ -476,7 +505,8 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
         duration_ms=duration_ms, preconditions_failed=[], warnings=warnings,
     )
     return ExecutionResult(success=resp.success, result=resp.result, error=error,
-                           evidence_id=evidence_id, warnings=warnings)
+                           evidence_id=evidence_id, warnings=warnings,
+                           hint=None if resp.success else failure_hint(error))
 
 
 # -- revalidate -----------------------------------------------------------------------------------
