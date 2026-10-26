@@ -55,10 +55,11 @@ ENV_KEYS = {"source", "revit", "runtime", "kit", "capability", "error"}
 
 
 def lookup(query: str) -> str:
-    """The sentence a hint ends with when its error names an API (S5 M1 wording)."""
+    """The sentence a hint ends with when its error names an API (S5 wording: revit-api-docs 0.2 puts
+    the data set version on its first output line)."""
     return (f" If the host has the revit-api-docs MCP server, query '{query}' with search_revit_api before "
-            f"changing the code and cite the data set version it reports (e.g. Revit 2026 data set); "
-            f"without that tool, mark this API as unverified.")
+            f"changing the code and cite the data set version from its first output line (e.g. data set: "
+            f"Revit 2026); without that tool, mark this API as unverified.")
 
 
 def new_addin(check_reply=FAILED_CHECK, caps=CAPS):

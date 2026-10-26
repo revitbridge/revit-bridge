@@ -235,8 +235,9 @@ def test_the_skill_says_how_to_use_and_read_the_api_lookup():
     section = text[text.index("## API lookup"):text.index("## References")]
     assert len(section.strip().splitlines()) <= 8
     for phrase in ("`revit-api-docs` is an optional second MCP server", "`search_revit_api`",
-                   "cite the data set version it names", "Without the tool, say the API is unverified",
-                   "`Rerank: jev | cohere | none`", "`Relevance:`",
+                   "cite the data set version from its first output line", "Without the tool, say the API is unverified",
+                   "`Rerank: jev | cohere | none; data set: Revit 2026`", "`Relevance:`",
+                   "It is the first line, or the second after an abstention",
                    "not that the member does not exist", "for reference only",
                    "Whether a member exists in the connected Revit is what `check_code` says",
                    "is not the data set's release", "unverified until `check_code` compiles them"):

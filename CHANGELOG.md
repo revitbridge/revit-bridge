@@ -36,8 +36,8 @@ the data directory gains `verifications/`. Other replies only gain keys.
     or CS7036 diagnostic, naming the Revit version. A hint for an error that
     names an API ends with: if the host has the revit-api-docs MCP server,
     query it with `search_revit_api` before changing the code and cite the
-    data set version it reports (e.g. Revit 2026 data set); without that
-    tool, mark the API as unverified.
+    data set version from its first output line (e.g. data set: Revit 2026);
+    without that tool, mark the API as unverified.
   - `guidance`: lessons from the guidance library, without a model, in the
     `get_guidance` item shape. On compile errors: up to two `fix` lessons
     with their bodies, chosen by the diagnostic ids, their symbols and the
@@ -254,12 +254,13 @@ the data directory gains `verifications/`. Other replies only gain keys.
 - The `revit-bridge` skill needs a 0.4 server (`check_code`, `get_guidance`,
   `plan_verification`) and says how to go on with a 0.3 one ("not
   pre-compiled locally", no guidance, "executed, not verified"). A new "API
-  lookup" section: when to call `search_revit_api`, how to read its
-  `Rerank:` line and an abstention (the data set has no relevant entry,
-  which does not mean the member is missing: `check_code` decides), and what
-  to say when the connected Revit is not the data set's release. README:
-  "Pair with revit-api-docs" (both servers in one config, the 335 MB first
-  download, Jev). The plugin's `.mcp.json` still starts only `revit-bridge`.
+  lookup" section: when to call `search_revit_api`, how to read its `Rerank:
+  ...; data set: Revit 2026` line (the version to cite, from revit-api-docs
+  0.2) and an abstention (the data set has no relevant entry, which does not
+  mean the member is missing: `check_code` decides), and what to say when
+  the connected Revit is not the data set's release. README: "Pair with
+  revit-api-docs" (both servers in one config, the 335 MB first download,
+  Jev). The plugin's `.mcp.json` still starts only `revit-bridge`.
 - Plugin 0.4.0 (`plugin/.claude-plugin/plugin.json` and the marketplace
   entry, which still said 0.2.0): an installed plugin updates to the new
   `revit-core` and `revit-addin-dev` skills and the reworded `revit-bridge`

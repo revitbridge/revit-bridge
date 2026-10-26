@@ -133,9 +133,9 @@ Report exactly what the tool response says. If `success` is false, say it failed
 
 ## API lookup
 
-`revit-api-docs` is an optional second MCP server; the host may not have it. When `search_revit_api` is there, use it when a `check_code` hint names an API or before you write a member you are unsure of: query in English with API names (`Wall.Create`), and cite the data set version it names (e.g. "Revit 2026 data set") next to what you took from it. Without the tool, say the API is unverified - never present memory as a lookup.
-- The first line `Rerank: jev | cohere | none` names the ranker (`(unavailable: jev)` = it fell back); only `jev` adds `Relevance:` per entry.
-- An abstention ("No entry in the Revit 2026 data set scored high enough ...") means the data set has no relevant entry or words it differently, not that the member does not exist; the candidates under it are for reference only. Whether a member exists in the connected Revit is what `check_code` says.
+`revit-api-docs` is an optional second MCP server; the host may not have it. When `search_revit_api` is there, use it when a `check_code` hint names an API or before you write a member you are unsure of: query in English with API names (`Wall.Create`), and cite the data set version from its first output line (e.g. "data set: Revit 2026") next to what you took from it. Without the tool, say the API is unverified - never present memory as a lookup.
+- The line `Rerank: jev | cohere | none; data set: Revit 2026` names the ranker and the data set (`(unavailable: jev)` = it fell back); only `jev` adds `Relevance:` per entry. It is the first line, or the second after an abstention.
+- An abstention ("No entry in the Revit 2026 data set scored high enough ...", then the `Rerank:` line) means the data set has no relevant entry or words it differently, not that the member does not exist; the candidates under it are for reference only. Whether a member exists in the connected Revit is what `check_code` says.
 - When the connected Revit (`check_code`'s `environment`) is not the data set's release, say which release the lookup covers (the data set's, Revit 2026 today) and treat members that changed between releases as unverified until `check_code` compiles them.
 
 ## References

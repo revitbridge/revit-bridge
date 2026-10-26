@@ -14,7 +14,8 @@
 3. ``hints`` - one per distinct diagnostic whose id is in ``HINT_IDS``,
    naming the Revit version when it is known and, when the error names an
    API, pointing at ``search_revit_api`` of the revit-api-docs server: cite
-   the data set version it reports, or mark the API unverified without it.
+   the data set version from its first output line, or mark the API
+   unverified without it.
 4. ``guidance`` - lessons from the guidance library (``library``), items
    shaped as ``get_guidance`` items, chosen without a model:
 
@@ -213,8 +214,9 @@ def hint_for(diagnostic: dict, label: str | None = None) -> dict | None:
     text = _sentence(label, body)
     if query:
         text += (f" If the host has the {API_LOOKUP_SERVER} MCP server, query '{query}' with "
-                 f"{API_LOOKUP_TOOL} before changing the code and cite the data set version it "
-                 f"reports (e.g. Revit 2026 data set); without that tool, mark this API as unverified.")
+                 f"{API_LOOKUP_TOOL} before changing the code and cite the data set version from its "
+                 f"first output line (e.g. data set: Revit 2026); without that tool, mark this API as "
+                 f"unverified.")
     return {"id": diag_id, "symbol": symbol, "text": text}
 
 
