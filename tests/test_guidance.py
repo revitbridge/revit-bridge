@@ -554,9 +554,8 @@ def test_a_body_over_the_writing_rule_loads_with_a_warning(tmp_path, seed):
     }))
     assert [x.id for x in library.lessons] == ["revit-core/a", "revit-core/b"]
     assert library.warnings == ("revit-core/lessons/b.md: body is 2301 UTF-8 bytes, over the 2300-byte writing rule",)
-    over = sorted(w.split(":")[0] for w in seed.warnings)        # the seed lessons that break the rule today
-    assert over == sorted(f"{x.path}" for x in seed.lessons if x.body_bytes > 2300)
-    assert all(x.body_bytes <= 2400 for x in seed.lessons)
+    assert seed.warnings == ()                                    # every seed keeps the rule (S3b trim)
+    assert all(x.body_bytes <= 2300 for x in seed.lessons)
     core = (CONTENT / "revit-core" / "SKILL.md").read_text(encoding="utf-8")
     assert "## Writing lessons" in core and "at or under 2300 UTF-8 bytes" in core
     assert len(seed.category("revit-core").summaries) == 5            # the note does not join the index
@@ -652,7 +651,8 @@ def test_seed_lessons(seed):
             assert headings == ["Scenario", "Wrong", "Right", "Versions", "Source"], item.id
         source = item.body.split("## Source", 1)[1].strip()
         assert source and ("revit-api-docs" in source or "revit-addin-dev" in source), item.id
-        assert item.body_bytes <= 2400, item.id
+        assert item.body_bytes <= 2300, item.id                       # D12 writing rule
+        assert item.summary and item.summary == seed.category(item.category).summary_of(item.slug), item.id
         assert item.revit.text in ("any", ">=2024 <2028"), item.id
         if item.category == "revit-core":
             assert "orient" in item.stage, item.id

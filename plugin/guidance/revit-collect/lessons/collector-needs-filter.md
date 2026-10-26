@@ -1,7 +1,7 @@
 ---
 schema_version: 1
 id: revit-collect/collector-needs-filter
-revision: 1
+revision: 2
 title: "FilteredElementCollector needs a filter before you read it"
 summary: "apply `OfCategory` / `OfClass` / `WhereElementIs...` before reading a collector"
 stage: [write, fix]
@@ -15,14 +15,14 @@ triggers:
 
 ## Scenario
 
-A new `FilteredElementCollector(document)` has no condition yet. Reading it - `ToElements()`, `ToElementIds()`, `FirstElement()`, `foreach` or LINQ - throws `InvalidOperationException`: "Extraction or iteration of elements is not permitted without a filter". A LINQ `Where` is not a collector filter. Apply a native filter first (`OfCategory`, `OfClass`, `WhereElementIsNotElementType`, `WhereElementIsElementType`, ...); native filters also run before elements are expanded, which is faster than filtering in LINQ.
+A new `FilteredElementCollector(document)` has no condition yet. Reading it - `ToElements()`, `ToElementIds()`, `FirstElement()`, `foreach` or LINQ - throws `InvalidOperationException`: "Extraction or iteration of elements is not permitted without a filter". A LINQ `Where` is not a collector filter. Apply a native filter first (`OfCategory`, `OfClass`, `WhereElementIsNotElementType`, `WhereElementIsElementType`, ...); native filters also run before elements are expanded, faster than filtering in LINQ.
 
 ## Wrong
 
 ```csharp
-var all = new FilteredElementCollector(document).ToElements();   // no filter: throws
+var all = new FilteredElementCollector(document).ToElements(); // no filter: throws
 var walls = new FilteredElementCollector(document)
-    .Where(e => e is Wall).ToList();                              // still no collector filter
+    .Where(e => e is Wall).ToList(); // still no collector filter
 ```
 
 ## Right
