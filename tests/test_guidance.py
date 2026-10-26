@@ -646,6 +646,8 @@ def test_seed_lessons(seed):
         headings = re.findall(r"^## (\w+)", item.body, flags=re.M)
         if item.id == "revit-core/runtime-matrix-2024-2027":          # a table of facts: no wrong/right code
             assert headings == ["Scenario", "Versions", "Source"], item.id
+        elif item.id == "revit-core/snippet-contract":                 # P2: the rendered contract comes first
+            assert headings == ["Contract", "Scenario", "Wrong", "Right", "Versions", "Source"], item.id
         else:
             assert headings == ["Scenario", "Wrong", "Right", "Versions", "Source"], item.id
         source = item.body.split("## Source", 1)[1].strip()
@@ -668,6 +670,27 @@ def test_seed_files_keep_lf_line_endings():
     for path in CONTENT.rglob("*"):
         if path.is_file():
             assert b"\r" not in path.read_bytes(), path
+
+
+EXPORT = ROOT / "plugin" / "skills" / "revit-core"
+
+
+def test_revit_core_is_exported_byte_for_byte_as_a_native_skill():
+    source = {p.relative_to(CONTENT / "revit-core").as_posix(): p.read_bytes()
+              for p in (CONTENT / "revit-core").rglob("*") if p.is_file()}
+    export = {p.relative_to(EXPORT).as_posix(): p.read_bytes() for p in EXPORT.rglob("*") if p.is_file()}
+    assert export == source and "SKILL.md" in export and len(export) == 6
+    assert all(b"\r" not in content for content in export.values())
+    meta, _ = guidance.loader.read_skill(EXPORT / "SKILL.md")
+    assert set(meta) == {"name", "description"} and meta["name"] == "revit-core"
+    assert len(meta["description"]) <= 1024
+    exported = sorted(p.name for p in (ROOT / "plugin" / "skills").iterdir() if p.is_dir())
+    assert exported == ["revit-addin-dev", "revit-bridge", "revit-core"]      # D9: only revit-core
+
+
+def test_the_gitattributes_keep_generated_content_lf():
+    text = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "plugin/guidance/** text eol=lf" in text and "plugin/skills/revit-core/** text eol=lf" in text
 
 
 def test_guidance_dir_resolves_to_the_repo_content():

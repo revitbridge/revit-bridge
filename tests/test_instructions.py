@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 import revit_bridge
 import revit_bridge.mcp_server as server
 from revit_bridge.instructions import host_instructions, server_instructions
@@ -113,3 +115,112 @@ def test_the_skill_reads_check_code_guidance_before_changing_the_code():
     fix = text.index('get_guidance(stage="fix"')
     pointers = text.index("When the code compiles, `guidance` lists pointers (`summary`, no body)")
     assert check < lessons < bodies < truncated < fix < pointers < text.index("6. **Confirm**")
+
+
+# -- P2: the snippet contract has one source -----------------------------------------
+
+def _contract():
+    from revit_bridge.guidance import load_contract
+    from revit_bridge.paths import guidance_dir
+
+    return load_contract(guidance_dir())
+
+
+def test_the_snippet_contract_is_rendered_from_its_lesson():
+    import revit_bridge.instructions as instructions
+
+    contract = _contract()
+    assert 1 <= len(contract.lines) <= 6 and contract.summary
+    assert instructions.SNIPPET_CONTRACT_NOTE == contract.note()
+    assert instructions.SNIPPET_CONTRACT_SUMMARY == contract.summary
+    assert instructions.SNIPPET_CONTRACT_WARNINGS == ()
+    assert contract.note().startswith("- Snippet contract (execute_code): ")
+    for text in (server_instructions(), host_instructions()):
+        notes = text[text.index("## Notes"):]
+        assert contract.note() in notes
+        assert len(lines(text)) <= 60
+
+
+def test_no_python_source_restates_the_contract():
+    import pathlib
+
+    package = pathlib.Path(revit_bridge.__file__).parent
+    contract = _contract()
+    phrases = [line.strip() for line in contract.lines] + [contract.summary, "already inside a transaction",
+                                                             "IO, Process, Assembly, DllImport", "(no JSON library)"]
+    for path in (package / "instructions.py", package / "mcp_server.py"):
+        text = path.read_text(encoding="utf-8")
+        for phrase in phrases:
+            assert phrase not in text, (path.name, phrase)
+
+
+def test_the_tool_descriptions_carry_the_contract_summary():
+    import asyncio
+
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    sentence = f"Snippet contract: {_contract().summary}."
+    for name in ("check_code", "execute_code"):
+        assert sentence in tools[name].description, name
+        assert "<snippet contract>" not in tools[name].description
+
+
+def test_the_skill_carries_the_contract_block():
+    import pathlib
+
+    from revit_bridge.guidance.contract import BEGIN_MARK, END_MARK
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    block = text[text.index(BEGIN_MARK) + len(BEGIN_MARK):text.index(END_MARK)]
+    assert block == "\n" + _contract().note()
+    assert text.index("## Notes on the tools") < text.index(BEGIN_MARK)
+
+
+def test_a_contract_that_does_not_load_falls_back_with_a_warning(tmp_path, monkeypatch):
+    import revit_bridge.instructions as instructions
+    from revit_bridge.paths import guidance_dir, skills_dir
+
+    broken = tmp_path / "broken"
+    (broken / "revit-core" / "lessons").mkdir(parents=True)
+    (broken / "revit-core" / "lessons" / "snippet-contract.md").write_text("no front matter\n", encoding="utf-8")
+    contract, warnings = instructions.snippet_contract([broken, guidance_dir()])
+    assert contract == _contract() and len(warnings) == 1
+    assert warnings[0].startswith(f"snippet contract: {broken}: revit-core/lessons/snippet-contract.md: no front")
+    contract, warnings = instructions.snippet_contract([skills_dir()])             # the exported copy
+    assert contract.note() == _contract().note() and warnings == ()
+    contract, warnings = instructions.snippet_contract([broken, tmp_path / "nowhere"])
+    assert contract is None and len(warnings) == 2 and "missing" in warnings[1]
+    monkeypatch.setattr(instructions, "SNIPPET_CONTRACT_NOTE", instructions.FALLBACK_NOTE)
+    for text in (instructions.server_instructions(), instructions.host_instructions()):
+        assert "- Snippet contract (execute_code): see the revit-core/snippet-contract lesson." in text
+        assert len(lines(text)) <= 60
+
+
+def test_load_contract_reports_what_is_wrong(tmp_path):
+    from revit_bridge.guidance import GuidanceError, load_contract
+    from tests.test_guidance import lesson
+
+    def problems(body: str, **meta) -> list[str]:
+        root = tmp_path / str(len(list(tmp_path.iterdir())))
+        (root / "revit-core" / "lessons").mkdir(parents=True)
+        (root / "revit-core" / "lessons" / "snippet-contract.md").write_text(
+            lesson("revit-core/snippet-contract", body=body, **meta), encoding="utf-8")
+        try:
+            load_contract(root)
+        except GuidanceError as e:
+            return e.problems
+        return []
+
+    ok = "## Contract\n\nLine one\nline two\n\n## Scenario\n\nText.\n"
+    assert problems(ok, summary='"s"') == []
+    assert problems(ok) == ["revit-core/lessons/snippet-contract.md: summary is required (the tool descriptions use it)"]
+    assert problems("## Scenario\n\nText.\n", summary='"s"') == [
+        "revit-core/lessons/snippet-contract.md: no ## Contract section"]
+    seven = "## Contract\n\n" + "".join(f"line {i}\n" for i in range(7))
+    assert problems(seven, summary='"s"') == [
+        "revit-core/lessons/snippet-contract.md: the ## Contract section has 7 lines (1 to 6)"]
+    assert problems("## Contract\n\n## Scenario\n", summary='"s"') == [
+        "revit-core/lessons/snippet-contract.md: the ## Contract section has 0 lines (1 to 6)"]
+    with pytest.raises(GuidanceError) as info:
+        load_contract(tmp_path / "empty")
+    assert info.value.problems == ["revit-core/lessons/snippet-contract.md: missing"]

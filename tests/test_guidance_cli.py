@@ -168,6 +168,66 @@ def test_index_on_a_copy_of_the_seed_regenerates_the_same_bytes(tmp_path, capsys
         assert path.read_bytes() == original, path
 
 
+def copy_plugin(tmp_path: Path) -> Path:
+    """plugin/guidance and the two generated-into skills, in a temporary plugin layout."""
+    plugin = tmp_path / "plugin"
+    shutil.copytree(CONTENT, plugin / "guidance")
+    for name in ("revit-core", "revit-bridge"):
+        shutil.copytree(CONTENT.parent / "skills" / name, plugin / "skills" / name)
+    return plugin
+
+
+def test_index_exports_revit_core_and_writes_the_contract_block(tmp_path, capsys):
+    plugin = copy_plugin(tmp_path)
+    root, skills = plugin / "guidance", plugin / "skills"
+    assert run(capsys, "index", str(root), "--check") == (0, f"result: up to date: {root}\n")
+
+    units = root / "revit-core" / "lessons" / "internal-units-feet.md"
+    units.write_bytes(units.read_bytes().replace(b"summary: \"lengths are", b"summary: \"Lengths are"))
+    contract = root / "revit-core" / "lessons" / "snippet-contract.md"
+    contract.write_bytes(contract.read_bytes().replace(b"categories are OST_*.", b"categories are OST_* names."))
+    stray = skills / "revit-core" / "lessons" / "retired.md"
+    stray.write_text("old\n", encoding="utf-8")
+    (skills / "revit-core" / "SKILL.md").write_bytes(
+        (skills / "revit-core" / "SKILL.md").read_bytes().replace(b"\n", b"\r\n"))      # CRLF is a difference here
+
+    code, out = run(capsys, "index", str(root), "--check")
+    assert code == 1
+    assert out.splitlines() == [
+        f"out of date: {root / 'revit-core' / 'SKILL.md'} (lessons index)",
+        f"out of date: {skills / 'revit-core' / 'SKILL.md'} (revit-core export)",
+        f"out of date: {skills / 'revit-core' / 'lessons' / 'internal-units-feet.md'} (revit-core export)",
+        f"out of date: {skills / 'revit-core' / 'lessons' / 'snippet-contract.md'} (revit-core export)",
+        f"to be removed: {stray} (revit-core export)",
+        f"out of date: {skills / 'revit-bridge' / 'SKILL.md'} (snippet contract)",
+        "result: 6 out of date"]
+
+    code, out = run(capsys, "index", str(root))
+    assert code == 0 and f"removed: {stray} (revit-core export)" in out and not stray.exists()
+    assert run(capsys, "index", str(root), "--check")[0] == 0
+    source = {p.relative_to(root / "revit-core"): p.read_bytes() for p in (root / "revit-core").rglob("*") if p.is_file()}
+    export = {p.relative_to(skills / "revit-core"): p.read_bytes() for p in (skills / "revit-core").rglob("*")
+              if p.is_file()}
+    assert export == source
+    assert b"- [internal-units-feet](lessons/internal-units-feet.md) - Lengths are" in source[Path("SKILL.md")]
+    bridge = (skills / "revit-bridge" / "SKILL.md").read_text(encoding="utf-8")
+    assert "and threading are refused; end with `return <object>;`; categories are OST_* names.\n" in bridge
+    assert bridge.count("<!-- snippet-contract:begin -->") == 1
+
+
+def test_index_needs_the_contract_markers(tmp_path, capsys):
+    plugin = copy_plugin(tmp_path)
+    skill = plugin / "skills" / "revit-bridge" / "SKILL.md"
+    skill.write_bytes(skill.read_bytes().replace(b"<!-- snippet-contract:end -->", b""))
+    before = skill.read_bytes()
+    code, out = run(capsys, "index", str(plugin / "guidance"))
+    assert code == 1 and "markers are missing" in out and skill.read_bytes() == before
+    contract = plugin / "guidance" / "revit-core" / "lessons" / "snippet-contract.md"
+    contract.write_bytes(contract.read_bytes().replace(b"## Contract", b"## Contracts"))
+    code, out = run(capsys, "index", str(plugin / "guidance"), "--check")
+    assert code == 1 and "problem: revit-core/lessons/snippet-contract.md: no ## Contract section" in out
+
+
 # -- explain -------------------------------------------------------------------------
 
 def test_explain_acceptance_fix_wall(capsys):

@@ -139,7 +139,15 @@ Read the one that matches the task before drafting the spec.
 ## Notes on the tools
 
 - Revit internal units are feet; the built-in packs take millimetres and convert.
-- `execute_code` runs inside an open Transaction with `document` in scope; do not open another; end with `return <object>;`. Read-only tools also run inside a transaction on the add-in and fail on a read-only document.
+<!-- snippet-contract:begin -->
+- Snippet contract (execute_code): a method body with `document` and `parameters`
+  (object[]) in scope, already inside a transaction (never open one); usings
+  System, System.Linq, System.Collections.Generic, Autodesk.Revit.DB,
+  Autodesk.Revit.UI; references only the base library, RevitAPI and RevitAPIUI
+  (no JSON library); IO, Process, Assembly, DllImport, File, Registry, reflection
+  and threading are refused; end with `return <object>;`; categories are OST_*.
+<!-- snippet-contract:end -->
+- Read-only tools also run inside a transaction on the add-in and fail on a read-only document.
 - `solidify_tool(name, code, description, parameters, source_query, validator)` saves code that worked as a v1 pack: every parameter with `source`, `required`, `unit`; a `validator` (`created_ids`, `count_delta`, `param_equals` - use BuiltInParameter names such as `WALL_USER_HEIGHT_PARAM`, not display names).
 - The add-in must be running (ribbon *Revit MCP Switch*); if a call fails with a connection error, say so and stop.
 - `get_guidance(mode="read", ids=[...])` returns a lesson's full text; `mode="index"` or the resource `revit://guidance/index` lists every lesson.

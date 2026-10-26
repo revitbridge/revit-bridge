@@ -11,7 +11,7 @@ Lessons in this category are chosen and ordered by the revit-bridge MCP server's
 
 ## Lessons
 
-- [snippet-contract](lessons/snippet-contract.md) - the wrapper: `document` and `parameters` in scope, usings, references, refused identifiers, `return <object>;`
+- [snippet-contract](lessons/snippet-contract.md) - a method body with `document` and `parameters` in scope, already in a transaction (never open one); fixed usings and references; end with `return <object>;`
 - [internal-units-feet](lessons/internal-units-feet.md) - lengths are decimal feet; convert with `UnitUtils` and `UnitTypeId`
 - [elementid-value](lessons/elementid-value.md) - `ElementId.Value` (long); `IntegerValue` is obsolete in 2024-2025 and gone from 2026
 - [transaction-owned-by-bridge](lessons/transaction-owned-by-bridge.md) - never start a `Transaction` in a snippet; nest a `SubTransaction` if needed

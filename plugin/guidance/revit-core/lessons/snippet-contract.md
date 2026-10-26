@@ -1,9 +1,9 @@
 ---
 schema_version: 1
 id: revit-core/snippet-contract
-revision: 1
+revision: 2
 title: "execute_code snippets are a method body: only document and parameters are in scope"
-summary: "the wrapper: `document` and `parameters` in scope, usings, references, refused identifiers, `return <object>;`"
+summary: "a method body with `document` and `parameters` in scope, already in a transaction (never open one); fixed usings and references; end with `return <object>;`"
 stage: [orient, write, fix]
 kind: fact
 revit: any
@@ -13,41 +13,46 @@ triggers:
   errors: [CS0103, CS0246]
 ---
 
+## Contract
+
+Snippet contract (execute_code): a method body with `document` and `parameters`
+(object[]) in scope, already inside a transaction (never open one); usings
+System, System.Linq, System.Collections.Generic, Autodesk.Revit.DB,
+Autodesk.Revit.UI; references only the base library, RevitAPI and RevitAPIUI
+(no JSON library); IO, Process, Assembly, DllImport, File, Registry, reflection
+and threading are refused; end with `return <object>;`; categories are OST_*.
+
 ## Scenario
 
-`execute_code` and `check_code` compile your code as the body of one method:
+`execute_code` and `check_code` compile your code as this method's body:
 
 ```csharp
-// written by the add-in around your code
+// the add-in's wrapper
 public static object Execute(Document document, object[] parameters)
 {
     // your code
 }
 ```
 
-- In scope: `document` (the active `Document`) and `parameters` (`object[]`). There is no `doc`, `uidoc`, `uiapp` or `commandData`.
-- Usings: `System`, `System.Linq`, `System.Collections.Generic`, `Autodesk.Revit.DB`, `Autodesk.Revit.UI`.
-- References: the base libraries (mscorlib or System.Private.CoreLib, System, System.Core, System.Runtime, System.Collections, System.Linq, netstandard), RevitAPI and RevitAPIUI. No JSON library.
-- Refused before compiling: the identifiers `IO`, `Process`, `Assembly`, `DllImport`, `File`, `Registry` anywhere, even as a variable name. The bridge also refuses network, reflection, threading, `dynamic` and `unsafe` code.
-- It already runs inside a transaction (`revit-core/transaction-owned-by-bridge`).
-- End with `return <object>;`. The add-in serializes the returned object to JSON: return plain values (ids, names, numbers, lists, anonymous objects), not Revit objects.
+- `document` is the active `Document`; no `doc`, `uidoc`, `uiapp` or `commandData`.
+- The base library: mscorlib or System.Private.CoreLib, System, System.Core, System.Runtime, System.Collections, System.Linq, netstandard.
+- The add-in refuses those six identifiers anywhere, even as a variable name; the bridge also refuses reflection, threading, network, `dynamic` and `unsafe` code.
+- The add-in serializes the returned object to JSON: return plain values (ids, names, numbers, lists, anonymous objects), not Revit objects.
 
 ## Wrong
 
 ```csharp
-var walls = new FilteredElementCollector(doc).OfClass(typeof(Wall));  // CS0103 'doc'
-var ids = uidoc.Selection.GetElementIds();                             // CS0103 'uidoc'
-return JsonConvert.SerializeObject(walls);                             // no JSON library
+var walls = new FilteredElementCollector(doc).OfClass(typeof(Wall)); // CS0103 'doc'
+var ids = uidoc.Selection.GetElementIds(); // CS0103 'uidoc'
+return JsonConvert.SerializeObject(walls); // no JSON library
 ```
 
 ## Right
 
 ```csharp
-var uidoc = new UIDocument(document);   // UI access from the document in scope
+var uidoc = new UIDocument(document); // UI access
 int selected = uidoc.Selection.GetElementIds().Count;
-int walls = new FilteredElementCollector(document)
-    .OfClass(typeof(Wall))
-    .GetElementCount();
+int walls = new FilteredElementCollector(document).OfClass(typeof(Wall)).GetElementCount();
 return new { Title = document.Title, Selected = selected, Walls = walls };
 ```
 

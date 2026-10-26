@@ -15,12 +15,14 @@ one directory per category with a ``SKILL.md`` and ``lessons/<slug>.md``.
     respond(library, mode, ...)        the get_guidance tool reply
     render_index(library)              the revit://guidance/index text
     plan_index(root) / indexer.apply   what `revit-bridge guidance index` writes
+    load_contract(root)                the snippet contract (P2), from revit-core/snippet-contract
 
 No model, no network, no environment variables: the callers (the MCP server
 and the CLI) read the layer directories from the environment and pass them in.
 """
 from __future__ import annotations
 
+from revit_bridge.guidance.contract import SnippetContract, load_contract
 from revit_bridge.guidance.indexer import plan_index
 from revit_bridge.guidance.loader import GuidanceError, Library, load, load_layers
 from revit_bridge.guidance.model import (
@@ -48,8 +50,8 @@ from revit_bridge.guidance.select import index, pointers, read, recommend, rende
 __all__ = [
     "CATEGORIES", "KINDS", "LAYERS", "LAYER_COMPANY", "LAYER_FRAMEWORK", "LAYER_PERSONAL", "LAYER_PROJECT",
     "SCHEMA_VERSION", "STAGES",
-    "Budget", "Category", "Config", "GuidanceError", "Layer", "Lesson", "Library", "Triggers",
+    "Budget", "Category", "Config", "GuidanceError", "Layer", "Lesson", "Library", "SnippetContract", "Triggers",
     "VersionRange",
-    "code_symbols", "index", "load", "load_layers", "parse_version", "plan_index", "pointers",
+    "code_symbols", "index", "load", "load_contract", "load_layers", "parse_version", "plan_index", "pointers",
     "read", "recommend", "render_index", "respond",
 ]

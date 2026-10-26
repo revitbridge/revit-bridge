@@ -9,8 +9,11 @@
     index [DIR] [--check]
                       rebuild the generated parts of a guidance root (default:
                       the packaged framework): the "## Lessons" section of each
-                      category SKILL.md; --check only compares (exit 1 when
-                      something is out of date).
+                      category SKILL.md and, next to a skills directory (the
+                      plugin layout), the native skills/revit-core export and
+                      the snippet contract block of skills/revit-bridge/SKILL.md;
+                      --check only compares (exit 1 when something is out of
+                      date).
     explain --stage S [--code FILE] [--errors CS...] [--symbols ...]
             [--categories OST_...] [--exceptions ...] [--revit 2026] [--inline]
                       what get_guidance(mode="recommend") would return for these

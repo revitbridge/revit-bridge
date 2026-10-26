@@ -51,7 +51,7 @@ from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ENV_ALLOW_UNCONFIRMED, ExecutionResult, run_code, run_pack
 from revit_bridge.execution import gate_refusal as _gate_refusal
 from revit_bridge.execution import revalidate as _revalidate
-from revit_bridge.instructions import server_instructions
+from revit_bridge.instructions import SNIPPET_CONTRACT_SUMMARY, server_instructions
 from revit_bridge.paths import guidance_dir, guidance_layer_dirs
 from revit_bridge.revit.capabilities import Capabilities
 from revit_bridge.revit.pool import RevitClientPool
@@ -284,11 +284,20 @@ def confirm_spec(spec: dict | str, confirmed_by: str = "designer", channel: str 
 
 # -- Execution Tools ----------------------------------------------------------
 
+def _with_snippet_contract(fn):
+    """Put the snippet contract sentence - the summary of the revit-core/snippet-contract
+    lesson, its one source - where the tool description says <snippet contract>."""
+    fn.__doc__ = fn.__doc__.replace("<snippet contract>", f"Snippet contract: {SNIPPET_CONTRACT_SUMMARY}.")
+    return fn
+
+
 @mcp.tool(annotations=_READ_ONLY)
+@_with_snippet_contract
 async def check_code(code: str, parameters: list | None = None) -> str:
     """Compile C# for execute_code inside Revit WITHOUT running it: only
     compiles, never executes, needs no token or confirmation, changes nothing
-    (same wrapper, references and blocked symbols as execute_code). Call it
+    (same wrapper, references and blocked symbols as execute_code).
+    <snippet contract> Call it
     before showing the card for execute_code and fix the code until
     `compiled` is true. Returns {schema_version, checked, compiled, blocked,
     capability, reason, diagnostics: [{id, severity, line, column, message,
@@ -312,8 +321,10 @@ async def check_code(code: str, parameters: list | None = None) -> str:
 
 
 @mcp.tool(annotations=_MUTATING)
+@_with_snippet_contract
 async def execute_code(code: str, parameters: list | None = None, token: str = "") -> str:
     """Send C# code to Revit for execution over the local TCP socket.
+    <snippet contract>
     Requires a token from confirm_spec for a TaskSpec whose action is
     execute_code with exactly this code and parameters.
     Returns execution result or error message."""
