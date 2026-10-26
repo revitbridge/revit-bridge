@@ -49,7 +49,7 @@ def test_the_host_rendering_proposes_and_never_executes():
 
 def test_both_renderings_carry_the_snippet_contract_and_the_version():
     for text in (server_instructions(), host_instructions()):
-        assert "revit-bridge 0.3." in text and "revit-bridge 0.2" not in text
+        assert "revit-bridge 0.4." in text and "revit-bridge 0.3" not in text
         notes = text[text.index("## Notes"):]
         for term in ("Snippet contract (execute_code)", "`document` and `parameters`",
                      "already inside a transaction (never open one)", "System, System.Linq",

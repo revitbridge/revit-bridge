@@ -6,42 +6,53 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-26
+
+Writing Revit code through the bridge: `check_code` compiles `execute_code` C#
+in Revit without running it, `get_guidance` serves lessons chosen by rules
+instead of a model, `plan_verification` and `verify_execution` read the
+outcome of an execution back, and every question says who can answer it.
+
+**Upgrading from 0.3** (`uvx --refresh revit-bridge`): four new read-only
+tools without a token - `check_code` (its `guidance` holds lesson bodies),
+`get_guidance`, `plan_verification`, `verify_execution`; the instructions are
+reworded and name 0.4, and the skill needs 0.4; questions gain `kind` and
+`blocks`, and `reconcile` also asks about ambiguous or unknown pack values;
+the data directory gains `verifications/`. Other replies only gain keys.
+
 ### Added
 
-- `revit-addin-dev` skill for developing independent C# Revit add-ins with
-  optional bridge context and prototype checks. Includes existing-project
-  guidance, snippet-to-command conversion, and a standalone project generator
-  for Revit 2024/2025/2026, including the 2025.5/2026.5 .NET 10 updates,
-  with no automatic installation. Generated builds reject incompatible API
-  years and .NET 8/.NET 10 reference combinations before dependency resolution.
-- `revit-addin-dev`: Revit 2027 starter (`--revit-version 2027`,
-  `net10.0-windows`, .NET 10 only; `2027.5` and other unlisted releases are
-  rejected). A 2027 build accepts only 27.x API assemblies and rejects any
-  target other than `net10.0-windows`; it omits the 2025/2026 .NET 8/.5
-  checks, which would reject the Revit 2027 API (27.0.x) as earlier .NET 8
-  references. The references add the .NET 10 SDK, `global.json`, the 2027
-  isolation types and manifest settings (not used by the starter manifest),
-  .NET 8's end of support on 2026-11-10, and the bridge's
-  `environment`/`capability` reply as the source of the connected Revit
-  version. The 2027 starter has not been loaded in Revit 2027 yet.
-- `revit-addin-dev` starter writes a `global.json` next to the project in
-  the shape of Autodesk's Revit 2027 sample: `10.0.100` with
-  `rollForward: minor` for 2025.5, 2026.5 and 2027 (a .NET 10 SDK), and
-  `8.0.100` with `rollForward: latestMajor` for 2025 and 2026 (any SDK 8 or
-  newer; a newer SDK downloads the `net8.0` targeting pack on first
-  restore); none for 2024. The generated `.csproj` and `.addin` are
-  unchanged.
 - `check_code(code, parameters)` MCP tool (read-only, no token): compiles C#
   for `execute_code` inside Revit without running it, through the add-in's
   `check_code_in_revit`, after the local sandbox review (a blocked pattern
   never reaches Revit). The reply (`schema_version` 1) has `checked`,
   `compiled`, `blocked`, `capability`, `reason`, `diagnostics` (line and
-  column in the user's code), `truncated`, `fingerprint`, `hints` (for
-  CS1061, CS0117, CS0246, CS0103, CS1501, CS1503 and CS7036, naming the
-  Revit version), `guidance` (lessons, see Changed), `environment` and
-  `warnings`. `checked: false` means the code was not pre-compiled: an older
-  add-in, or the capability is unknown. Package API:
-  `revit_bridge.checking.check_code(client, code, parameters)`.
+  column in the user's code), `truncated`, `fingerprint`, `hints`,
+  `guidance`, `environment` and `warnings`. `checked: false` means the code
+  was not pre-compiled: an older add-in, or the capability is unknown.
+  Package API: `revit_bridge.checking.check_code(client, code, parameters,
+  library=...)`.
+  - `hints`: one per distinct CS1061, CS0117, CS0246, CS0103, CS1501, CS1503
+    or CS7036 diagnostic, naming the Revit version. A hint for an error that
+    names an API ends with: if the host has the revit-api-docs MCP server,
+    query it with `search_revit_api` before changing the code and cite the
+    data set version it reports (e.g. Revit 2026 data set); without that
+    tool, mark the API as unverified.
+  - `guidance`: lessons from the guidance library, without a model, in the
+    `get_guidance` item shape. On compile errors: up to two `fix` lessons
+    with their bodies, chosen by the diagnostic ids, their symbols and the
+    API names in the code (comments and string literals skipped); an error
+    code pairs only with the diagnostics' own symbols, never with a name
+    from the code, so the lesson about the reported error comes first; each
+    body is at most 2400 UTF-8 bytes, and a cut one has `truncated: true`
+    and ends with the line `[truncated: get_guidance(mode="read",
+    ids=["<id>"])]`. When the code compiles: up to five `write` lessons as
+    pointers (`summary`, no body). The Revit version in `environment` drops
+    lessons for other versions and marks the rest `verified`. Not checked or
+    blocked: empty. A library that does not load: empty, with the warning
+    `guidance_unavailable: <first problem>`. Package API:
+    `revit_bridge.guidance.pointers` and
+    `revit_bridge.guidance.code_symbols`.
 - `revit_bridge.revit.capabilities.discover(client)`: the add-in's
   `get_bridge_capabilities` as `supported`, `unsupported` (JSON-RPC -32601:
   an older add-in) or `unknown` (no connection, wrong token, timeout, any
@@ -58,39 +69,52 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   signals of the moment (`symbols`, `revit_categories`, `errors`,
   `exceptions`, `skill_categories`, `revit_version`, `seen_hashes`) and
   answers within a budget (5 lessons, 12000 UTF-8 bytes); every item carries
-  `id`, `revision`, `hash`, `layer`, `applicability` and `why`. An error code
-  counts only together with a symbol. `mode="index"` lists every lesson
+  `id`, `revision`, `hash`, `layer`, `applicability` and `why`. An error
+  code counts only together with a symbol. `mode="index"` lists every lesson
   without bodies, `mode="read"` returns full texts by id. Resource
-  `revit://guidance/index`: one line per lesson.
+  `revit://guidance/index`: one line per lesson. Lessons with an error hit
+  (`why` has an `error:` entry) come before the others, each group in
+  category order, `order`, id. `recommend` and `pointers` take an optional
+  `error_symbols` (package API only, not a `get_guidance` parameter): when
+  given, an error code pairs only with them; otherwise with `symbols`.
 - Guidance content format v1 in `plugin/guidance/` (in the wheel as
   `revit_bridge/guidance_content`, found by `paths.guidance_dir()`):
   `guidance.yaml` (category order, the `always` category, budget), one
   directory per category with a `SKILL.md` (`name` and `description` only)
   and `lessons/<slug>.md` with a validated front matter (id, revision,
   stage, kind, Revit version range, triggers). An invalid root is rejected
-  as a whole, every problem listed; the tool then answers
-  `{"error": "guidance_invalid", "problems": [...]}`. Package API:
-  `revit_bridge.guidance` (`load`, `recommend`, `index`, `read`).
+  as a whole, every problem listed; the tool then answers `{"error":
+  "guidance_invalid", "problems": [...]}`. Package API:
+  `revit_bridge.guidance` (`load`, `recommend`, `index`, `read`). Writing
+  rule: a lesson body should stay at or under 2300 UTF-8 bytes (noted in
+  `revit-core/SKILL.md`); the loader lists larger bodies in
+  `Library.warnings` without rejecting them.
 - Seed guidance: eleven categories (`revit-core`, `revit-collect`,
   `revit-params`, `revit-geometry`, `revit-families`, `revit-elements`,
   `revit-structure`, `revit-mep`, `revit-views`, `revit-addin`,
-  `revit-verify`) and thirteen lessons in the first four: the
-  `execute_code` snippet contract, internal units, `ElementId.Value`, the
-  bridge-owned transaction, the Revit 2024-2027 runtime matrix, collector
-  filters, instances versus types, the selection, parameter lookup and
-  storage types, built-in parameters, wall location curves, curve length and
+  `revit-verify`) and thirteen lessons in the first four: the `execute_code`
+  snippet contract, internal units, `ElementId.Value`, the bridge-owned
+  transaction, the Revit 2024-2027 runtime matrix, collector filters,
+  instances versus types, the selection, parameter lookup and storage types,
+  built-in parameters, wall location curves, curve length and
   `Line.CreateBound`. API facts are checked against the Revit 2026 API
-  documentation data set and the Revit API assemblies 2024-2027.
+  documentation data set and the Revit API assemblies 2024-2027. Every seed
+  lesson keeps the writing rule and has a `summary`, from which its category
+  index is generated; `revit-core/snippet-contract` (with a `## Contract`
+  section), `revit-collect/collector-needs-filter`,
+  `revit-params/lookup-parameter-storage-type` and
+  `revit-params/builtin-parameter-first` are at revision 2 (2282, 2295, 2281
+  and 2290 bytes).
 - Guidance layers: `get_guidance` and `check_code` read the packaged lessons
   (framework) plus a company (`REVIT_BRIDGE_GUIDANCE_COMPANY`), a project
   (`REVIT_BRIDGE_GUIDANCE_PROJECT`) and a personal (`<data dir>/guidance`)
   directory with the same layout, each optional. The same id in a higher
   layer replaces the lower lesson whole (`index` lists the replaced one in
-  `omitted` as `overridden_by:<layer>`); a company lesson with
-  `enforced: true` is kept (warning `enforced_kept: <id> ignored <layer>`).
-  A higher layer's `guidance.yaml` may reorder or add categories and add
-  `always` categories, never set the budget. A layer that fails validation
-  is left out alone (warning `layer_invalid: <layer>: <first problem>`); the
+  `omitted` as `overridden_by:<layer>`); a company lesson with `enforced:
+  true` is kept (warning `enforced_kept: <id> ignored <layer>`). A higher
+  layer's `guidance.yaml` may reorder or add categories and add `always`
+  categories, never set the budget. A layer that fails validation is left
+  out alone (warning `layer_invalid: <layer>: <first problem>`); the
   framework still answers. `supersedes` now takes effect (`omitted` reason
   `superseded_by:<id>`), across layers; a `supersedes` cycle rejects the
   library. Every `get_guidance` reply's `warnings` start with the layer
@@ -135,13 +159,38 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   lines have, `evidence_id` (the execution) and `verification_id` (the
   plan); `evidence(tool="verify_execution")` lists them. Every other line
   keeps exactly the spec-9 fields.
-- Question shape v1: `missing_params` and `reconcile` questions carry
-  `kind` (`user_intent`: the designer answers; `model_fact`: check the
-  model first; `technical`: reserved, never produced) and `blocks` (the
-  steps an open question holds up: `spec`, `execute`, `build`), after the
-  existing keys; `Question(...)` without them defaults to `user_intent` and
-  `["spec", "execute"]`. The bridge keeps no waiting state: an answer goes
-  into the TaskSpec as `source: answer`.
+- Question shape v1: `missing_params` and `reconcile` questions carry `kind`
+  (`user_intent`: the designer answers; `model_fact`: check the model first;
+  `technical`: reserved, never produced) and `blocks` (the steps an open
+  question holds up: `spec`, `execute`, `build`), after the existing keys;
+  `Question(...)` without them defaults to `user_intent` and `["spec",
+  "execute"]`. The bridge keeps no waiting state: an answer goes into the
+  TaskSpec as `source: answer`.
+- `revit-addin-dev` skill for developing independent C# Revit add-ins with
+  optional bridge context and prototype checks. Includes existing-project
+  guidance, snippet-to-command conversion, and a standalone project
+  generator for Revit 2024/2025/2026, including the 2025.5/2026.5 .NET 10
+  updates, with no automatic installation. Generated builds reject
+  incompatible API years and .NET 8/.NET 10 reference combinations before
+  dependency resolution.
+- `revit-addin-dev`: Revit 2027 starter (`--revit-version 2027`,
+  `net10.0-windows`, .NET 10 only; `2027.5` and other unlisted releases are
+  rejected). A 2027 build accepts only 27.x API assemblies and rejects any
+  target other than `net10.0-windows`; it omits the 2025/2026 .NET 8/.5
+  checks, which would reject the Revit 2027 API (27.0.x) as earlier .NET 8
+  references. The references add the .NET 10 SDK, `global.json`, the 2027
+  isolation types and manifest settings (not used by the starter manifest),
+  .NET 8's end of support on 2026-11-10, and the bridge's
+  `environment`/`capability` reply as the source of the connected Revit
+  version. The unchanged 2027 starter has been loaded in Revit 2027.0.1 and
+  its read-only command run once; the references add that Revit 2027 loads
+  all-users manifests from Program Files, not from ProgramData.
+- `revit-addin-dev` starter writes a `global.json` next to the project in the
+  shape of Autodesk's Revit 2027 sample: `10.0.100` with `rollForward: minor`
+  for 2025.5, 2026.5 and 2027 (a .NET 10 SDK), and `8.0.100` with
+  `rollForward: latestMajor` for 2025 and 2026 (any SDK 8 or newer; a newer
+  SDK downloads the `net8.0` targeting pack on first restore); none for 2024.
+  The generated `.csproj` and `.addin` are unchanged.
 
 ### Changed
 
@@ -149,70 +198,34 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   `capability` and `environment`; the exit code still follows `reachable`.
   `check_connection(settings, environment=False)` keeps its reply unless
   asked, so a host's health check sends no extra request.
+- `get_project_snapshot` and `query` say categories are OST_* names
+  (`OST_Walls`).
 - Instructions, both renderings: a snippet contract in Notes (`document` and
   `parameters` in scope, the default usings, the reference whitelist without
-  a JSON library, the refused symbols, the open transaction,
-  `return <object>;`, OST_* categories). The server rendering has the model
-  call `check_code` for `execute_code` before the card, and write "not
+  a JSON library, the refused symbols, the open transaction, `return
+  <object>;`, OST_* categories). The server rendering has the model call
+  `check_code` for `execute_code` before the card, and write "not
   pre-compiled locally" on the card when `checked` is false; the
-  `revit-bridge` skill follows the same flow. Both say 0.3.
+  `revit-bridge` skill follows the same flow.
+- The snippet contract has one source, the lesson
+  `revit-core/snippet-contract`: the "Snippet contract" note of both
+  instruction renderings is rendered from its `## Contract` section, the
+  `check_code` and `execute_code` descriptions carry its `summary`, and the
+  `revit-bridge` skill's contract block is written by `guidance index`.
+  Should the packaged lesson not load, the exported copy is used, then a
+  pointer to the lesson, with a warning. `check_code`'s CS0246 hint takes
+  its list of usings from the same section.
 - The server rendering and the `revit-bridge` skill call `get_guidance` at
   three points: at the start of a task (`stage="orient"`), before writing
   `execute_code` C# (`stage="write"` with the API symbols and OST_*
-  categories) and after `check_code` errors (`stage="fix"` with the error ids
-  and symbols). To stay within 60 lines, step 6 of the server rendering no
-  longer lists the rule names (each error names its rule) and step 8 is
-  rewrapped.
-- `check_code` fills `guidance` (it was always empty), from the guidance
-  library and without a model; items have the `get_guidance` item shape. On
-  compile errors: up to two `fix` lessons with their bodies, chosen by the
-  diagnostic ids, their symbols and the API names in the code (comments and
-  string literals skipped); an error code pairs only with the diagnostics'
-  own symbols, never with a name from the code, so the lesson about the
-  reported error comes first; each body is at most 2400 UTF-8 bytes, and a cut
-  one has `truncated: true` and ends with the line
-  `[truncated: get_guidance(mode="read", ids=["<id>"])]`. When the code
-  compiles: up to five `write` lessons as pointers (`summary`, no body). The
-  Revit version in `environment` drops lessons for other versions and marks
-  the rest `verified`. Not checked or blocked: empty. A library that does
-  not load: empty, with the warning `guidance_unavailable: <first problem>`.
-  The reply keys and `hints` are unchanged. Package API:
-  `check_code(client, code, parameters, library=...)`,
-  `revit_bridge.guidance.pointers` and `revit_bridge.guidance.code_symbols`.
-- Guidance selection order: lessons with an error hit (`why` has an
-  `error:` entry) come before the others, each group still in category
-  order, `order`, id; `get_guidance` results change only when `errors` are
-  passed. `recommend` and `pointers` take an optional `error_symbols` (package
-  API only, not a `get_guidance` parameter): when given, an error code pairs
-  only with them; otherwise with `symbols`, as before.
-- Guidance writing rule: a lesson body should stay at or under 2300 UTF-8
-  bytes (noted in `revit-core/SKILL.md`); the loader lists larger bodies in
-  `Library.warnings` without rejecting them; every seed lesson now keeps it
-  (see the seed revisions below).
+  categories) and after `check_code` errors (`stage="fix"` with the error
+  ids and symbols). To stay within 60 lines, step 6 of the server rendering
+  no longer lists the rule names and step 7 no longer names
+  `confirmation_invalid`.
 - The server rendering and the `revit-bridge` skill read the lesson bodies
-  in `check_code`'s `guidance` before changing code (`get_guidance(mode="read")`
-  for a `truncated` one, `stage="fix"` for more) and treat the pointers of a
-  clean compile as optional reading. To stay within 60 lines, step 6 of the
-  server rendering no longer says that each error names its rule and step 7
-  no longer names `confirmation_invalid`.
-- `get_project_snapshot` and `query` say categories are OST_* names
-  (`OST_Walls`).
-- The snippet contract has one source, the lesson
-  `revit-core/snippet-contract`: the "Snippet contract" note of both
-  instruction renderings is rendered from its new `## Contract` section
-  (the text is unchanged), the `check_code` and `execute_code` descriptions
-  carry its `summary`, and the `revit-bridge` skill's contract block is
-  written by `guidance index`. Should the packaged lesson not load, the
-  exported copy is used, then a pointer to the lesson, with a warning.
-  `check_code`'s CS0246 hint takes its list of usings from the same section
-  (the hint text is unchanged).
-- Seed lessons: `revit-core/snippet-contract` (revision 2: `## Contract` and
-  `summary`), `revit-collect/collector-needs-filter`,
-  `revit-params/lookup-parameter-storage-type` and
-  `revit-params/builtin-parameter-first` (revision 2) are trimmed to the
-  2300-byte writing rule (2282, 2295, 2281 and 2290 bytes) with the same API
-  facts; all thirteen have a `summary`, and their category indexes are
-  generated from it.
+  in `check_code`'s `guidance` before changing code
+  (`get_guidance(mode="read")` for a `truncated` one, `stage="fix"` for
+  more) and treat the pointers of a clean compile as optional reading.
 - Instructions (server rendering) and the `revit-bridge` skill: for
   `execute_code`, `plan_verification` before the confirmation, shown as one
   line under the card ("will not be verified" when no template fits), and
@@ -222,39 +235,38 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   a section heading is no longer followed by a blank line and step 1 is one
   line, in both renderings.
 - `param_equals` validator: an opt-in `tolerances` keyword (used only by
-  `verify_execution`); every capability pack compares and reports as
-  before.
-- `missing_params`: a known value of null or a blank string no longer hides
-  the question (0, false and 0.0 still answer it); a Revit-sourced
-  parameter without candidates is asked with no options and a `why` that
-  says Revit returned none. Every question is `user_intent` and blocks
-  `spec` and `execute`.
+  `verify_execution`); every capability pack compares and reports as before.
+- `missing_params`: a Revit-sourced parameter without candidates is asked
+  with no options and a `why` that says Revit returned none. Every question
+  is `user_intent` and blocks `spec` and `execute`.
 - `reconcile`: an `ambiguous` value of a pack parameter is also a
   `user_intent` question (options: the matching names), a `not_found` one a
-  `model_fact` question (options: what the snapshot lists); stale
-  snapshots, missing units and an unknown tool stay conflicts only, and no
-  parameter is asked twice. `ready` is unchanged.
-- Instructions (both renderings, step 3) and the `revit-bridge` skill:
-  never re-ask what is known; `model_fact` means query first; pause only
-  the steps in `blocks`; an answer is `source: answer`; a changed request
-  voids what it touched until `reconcile` runs again. The `revit-addin-dev`
-  skill lists five things to settle before building a standalone add-in
-  (output rules, scope, target Revit version, install location, cancel and
-  empty selection) and asks about the open ones first.
-- `check_code` hints for an error that names an API end with: if the host
-  has the revit-api-docs MCP server, query it with `search_revit_api` before
-  changing the code and cite the data set version it reports (e.g. Revit
-  2026 data set); without that tool, mark the API as unverified. The hint
-  keys, and which errors get a hint, are unchanged.
+  `model_fact` question (options: what the snapshot lists); stale snapshots,
+  missing units and an unknown tool stay conflicts only, and no parameter is
+  asked twice. `ready` is unchanged.
+- Instructions (both renderings, step 3) and the `revit-bridge` skill: never
+  re-ask what is known; `model_fact` means query first; pause only the steps
+  in `blocks`; an answer is `source: answer`; a changed request voids what
+  it touched until `reconcile` runs again. The `revit-addin-dev` skill lists
+  five things to settle before building a standalone add-in (output rules,
+  scope, target Revit version, install location, cancel and empty selection)
+  and asks about the open ones first.
 - The `revit-bridge` skill needs a 0.4 server (`check_code`, `get_guidance`,
   `plan_verification`) and says how to go on with a 0.3 one ("not
   pre-compiled locally", no guidance, "executed, not verified"). A new "API
-  lookup" section: when to call `search_revit_api`, how to read its `Rerank:`
-  line and an abstention (the data set has no relevant entry, which does not
-  mean the member is missing: `check_code` decides), and what to say when the
-  connected Revit is not the data set's release. README: "Pair with
-  revit-api-docs" (both servers in one config, the 335 MB first download,
-  Jev). The plugin's `.mcp.json` still starts only `revit-bridge`.
+  lookup" section: when to call `search_revit_api`, how to read its
+  `Rerank:` line and an abstention (the data set has no relevant entry,
+  which does not mean the member is missing: `check_code` decides), and what
+  to say when the connected Revit is not the data set's release. README:
+  "Pair with revit-api-docs" (both servers in one config, the 335 MB first
+  download, Jev). The plugin's `.mcp.json` still starts only `revit-bridge`.
+
+### Fixed
+
+- `missing_params`: a known value of null or a blank string no longer hides
+  the question (0, false and 0.0 still answer it).
+- Both instruction renderings still said "revit-bridge 0.2" in 0.3.0 (and
+  the `revit-bridge` skill "0.2 or newer"); they now say 0.4.
 
 ## [0.3.0] - 2026-09-22
 
@@ -527,7 +539,9 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/revitbridge/revit-bridge/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/revitbridge/revit-bridge/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/revitbridge/revit-bridge/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/revitbridge/revit-bridge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/revitbridge/revit-bridge/releases/tag/v0.1.0
