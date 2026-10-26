@@ -1,0 +1,2 @@
+# Guidance lessons are identified by the sha256 of their bytes: keep LF on every platform.
+plugin/guidance/** text eol=lf

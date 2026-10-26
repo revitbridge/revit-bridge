@@ -52,6 +52,35 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   snippet over `send_code_to_revit` (needs an open document, runs in a
   transaction). `error` names why facts are missing (`no_document`,
   `read_only`, `auth`, `timeout`, `unreachable`, ...), never "no Kit".
+- `get_guidance` MCP tool (read-only, no token): lessons for writing Revit
+  code, chosen and ordered by rules, without a model. `mode="recommend"`
+  takes a `stage` (`orient`, `write`, `fix`, `port`, `verify`) and the
+  signals of the moment (`symbols`, `revit_categories`, `errors`,
+  `exceptions`, `skill_categories`, `revit_version`, `seen_hashes`) and
+  answers within a budget (5 lessons, 12000 UTF-8 bytes); every item carries
+  `id`, `revision`, `hash`, `layer`, `applicability` and `why`. An error code
+  counts only together with a symbol. `mode="index"` lists every lesson
+  without bodies, `mode="read"` returns full texts by id. Resource
+  `revit://guidance/index`: one line per lesson.
+- Guidance content format v1 in `plugin/guidance/` (in the wheel as
+  `revit_bridge/guidance_content`, found by `paths.guidance_dir()`):
+  `guidance.yaml` (category order, the `always` category, budget), one
+  directory per category with a `SKILL.md` (`name` and `description` only)
+  and `lessons/<slug>.md` with a validated front matter (id, revision,
+  stage, kind, Revit version range, triggers). An invalid root is rejected
+  as a whole, every problem listed; the tool then answers
+  `{"error": "guidance_invalid", "problems": [...]}`. Package API:
+  `revit_bridge.guidance` (`load`, `recommend`, `index`, `read`).
+- Seed guidance: eleven categories (`revit-core`, `revit-collect`,
+  `revit-params`, `revit-geometry`, `revit-families`, `revit-elements`,
+  `revit-structure`, `revit-mep`, `revit-views`, `revit-addin`,
+  `revit-verify`) and thirteen lessons in the first four: the
+  `execute_code` snippet contract, internal units, `ElementId.Value`, the
+  bridge-owned transaction, the Revit 2024-2027 runtime matrix, collector
+  filters, instances versus types, the selection, parameter lookup and
+  storage types, built-in parameters, wall location curves, curve length and
+  `Line.CreateBound`. API facts are checked against the Revit 2026 API
+  documentation data set and the Revit API assemblies 2024-2027.
 
 ### Changed
 
@@ -66,6 +95,13 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   call `check_code` for `execute_code` before the card, and write "not
   pre-compiled locally" on the card when `checked` is false; the
   `revit-bridge` skill follows the same flow. Both say 0.3.
+- The server rendering and the `revit-bridge` skill call `get_guidance` at
+  three points: at the start of a task (`stage="orient"`), before writing
+  `execute_code` C# (`stage="write"` with the API symbols and OST_*
+  categories) and after `check_code` errors (`stage="fix"` with the error ids
+  and symbols). To stay within 60 lines, step 6 of the server rendering no
+  longer lists the rule names (each error names its rule) and step 8 is
+  rewrapped.
 - `get_project_snapshot` and `query` say categories are OST_* names
   (`OST_Walls`).
 

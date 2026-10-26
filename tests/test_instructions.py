@@ -64,3 +64,27 @@ def test_the_server_checks_code_before_the_card_the_host_has_no_check_code():
     assert srv.index("4. reconcile(") < check < srv.index("5. Show the spec card")
     assert "until `compiled` is true" in srv and '"not pre-compiled locally" on the card' in srv
     assert "check_code" not in host and "Repeat until `ready` is true." in host
+
+
+def test_the_server_calls_get_guidance_at_three_points_the_host_never():
+    srv, host = server_instructions(), host_instructions()
+    orient = srv.index('get_guidance(mode="recommend", stage="orient")')
+    write = srv.index('get_guidance(stage="write", symbols=[API names used], revit_categories=[OST_*])')
+    check = srv.index("check_code(code, parameters)")
+    fix = srv.index('get_guidance(stage="fix", errors, symbols)')
+    assert srv.index("## Flow (always, in this order)") < orient < srv.index("1. get_project_snapshot")
+    assert srv.index("4. reconcile(") < write < check < fix < srv.index("5. Show the spec card")
+    assert "get_guidance" not in host
+
+
+def test_the_skill_carries_the_same_guidance_calls():
+    import pathlib
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    orient = text.index('get_guidance(mode="recommend", stage="orient")')
+    write = text.index('get_guidance(stage="write"')
+    check = text.index("call `check_code(code, parameters)`")
+    fix = text.index('get_guidance(stage="fix"')
+    assert text.index("## The bridge flow") < orient < text.index("1. **Snapshot**")
+    assert text.index("5. **Reconcile**") < write < check < fix < text.index("6. **Confirm**")

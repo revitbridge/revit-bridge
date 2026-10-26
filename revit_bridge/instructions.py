@@ -9,10 +9,13 @@ proposes the spec (``propose_spec``) and never sees ``confirm_spec``,
 shape, the never-list, the notes - is the same text, so the two cannot
 drift. Each rendering stays within 60 lines.
 
-The one difference inside the flow: the server rendering has the model run
-check_code on its execute_code snippet before the card (a host such as the
-web demo has no check_code tool) and write "not pre-compiled locally" on the
-card when the check could not run.
+The one difference inside the flow: the server rendering has the model call
+get_guidance at three points (task start: stage "orient"; before writing
+execute_code C#: stage "write" with the API symbols and OST_* categories;
+after check_code errors: stage "fix" with the error ids and symbols) and run
+check_code on its execute_code snippet before the card, writing "not
+pre-compiled locally" on the card when the check could not run. A host such
+as the web demo has neither tool.
 """
 from __future__ import annotations
 
@@ -27,9 +30,18 @@ _INTRO_CLOSING = {
     "host": "get it\nconfirmed by the designer in this host's interface, and report what the validator found.",
 }
 
-_FLOW_HEAD = """\
+_FLOW_TITLE = """\
 ## Flow (always, in this order)
 
+"""
+
+# Task start, before step 1: only the server rendering has get_guidance.
+_FLOW_START = {
+    "server": 'Start each task with get_guidance(mode="recommend", stage="orient") and read it.\n',
+    "host": "",
+}
+
+_FLOW_HEAD = """\
 1. get_project_snapshot - what exists: document, units, levels, grids, family
    types, selection. Note `fingerprint`.
 2. query(kind, args) for any other read: levels, grids, family_types, elements,
@@ -40,12 +52,15 @@ _FLOW_HEAD = """\
    not exist, ambiguous names, units and range words to confirm, stale snapshot.
 """
 
-# The end of step 4, right before the card: only the server rendering has check_code.
+# The end of step 4, right before the card: only the server rendering has
+# get_guidance and check_code.
 _FLOW_CHECK = {
     "server": """\
-   Repeat until `ready` is true. For execute_code, check_code(code, parameters)
-   next until `compiled` is true (it only compiles: no token, nothing runs); if
-   `checked` is false, write "not pre-compiled locally" on the card.
+   Repeat until `ready` is true. For execute_code: before writing it,
+   get_guidance(stage="write", symbols=[API names used], revit_categories=[OST_*]);
+   then check_code(code, parameters) until `compiled` is true (only compiles: no
+   token, nothing runs), with get_guidance(stage="fix", errors, symbols) on errors.
+   If `checked` is false, write "not pre-compiled locally" on the card.
 """,
     "host": """\
    Repeat until `ready` is true.
@@ -58,17 +73,14 @@ _FLOW_CARD = """\
 
 _FLOW_TAIL = {
     "server": """\
-6. confirm_spec(spec) -> {token, expires_at, card} or {errors}. Errors name the
-   rule: missing_param, no_evidence, unsourced_choice, guessed_value,
-   default_not_declared, bad_preference_ref, unconfirmed_interpretation,
-   blocked_code. Fix the spec; never invent a token.
+6. confirm_spec(spec) -> {token, expires_at, card} or {errors}; each error names
+   its rule. Fix the spec; never invent a token.
 7. run_tool(name, params, token) or execute_code(code, parameters, token) with
    exactly the confirmed values. The token is one-time, expires in 10 minutes and
    is bound to that tool + params (or code): anything else is confirmation_invalid.
-8. Read the reply. `success` is true only when Revit succeeded AND the pack's
-   validator passed; validation_failed means the model did not change as claimed.
-   Quote `validation.checks`, `error` and `evidence_id`; validate(evidence_id)
-   re-runs the assertion later, evidence(limit, tool) lists past runs.
+8. Read the reply: `success` only if Revit succeeded AND the pack's validator passed
+   (validation_failed: the model did not change as claimed). Quote `validation.checks`,
+   error, evidence_id; validate(evidence_id) re-checks, evidence(limit, tool) lists runs.
 """,
     "host": """\
 6. propose_spec(spec) -> {accepted, errors, reconcile}. Errors name the rule:
@@ -136,7 +148,7 @@ _NOTES_TAIL = {
 def _render(kind: str) -> str:
     return "\n".join([
         _INTRO.format(closing=_INTRO_CLOSING[kind]),
-        _FLOW_HEAD + _FLOW_CHECK[kind] + _FLOW_CARD + _FLOW_TAIL[kind],
+        _FLOW_TITLE + _FLOW_START[kind] + _FLOW_HEAD + _FLOW_CHECK[kind] + _FLOW_CARD + _FLOW_TAIL[kind],
         _TASKSPEC,
         _NEVER_HEAD + _NEVER_TAIL[kind],
         _NOTES_HEAD + _NOTES_TAIL[kind],

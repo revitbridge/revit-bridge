@@ -21,6 +21,7 @@ Tools:
     - run_tool          : execute a solidified tool (confirmation token)
     - evidence          : recent execution records from the ledger
     - validate          : re-run a recorded execution's validator now
+    - get_guidance      : lessons for writing Revit code, by stage (read-only)
 
 The server never calls a model: the host does. Connection settings come from
 ``REVIT_BRIDGE_*`` environment variables (see README, Configure).
@@ -40,12 +41,14 @@ from pydantic import ValidationError
 
 from revit_bridge import __version__
 from revit_bridge import checking
+from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ENV_ALLOW_UNCONFIRMED, ExecutionResult, run_code, run_pack
 from revit_bridge.execution import gate_refusal as _gate_refusal
 from revit_bridge.execution import revalidate as _revalidate
 from revit_bridge.instructions import server_instructions
+from revit_bridge.paths import guidance_dir
 from revit_bridge.revit.capabilities import Capabilities
 from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.revit.probe import CHECK_PROBE, check_connection  # noqa: F401 - re-exported
@@ -61,6 +64,15 @@ from revit_bridge.spec.rules import validate_spec
 _tool_store = ToolStore()
 _gate = Gate()
 _ledger = Ledger()
+_guidance_library: _guidance.Library | None = None   # loaded on first use, then kept
+
+
+def guidance_library() -> _guidance.Library:
+    """The framework guidance, validated on first use and cached; raises GuidanceError."""
+    global _guidance_library
+    if _guidance_library is None:
+        _guidance_library = _guidance.load(guidance_dir())
+    return _guidance_library
 
 
 # -- Confirmation gate --------------------------------------------------------
@@ -412,6 +424,45 @@ async def validate(evidence_id: str) -> str:
         return _dumps({"error": "revit_unreachable", "message": str(e) or type(e).__name__})
 
 
+# -- Guidance -----------------------------------------------------------------
+
+@mcp.tool(annotations=_READ_ONLY)
+def get_guidance(
+    mode: str = "recommend",
+    stage: str | None = None,
+    skill_categories: list[str] | None = None,
+    revit_categories: list[str] | None = None,
+    symbols: list[str] | None = None,
+    errors: list[str] | None = None,
+    exceptions: list[str] | None = None,
+    revit_version: str | None = None,
+    ids: list[str] | None = None,
+    seen_hashes: list[str] | None = None,
+) -> str:
+    """Lessons for writing Revit code, chosen by rules (no model), read-only, no token.
+    mode "recommend" needs stage: orient (task start: the execute_code snippet
+    contract, units, versions), write (before writing C#: pass symbols = the API
+    type/member names in your code and revit_categories = OST_* names), fix
+    (check_code failed: errors = diagnostic ids such as CS1061 plus symbols =
+    the diagnostics' symbols; or exceptions = runtime exception type names),
+    port, verify. skill_categories (e.g. "revit-geometry") picks a whole category.
+    revit_version ("2026.5") drops lessons for other versions. seen_hashes skips
+    bodies you already have. mode "index" lists every lesson without bodies;
+    mode "read" returns the full text of ids. Returns JSON {schema_version, mode,
+    stage, items: [{id, revision, hash, layer, category, title, kind, stage,
+    revit, applicability, why, body, bytes, truncated}], omitted: [{id, title,
+    reason}], missing, budget, warnings, error}."""
+    try:
+        library = guidance_library()
+    except _guidance.GuidanceError as e:
+        return _dumps({"error": "guidance_invalid", "problems": e.problems})
+    return _dumps(_guidance.respond(
+        library, mode, stage=stage, skill_categories=skill_categories, revit_categories=revit_categories,
+        symbols=symbols, errors=errors, exceptions=exceptions, revit_version=revit_version, ids=ids,
+        seen_hashes=seen_hashes,
+    ))
+
+
 # -- Resources ----------------------------------------------------------------
 
 @mcp.resource("revit://stats")
@@ -438,6 +489,15 @@ def tool_resource(name: str) -> str:
 def evidence_recent() -> str:
     """The 20 most recent evidence records."""
     return _dumps(_ledger.recent(20))
+
+
+@mcp.resource("revit://guidance/index")
+def guidance_index() -> str:
+    """Every guidance lesson, one line each: id | layer | revit range | title."""
+    try:
+        return _guidance.render_index(guidance_library())
+    except _guidance.GuidanceError as e:
+        return "".join(f"{line}\n" for line in ["guidance_invalid"] + [f"- {p}" for p in e.problems])
 
 
 @mcp.resource("revit://connection-status")
