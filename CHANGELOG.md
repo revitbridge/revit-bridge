@@ -6,6 +6,10 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-26
+
+A patch on 0.4.0: the verification tools and ledger record the document fingerprint, a run-time exception points the model at the fix lessons for that exception (E3), two exception lessons, and a value missing from a truncated candidate list is a `model_fact` question.
+
 ### Added
 
 - Ledger lines and `plan_verification` plans: `document` gains
@@ -615,7 +619,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/revitbridge/revit-bridge/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/revitbridge/revit-bridge/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/revitbridge/revit-bridge/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/revitbridge/revit-bridge/compare/v0.2.0...v0.2.1
