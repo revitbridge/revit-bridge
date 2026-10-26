@@ -42,6 +42,9 @@ TRIGGER_KEYS: tuple[str, ...] = ("categories", "symbols", "errors", "exceptions"
 DEFAULT_ORDER = 100
 MAX_TITLE_CHARS = 120
 MAX_BODY_BYTES = 16384
+# Writing rule (D12), a warning and not a load failure: a body this size or smaller is
+# never cut by a fix inline (2400 bytes), even translated, with room for the cut line.
+BODY_WRITING_BYTES = 2300
 
 SLUG_RE = re.compile(r"^[a-z0-9-]+$")
 CATEGORY_TRIGGER_RE = re.compile(r"^OST_[A-Za-z0-9_]+$")

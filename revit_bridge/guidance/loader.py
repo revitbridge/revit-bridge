@@ -30,6 +30,7 @@ from typing import Any, Mapping
 import yaml
 
 from revit_bridge.guidance.model import (
+    BODY_WRITING_BYTES,
     CATEGORIES,
     CATEGORY_TRIGGER_RE,
     DEFAULT_ORDER,
@@ -79,13 +80,18 @@ class GuidanceError(Exception):
 
 @dataclass(frozen=True)
 class Library:
-    """One validated guidance root. Lessons are sorted: category order, ``order``, ``id``."""
+    """One validated guidance root. Lessons are sorted: category order, ``order``, ``id``.
+
+    ``warnings`` are problems that do not stop the load: a body over the
+    ``BODY_WRITING_BYTES`` writing rule.
+    """
 
     root: str
     layer: str
     config: Config
     categories: tuple[Category, ...]
     lessons: tuple[Lesson, ...]
+    warnings: tuple[str, ...] = ()
     # Set in __post_init__; no default (Python 3.11 refuses an unhashable dataclass default).
     _by_id: Mapping[str, Lesson] = field(init=False, repr=False, compare=False)
 
@@ -469,5 +475,8 @@ def load(root: str | Path, layer: str = LAYER_FRAMEWORK) -> Library:
     assert config is not None
     lessons.sort(key=lambda lesson: (config.category_rank(lesson.category), lesson.order, lesson.id))
     categories.sort(key=lambda category: (config.category_rank(category.id), category.id))
+    warnings = tuple(f"{lesson.path}: body is {lesson.body_bytes} UTF-8 bytes, over the "
+                     f"{BODY_WRITING_BYTES}-byte writing rule" for lesson in lessons
+                     if lesson.body_bytes > BODY_WRITING_BYTES)
     return Library(root=str(root), layer=layer, config=config, categories=tuple(categories),
-                   lessons=tuple(lessons))
+                   lessons=tuple(lessons), warnings=warnings)

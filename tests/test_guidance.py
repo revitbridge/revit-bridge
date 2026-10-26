@@ -12,7 +12,8 @@ import pytest
 
 import revit_bridge.mcp_server as server
 from revit_bridge import guidance, paths
-from revit_bridge.guidance import GuidanceError, VersionRange, load, parse_version, recommend, respond
+from revit_bridge.guidance import GuidanceError, VersionRange, code_symbols, load, parse_version, recommend, respond
+from revit_bridge.guidance import scan
 from revit_bridge.guidance.model import parse_range
 from revit_bridge.guidance.select import READ_HINT, index, read, render_index
 from revit_bridge.revit import sandbox
@@ -511,6 +512,99 @@ def test_same_input_same_json(seed):
     a = asyncio.run(server.mcp.call_tool("get_guidance", dict(args, mode="recommend"))).content[0].text
     b = asyncio.run(server.mcp.call_tool("get_guidance", dict(args, mode="recommend"))).content[0].text
     assert a == b
+
+
+# -- error hits first, error_symbols ------------------------------------------------
+
+def test_get_guidance_puts_error_hits_first():
+    call = lambda **args: json.loads(asyncio.run(server.mcp.call_tool("get_guidance", args)).content[0].text)  # noqa: E731
+    args = {"stage": "fix", "symbols": ["UnitUtils", "LocationCurve"]}
+    plain = call(**args)
+    assert [x["id"] for x in plain["items"]] == ["revit-core/internal-units-feet", WALL]      # category order
+    with_error = call(errors=["CS1061"], **args)
+    assert [x["id"] for x in with_error["items"]] == [WALL, "revit-core/internal-units-feet"]
+    assert with_error["items"][0]["why"][-1] == "error:CS1061+symbol:LocationCurve"
+    assert not any(w.startswith("error:") for w in with_error["items"][1]["why"])
+    # the tool still pairs error codes with the symbols it is given
+    both = call(stage="fix", errors=["CS1061"], symbols=["ElementId", "LocationCurve", "UnitUtils"])
+    assert [x["id"] for x in both["items"]] == ["revit-core/elementid-value", WALL, "revit-core/internal-units-feet"]
+    assert "error:CS1061+symbol:ElementId" in both["items"][0]["why"]
+
+
+def test_error_symbols_decide_what_an_error_code_pairs_with(seed):
+    base = dict(errors=["CS1061"], symbols=["ElementId", "Wall", "LocationCurve"])
+    def errors_of(**extra):
+        out = recommend(seed, "fix", **base, **extra)
+        return {x["id"]: [w for w in x["why"] if w.startswith("error:")] for x in out["items"]}
+    assert errors_of() == {"revit-core/elementid-value": ["error:CS1061+symbol:ElementId"],
+                           WALL: ["error:CS1061+symbol:Wall,LocationCurve"]}
+    assert errors_of(error_symbols=["LocationCurve"]) == {"revit-core/elementid-value": [],
+                                                          WALL: ["error:CS1061+symbol:LocationCurve"]}
+    assert errors_of(error_symbols=[]) == {"revit-core/elementid-value": [], WALL: []}
+    ids = [x["id"] for x in recommend(seed, "fix", **base, error_symbols=["LocationCurve"])["items"]]
+    assert ids == [WALL, "revit-core/elementid-value"]
+    pointed = guidance.pointers(seed, "fix", **base, error_symbols=["LocationCurve"])
+    assert [x["id"] for x in pointed] == ids
+
+
+def test_a_body_over_the_writing_rule_loads_with_a_warning(tmp_path, seed):
+    library = load(make_root(tmp_path, {
+        "revit-core/lessons/a.md": _sized("revit-core/a", 2300),
+        "revit-core/lessons/b.md": _sized("revit-core/b", 2301),
+    }))
+    assert [x.id for x in library.lessons] == ["revit-core/a", "revit-core/b"]
+    assert library.warnings == ("revit-core/lessons/b.md: body is 2301 UTF-8 bytes, over the 2300-byte writing rule",)
+    over = sorted(w.split(":")[0] for w in seed.warnings)        # the seed lessons that break the rule today
+    assert over == sorted(f"{x.path}" for x in seed.lessons if x.body_bytes > 2300)
+    assert all(x.body_bytes <= 2400 for x in seed.lessons)
+    core = (CONTENT / "revit-core" / "SKILL.md").read_text(encoding="utf-8")
+    assert "## Writing lessons" in core and "at or under 2300 UTF-8 bytes" in core
+    assert len(seed.category("revit-core").summaries) == 5            # the note does not join the index
+
+
+# -- pointers and code symbols (check_code's guidance) -------------------------------
+
+def test_pointers_are_recommend_without_bodies_and_without_the_byte_budget(tmp_path):
+    files = {f"revit-geometry/lessons/l{i}.md": _sized(f"revit-geometry/l{i}", 300, order=str(i)) for i in range(1, 8)}
+    files["revit-geometry/lessons/old.md"] = lesson("revit-geometry/old", order="0", revit='"<2024"')
+    library = load(make_root(tmp_path, files, cfg=config(items=5, utf8_bytes=500)))
+    budgeted = recommend(library, "write", symbols=["Wall"], revit_version="2026")
+    assert len(budgeted["items"]) == 1                                  # 500 bytes hold one 300-byte body
+    out = guidance.pointers(library, "write", symbols=["Wall"], revit_version="2026")
+    assert [x["id"] for x in out] == [f"revit-geometry/l{i}" for i in range(1, 6)]   # items cap only; old excluded
+    summary_keys = set(index(library)["items"][0])
+    for item in out:
+        assert set(item) == summary_keys and "body" not in item and item["summary"] == item["title"]
+        assert item["why"] == ["stage:write", "symbol:Wall"] and item["applicability"] == "verified"
+    assert guidance.pointers(library, "write", symbols=["Floor"]) == []
+    with pytest.raises(ValueError):
+        guidance.pointers(library, "draft", symbols=["Wall"])
+
+
+def test_inline_bodies_end_with_the_read_line(tmp_path):
+    body = "## Scenario\n\n" + "x" * 3000 + "\n"
+    library = load(make_root(tmp_path, {"revit-core/lessons/a.md": lesson("revit-core/a", body=body)}))
+    item = recommend(library, "fix", symbols=["Wall"], inline=True)["items"][0]
+    assert item["truncated"] is True and item["bytes"] <= 2400
+    assert item["body"].endswith('\n\n[truncated: get_guidance(mode="read", ids=["revit-core/a"])]\n')
+
+
+def test_code_symbols_skip_comments_literals_keywords_and_the_wrapper():
+    code = (
+        "// Floor in a line comment\n"
+        "/* Ceiling in a block\n   comment */\n"
+        "var wall = document.GetElement(\"Roof\") as Wall;  // Room\n"
+        "var a = @\"Stair \"\"Ramp\"\" Grid\"; var b = $\"Level {Railing.Name}\"; char c = 'Z';\n"
+        "var r = \"\"\"Topography \"\"\"; double d = 1E5 + 0x1F + 2.5F;\n"
+        "Execute(); CodeExecutor x; AIGeneratedCode.Foo y;\n"
+        "List<Element> e = new List<Element>(); return wall.LocationCurve.Curve.Length;\n"
+    )
+    assert code_symbols(code) == ["GetElement", "Wall", "Foo", "List", "Element", "LocationCurve", "Curve", "Length"]
+    assert code_symbols("") == code_symbols(None) == code_symbols("return 1;") == []
+    assert code_symbols("int x = 0; string s = null;") == []                      # keywords are lower case
+    assert scan.CSHARP_KEYWORDS >= {"var", "new", "return", "typeof", "using", "foreach", "await", "nameof"}
+    assert scan.WRAPPER_NAMES == {"AIGeneratedCode", "CodeExecutor", "Execute"}
+    assert code_symbols("var s = \"unterminated Wall;\nreturn Curve;") == ["Wall", "Curve"]
 
 
 # -- the seed content ----------------------------------------------------------------

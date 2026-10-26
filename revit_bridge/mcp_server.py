@@ -287,6 +287,10 @@ async def check_code(code: str, parameters: list | None = None) -> str:
     capability, reason, diagnostics: [{id, severity, line, column, message,
     symbol, in_wrapper}], truncated, fingerprint, hints, guidance, environment,
     warnings}; line/column count from the first line of your code.
+    `guidance` (get_guidance items): on errors, up to 2 lessons with `body` -
+    read them before changing the code; a `truncated` one ends with the
+    get_guidance(mode="read", ids=[...]) call for its full text. When it
+    compiles: pointers (`summary`, no body) to read as needed.
     `checked: false` means NO local pre-compilation happened (older add-in,
     or the capability is unknown - see `reason`): say "not pre-compiled
     locally" on the card."""
@@ -297,7 +301,7 @@ async def check_code(code: str, parameters: list | None = None) -> str:
         client = await RevitClientPool.get_client()
     except Exception as e:                            # refused, timed out, bad settings: not checked
         return _dumps(checking.not_checked(Capabilities.from_exception(e)))
-    return _dumps(await checking.check_code(client, code, parameters))
+    return _dumps(await checking.check_code(client, code, parameters, library=guidance_library))
 
 
 @mcp.tool(annotations=_MUTATING)

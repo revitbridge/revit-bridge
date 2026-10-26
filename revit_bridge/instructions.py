@@ -10,12 +10,14 @@ shape, the never-list, the notes - is the same text, so the two cannot
 drift. Each rendering stays within 60 lines.
 
 The one difference inside the flow: the server rendering has the model call
-get_guidance at three points (task start: stage "orient"; before writing
-execute_code C#: stage "write" with the API symbols and OST_* categories;
-after check_code errors: stage "fix" with the error ids and symbols) and run
-check_code on its execute_code snippet before the card, writing "not
-pre-compiled locally" on the card when the check could not run. A host such
-as the web demo has neither tool.
+get_guidance at the start of a task (stage "orient") and before writing
+execute_code C# (stage "write" with the API symbols and OST_* categories),
+and run check_code on its execute_code snippet before the card, writing "not
+pre-compiled locally" on the card when the check could not run. check_code's
+``guidance`` carries the fix lessons on errors (read them first; a
+``truncated`` one through get_guidance(mode="read"); more through stage
+"fix") and pointers once it compiles. A host such as the web demo has
+neither tool.
 """
 from __future__ import annotations
 
@@ -58,9 +60,11 @@ _FLOW_CHECK = {
     "server": """\
    Repeat until `ready` is true. For execute_code: before writing it,
    get_guidance(stage="write", symbols=[API names used], revit_categories=[OST_*]);
-   then check_code(code, parameters) until `compiled` is true (only compiles: no
-   token, nothing runs), with get_guidance(stage="fix", errors, symbols) on errors.
-   If `checked` is false, write "not pre-compiled locally" on the card.
+   then check_code(code, parameters) until `compiled` is true (only compiles: no token,
+   nothing runs). If `checked` is false, write "not pre-compiled locally" on the card.
+   Its `guidance` holds lessons: on errors, bodies to read before changing the code
+   (if `truncated`, get_guidance(mode="read", ids=[id]) has the rest; for more lessons,
+   get_guidance(stage="fix", errors, symbols)); compiled: pointers to read as needed.
 """,
     "host": """\
    Repeat until `ready` is true.
@@ -73,11 +77,9 @@ _FLOW_CARD = """\
 
 _FLOW_TAIL = {
     "server": """\
-6. confirm_spec(spec) -> {token, expires_at, card} or {errors}; each error names
-   its rule. Fix the spec; never invent a token.
-7. run_tool(name, params, token) or execute_code(code, parameters, token) with
-   exactly the confirmed values. The token is one-time, expires in 10 minutes and
-   is bound to that tool + params (or code): anything else is confirmation_invalid.
+6. confirm_spec(spec) -> {token, expires_at, card} or {errors}; never invent a token.
+7. run_tool(name, params, token) or execute_code(code, parameters, token) with exactly
+   the confirmed values: the token is one-time, bound to them and valid for 10 minutes.
 8. Read the reply: `success` only if Revit succeeded AND the pack's validator passed
    (validation_failed: the model did not change as claimed). Quote `validation.checks`,
    error, evidence_id; validate(evidence_id) re-checks, evidence(limit, tool) lists runs.
