@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-core/transaction-owned-by-bridge
 revision: 1
 title: "The bridge owns the transaction: never start a Transaction in a snippet"
+summary: "never start a `Transaction` in a snippet; nest a `SubTransaction` if needed"
 stage: [orient, write, fix]
 kind: pitfall
 revit: any

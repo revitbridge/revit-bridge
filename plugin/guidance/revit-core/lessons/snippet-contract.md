@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-core/snippet-contract
 revision: 1
 title: "execute_code snippets are a method body: only document and parameters are in scope"
+summary: "the wrapper: `document` and `parameters` in scope, usings, references, refused identifiers, `return <object>;`"
 stage: [orient, write, fix]
 kind: fact
 revit: any

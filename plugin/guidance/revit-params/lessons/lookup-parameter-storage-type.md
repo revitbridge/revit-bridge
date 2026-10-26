@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-params/lookup-parameter-storage-type
 revision: 1
 title: "Parameters: LookupParameter can return null; read by StorageType, not AsValueString"
+summary: "`LookupParameter` can return null; read by `StorageType`, not `AsValueString`"
 stage: [write, fix]
 kind: pitfall
 revit: ">=2024 <2028"

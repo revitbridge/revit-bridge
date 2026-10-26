@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-geometry/curve-length-property
 revision: 1
 title: "Curve length is the Length property; there is no GetLength()"
+summary: "`Curve.Length` is a property; there is no `GetLength()`"
 stage: [write, fix]
 kind: pitfall
 revit: ">=2024 <2028"

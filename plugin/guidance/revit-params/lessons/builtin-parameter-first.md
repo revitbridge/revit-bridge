@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-params/builtin-parameter-first
 revision: 1
 title: "Built-in parameters: get_Parameter(BuiltInParameter), not LookupParameter(name)"
+summary: "`get_Parameter(BuiltInParameter.X)` instead of a translated display name"
 stage: [write, fix]
 kind: convention
 revit: ">=2024 <2028"

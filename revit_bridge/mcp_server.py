@@ -5,6 +5,10 @@ Usage:
     revit-bridge            run the MCP server on stdio (what hosts call)
     revit-bridge check      ping the Revit add-in and print the connection status,
                             its capability and environment
+    revit-bridge guidance check|index|explain
+                            validate the guidance layers, rebuild the generated
+                            index, or show what get_guidance would recommend
+                            (see revit_bridge.guidance_cli)
     python -m revit_bridge.mcp_server
 
 Tools:
@@ -40,7 +44,7 @@ from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
 from revit_bridge import __version__
-from revit_bridge import checking
+from revit_bridge import checking, guidance_cli
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
@@ -530,7 +534,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("serve", help="run the MCP server on stdio (default)")
     sub.add_parser("check", help="ping the Revit add-in and print the connection status, "
                                  "its capability and environment")
+    guidance_cli.add_parser(sub)
     args = parser.parse_args(argv)
+
+    if args.command == "guidance":
+        return guidance_cli.run(args)
 
     if args.command == "check":
         status = asyncio.run(check_connection(environment=True))

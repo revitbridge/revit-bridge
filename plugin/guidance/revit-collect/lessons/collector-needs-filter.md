@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-collect/collector-needs-filter
 revision: 1
 title: "FilteredElementCollector needs a filter before you read it"
+summary: "apply `OfCategory` / `OfClass` / `WhereElementIs...` before reading a collector"
 stage: [write, fix]
 kind: pitfall
 revit: ">=2024 <2028"

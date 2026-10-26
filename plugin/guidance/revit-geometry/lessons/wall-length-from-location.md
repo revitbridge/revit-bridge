@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-geometry/wall-length-from-location
 revision: 1
 title: "Wall length and end points: (wall.Location as LocationCurve).Curve, not wall.LocationCurve"
+summary: "`(wall.Location as LocationCurve).Curve`, not `wall.LocationCurve`"
 stage: [write, fix]
 kind: pitfall
 revit: ">=2024 <2028"

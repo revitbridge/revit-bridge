@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-geometry/line-create-bound
 revision: 1
 title: "Create lines with Line.CreateBound(XYZ, XYZ), not Application.Create.NewLineBound"
+summary: "`Line.CreateBound(XYZ, XYZ)`, not `Application.Create.NewLineBound`"
 stage: [write, fix]
 kind: pitfall
 revit: ">=2024 <2028"

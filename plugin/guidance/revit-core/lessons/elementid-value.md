@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-core/elementid-value
 revision: 1
 title: "ElementId: use Value (long); IntegerValue is obsolete in 2024-2025 and gone from 2026"
+summary: "`ElementId.Value` (long); `IntegerValue` is obsolete in 2024-2025 and gone from 2026"
 stage: [orient, write, fix]
 kind: pitfall
 revit: ">=2024 <2028"
