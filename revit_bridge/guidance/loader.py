@@ -86,7 +86,8 @@ class Library:
     config: Config
     categories: tuple[Category, ...]
     lessons: tuple[Lesson, ...]
-    _by_id: Mapping[str, Lesson] = field(default=MappingProxyType({}), repr=False, compare=False)
+    # Set in __post_init__; no default (Python 3.11 refuses an unhashable dataclass default).
+    _by_id: Mapping[str, Lesson] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_by_id", MappingProxyType({lesson.id: lesson for lesson in self.lessons}))
