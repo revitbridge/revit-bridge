@@ -12,7 +12,8 @@ import pytest
 
 import revit_bridge.mcp_server as server
 from revit_bridge import guidance, paths
-from revit_bridge.guidance import GuidanceError, VersionRange, load, parse_version, recommend, respond
+from revit_bridge.guidance import GuidanceError, VersionRange, code_symbols, load, parse_version, recommend, respond
+from revit_bridge.guidance import scan
 from revit_bridge.guidance.model import parse_range
 from revit_bridge.guidance.select import READ_HINT, index, read, render_index
 from revit_bridge.revit import sandbox
@@ -511,6 +512,51 @@ def test_same_input_same_json(seed):
     a = asyncio.run(server.mcp.call_tool("get_guidance", dict(args, mode="recommend"))).content[0].text
     b = asyncio.run(server.mcp.call_tool("get_guidance", dict(args, mode="recommend"))).content[0].text
     assert a == b
+
+
+# -- pointers and code symbols (check_code's guidance) -------------------------------
+
+def test_pointers_are_recommend_without_bodies_and_without_the_byte_budget(tmp_path):
+    files = {f"revit-geometry/lessons/l{i}.md": _sized(f"revit-geometry/l{i}", 300, order=str(i)) for i in range(1, 8)}
+    files["revit-geometry/lessons/old.md"] = lesson("revit-geometry/old", order="0", revit='"<2024"')
+    library = load(make_root(tmp_path, files, cfg=config(items=5, utf8_bytes=500)))
+    budgeted = recommend(library, "write", symbols=["Wall"], revit_version="2026")
+    assert len(budgeted["items"]) == 1                                  # 500 bytes hold one 300-byte body
+    out = guidance.pointers(library, "write", symbols=["Wall"], revit_version="2026")
+    assert [x["id"] for x in out] == [f"revit-geometry/l{i}" for i in range(1, 6)]   # items cap only; old excluded
+    summary_keys = set(index(library)["items"][0])
+    for item in out:
+        assert set(item) == summary_keys and "body" not in item and item["summary"] == item["title"]
+        assert item["why"] == ["stage:write", "symbol:Wall"] and item["applicability"] == "verified"
+    assert guidance.pointers(library, "write", symbols=["Floor"]) == []
+    with pytest.raises(ValueError):
+        guidance.pointers(library, "draft", symbols=["Wall"])
+
+
+def test_inline_bodies_end_with_the_read_line(tmp_path):
+    body = "## Scenario\n\n" + "x" * 3000 + "\n"
+    library = load(make_root(tmp_path, {"revit-core/lessons/a.md": lesson("revit-core/a", body=body)}))
+    item = recommend(library, "fix", symbols=["Wall"], inline=True)["items"][0]
+    assert item["truncated"] is True and item["bytes"] <= 2400
+    assert item["body"].endswith('\n\n[truncated: get_guidance(mode="read", ids=["revit-core/a"])]\n')
+
+
+def test_code_symbols_skip_comments_literals_keywords_and_the_wrapper():
+    code = (
+        "// Floor in a line comment\n"
+        "/* Ceiling in a block\n   comment */\n"
+        "var wall = document.GetElement(\"Roof\") as Wall;  // Room\n"
+        "var a = @\"Stair \"\"Ramp\"\" Grid\"; var b = $\"Level {Railing.Name}\"; char c = 'Z';\n"
+        "var r = \"\"\"Topography \"\"\"; double d = 1E5 + 0x1F + 2.5F;\n"
+        "Execute(); CodeExecutor x; AIGeneratedCode.Foo y;\n"
+        "List<Element> e = new List<Element>(); return wall.LocationCurve.Curve.Length;\n"
+    )
+    assert code_symbols(code) == ["GetElement", "Wall", "Foo", "List", "Element", "LocationCurve", "Curve", "Length"]
+    assert code_symbols("") == code_symbols(None) == code_symbols("return 1;") == []
+    assert code_symbols("int x = 0; string s = null;") == []                      # keywords are lower case
+    assert scan.CSHARP_KEYWORDS >= {"var", "new", "return", "typeof", "using", "foreach", "await", "nameof"}
+    assert scan.WRAPPER_NAMES == {"AIGeneratedCode", "CodeExecutor", "Execute"}
+    assert code_symbols("var s = \"unterminated Wall;\nreturn Curve;") == ["Wall", "Curve"]
 
 
 # -- the seed content ----------------------------------------------------------------

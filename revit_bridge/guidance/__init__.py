@@ -6,6 +6,8 @@ one directory per category with a ``SKILL.md`` and ``lessons/<slug>.md``.
 
     load(root)                         validate a root -> Library (GuidanceError lists every problem)
     recommend(library, stage, ...)     choose, order and budget lessons for a stage
+    pointers(library, stage, ...)      the same choice without bodies (summary only)
+    code_symbols(code)                 API-looking names in C#, for symbols= (no model)
     index(library) / read(library, ids)
     respond(library, mode, ...)        the get_guidance tool reply
     render_index(library)              the revit://guidance/index text
@@ -30,10 +32,12 @@ from revit_bridge.guidance.model import (
     VersionRange,
     parse_version,
 )
-from revit_bridge.guidance.select import index, read, recommend, render_index, respond
+from revit_bridge.guidance.scan import code_symbols
+from revit_bridge.guidance.select import index, pointers, read, recommend, render_index, respond
 
 __all__ = [
     "CATEGORIES", "KINDS", "LAYER_FRAMEWORK", "SCHEMA_VERSION", "STAGES",
     "Budget", "Category", "Config", "GuidanceError", "Lesson", "Library", "Triggers", "VersionRange",
-    "index", "load", "parse_version", "read", "recommend", "render_index", "respond",
+    "code_symbols", "index", "load", "parse_version", "pointers", "read", "recommend", "render_index",
+    "respond",
 ]

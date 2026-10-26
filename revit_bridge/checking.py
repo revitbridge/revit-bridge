@@ -13,8 +13,25 @@
    pre-compiled, which says nothing about whether it compiles.
 3. ``hints`` - one per distinct diagnostic whose id is in ``HINT_IDS``,
    naming the Revit version when it is known and pointing at an API lookup
-   tool. ``guidance`` is always ``[]`` here: it is filled in S2b, from the
-   experience library.
+   tool.
+4. ``guidance`` - lessons from the guidance library (``library``), items
+   shaped as ``get_guidance`` items, chosen without a model:
+
+   - compile errors (``compiled: false`` with an ``error`` diagnostic):
+     ``recommend(stage="fix", inline=True)`` with ``errors`` = the
+     diagnostics' ids, ``symbols`` = their ``symbol`` values plus
+     ``code_symbols(code)``, ``revit_version`` = the environment's version
+     in the lesson format (``2026``, ``2026.5``) when known. At most
+     ``fix_inline_items`` (2) lessons with ``body``, each at most
+     ``fix_inline_bytes`` (2400) UTF-8 bytes; a cut body has
+     ``truncated: true`` and ends with the line
+     ``[truncated: get_guidance(mode="read", ids=["<id>"])]``.
+   - compiled: ``pointers(stage="write")`` with ``symbols`` =
+     ``code_symbols(code)`` and the same version: at most ``budget.items``
+     (5) lessons, each with ``summary`` and no body.
+   - anything else (not checked, blocked, no ``library``): ``[]``. A library
+     that does not load gives ``[]`` and the warning
+     ``guidance_unavailable: <first problem>``; the other fields stand.
 
 Every reply has the same keys (``schema_version`` 1)::
 
@@ -22,7 +39,9 @@ Every reply has the same keys (``schema_version`` 1)::
      "capability": "supported" | "unsupported" | "unknown" | None, "reason": str | None,
      "diagnostics": [{"id", "severity", "line", "column", "message", "symbol", "in_wrapper"}],
      "truncated": int, "fingerprint": str | None, "hints": [{"id", "symbol", "text"}],
-     "guidance": [], "environment": dict | None, "warnings": [str]}
+     "guidance": [{"id", "revision", "hash", "layer", "category", "title", "kind", "stage", "revit",
+                   "applicability", "why", "body", "bytes", "truncated"} | {..., "summary"}],
+     "environment": dict | None, "warnings": [str]}
 
 ``compiled`` is None when ``checked`` is false. ``capability`` is None for a
 local block (Revit was not asked). ``reason`` is ``"<kind>: <message>"``
@@ -37,6 +56,7 @@ from __future__ import annotations
 import json
 import re
 
+from revit_bridge.guidance import GuidanceError, Library, code_symbols, parse_version, pointers, recommend
 from revit_bridge.revit import sandbox
 from revit_bridge.revit.capabilities import (
     CHECK_CODE_METHOD,
@@ -54,6 +74,7 @@ SCHEMA_VERSION = 1
 HINT_IDS = ("CS1061", "CS0117", "CS0246", "CS0103", "CS1501", "CS1503", "CS7036")
 API_LOOKUP_TOOL = "search_revit_api"
 SNIPPET_USINGS = "System, System.Linq, System.Collections.Generic, Autodesk.Revit.DB, Autodesk.Revit.UI"
+GUIDANCE_UNAVAILABLE = "guidance_unavailable"
 
 _QUOTED = re.compile(r"'([^']+)'")
 _ARGUMENT_COUNT = re.compile(r"takes (\d+) argument")
@@ -199,6 +220,57 @@ def hints_for(diagnostics: list[dict], label: str | None = None) -> list[dict]:
     return hints
 
 
+# -- guidance -------------------------------------------------------------------------
+
+def lesson_version(environment: dict | None) -> str | None:
+    """The environment's Revit version in the lesson format: "2026", or "2026.5" from the .5
+    update on (the .NET 10 builds); read from ``version_name``, else ``version_number``."""
+    revit = (environment or {}).get("revit") or {}
+    for key in ("version_name", "version_number"):
+        parsed = parse_version(revit.get(key))
+        if parsed is not None:
+            year, update = parsed
+            return f"{year}.5" if update >= 5 else str(year)
+    return None
+
+
+def _has_errors(diagnostics: list[dict]) -> bool:
+    return any(d.get("severity") == "error" for d in diagnostics)
+
+
+def _distinct(values) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        if isinstance(value, str) and value.strip() and value.strip() not in out:
+            out.append(value.strip())
+    return out
+
+
+def guidance_for(library: Library, code: str, diagnostics: list[dict], compiled: bool,
+                 environment: dict | None) -> list[dict]:
+    """``guidance`` for a checked reply (module docstring, item 4)."""
+    version = lesson_version(environment)
+    scanned = code_symbols(code)
+    if compiled:
+        return pointers(library, "write", symbols=scanned, revit_version=version)
+    if not _has_errors(diagnostics):
+        return []
+    errors = _distinct(d.get("id") for d in diagnostics)
+    symbols = _distinct([d.get("symbol") for d in diagnostics] + scanned)
+    return recommend(library, "fix", errors=errors, symbols=symbols, revit_version=version, inline=True)["items"]
+
+
+def _load(library) -> tuple[Library | None, str | None]:
+    """``library`` (a Library, or a callable returning one) and, when it fails, the warning."""
+    try:
+        return (library() if callable(library) else library), None
+    except GuidanceError as exc:
+        first = exc.problems[0] if exc.problems else "invalid guidance"
+        return None, f"{GUIDANCE_UNAVAILABLE}: {first}"
+    except Exception as exc:  # noqa: BLE001 - lessons are an extra: never break check_code
+        return None, f"{GUIDANCE_UNAVAILABLE}: {type(exc).__name__}: {exc}"
+
+
 # -- the check --------------------------------------------------------------------------
 
 def _as_dict(result) -> dict | None:
@@ -210,12 +282,14 @@ def _as_dict(result) -> dict | None:
     return result if isinstance(result, dict) else None
 
 
-async def check_code(client, code: str, parameters: list | None = None) -> dict:
+async def check_code(client, code: str, parameters: list | None = None, *, library=None) -> dict:
     """Compile ``code`` in Revit without running it; the reply described in the module docstring.
 
     ``client`` needs ``send_command(method, params)``. Never raises for a
     transport or add-in failure: those are ``checked: false`` with a reason.
-    ``guidance`` is always ``[]`` - filled in S2b (experience library).
+    ``library`` is the guidance library, or a callable that returns it (the
+    MCP server passes its cached loader), asked only when a checked reply
+    needs lessons; None leaves ``guidance`` empty.
     """
     refused = blocked_reply(code)
     if refused is not None:
@@ -255,8 +329,16 @@ async def check_code(client, code: str, parameters: list | None = None) -> dict:
         truncated = max(0, int(result.get("truncated") or 0))
     except (TypeError, ValueError):
         truncated = 0
+    warnings = [error_message] if error_message else []
+    guidance: list[dict] = []
+    if library is not None and (compiled or _has_errors(diagnostics)):
+        loaded, problem = _load(library)
+        if problem is not None:
+            warnings.append(problem)
+        elif loaded is not None:
+            guidance = guidance_for(loaded, code, diagnostics, compiled, environment)
     return reply(
         checked=True, compiled=compiled, capability=SUPPORTED, diagnostics=diagnostics, truncated=truncated,
         fingerprint=fingerprint, hints=hints_for(diagnostics, version_label(environment)),
-        environment=environment, warnings=[error_message] if error_message else [],
+        guidance=guidance, environment=environment, warnings=warnings,
     )

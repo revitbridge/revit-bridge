@@ -88,3 +88,28 @@ def test_the_skill_carries_the_same_guidance_calls():
     fix = text.index('get_guidance(stage="fix"')
     assert text.index("## The bridge flow") < orient < text.index("1. **Snapshot**")
     assert text.index("5. **Reconcile**") < write < check < fix < text.index("6. **Confirm**")
+
+
+def test_the_server_reads_check_code_guidance_before_changing_the_code():
+    srv, host = server_instructions(), host_instructions()
+    check = srv.index("check_code(code, parameters)")
+    lessons = srv.index("Its `guidance` holds lessons: on errors, bodies to read before changing the code")
+    read = srv.index('(if `truncated`, get_guidance(mode="read", ids=[id]) has the rest')
+    fix = srv.index('get_guidance(stage="fix", errors, symbols)')
+    pointers = srv.index("compiled: pointers to read as needed.")
+    assert check < lessons < read < fix < pointers < srv.index("5. Show the spec card")
+    assert "`guidance`" not in host and "truncated" not in host
+
+
+def test_the_skill_reads_check_code_guidance_before_changing_the_code():
+    import pathlib
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    check = text.index("call `check_code(code, parameters)`")
+    lessons = text.index("Its `guidance` holds lessons")
+    bodies = text.index("the bodies of up to two fix lessons - read them before changing the code")
+    truncated = text.index('a `truncated` one ends with the `get_guidance(mode="read", ids=[...])` call')
+    fix = text.index('get_guidance(stage="fix"')
+    pointers = text.index("When the code compiles, `guidance` lists pointers (`summary`, no body)")
+    assert check < lessons < bodies < truncated < fix < pointers < text.index("6. **Confirm**")

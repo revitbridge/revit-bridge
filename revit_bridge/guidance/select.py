@@ -21,9 +21,12 @@ same reply, byte for byte once serialized.
        may still fit. Bodies are never cut, except with ``inline=True``.
     5. ``inline=True`` (compile failures, D12): at most ``fix_inline_items``
        lessons, each body cut to ``fix_inline_bytes`` UTF-8 bytes including a
-       note that ``get_guidance(mode="read", ids=[...])`` returns the full
-       text; such items have ``truncated: true``.
+       last line ``[truncated: get_guidance(mode="read", ids=["<id>"])]``;
+       such items have ``truncated: true``.
 
+``pointers`` the lessons ``recommend`` would choose, without bodies: the
+           ``index`` item (``summary``) with ``why``, at most ``budget.items``;
+           body sizes do not count and a version-excluded lesson is left out.
 ``index``  every lesson without its body (plus ``summary``), in order.
 ``read``   the full text of the given ids, ignoring budget and seen hashes;
            unknown ids are listed in ``missing``.
@@ -43,7 +46,8 @@ MODES = ("recommend", "index", "read")
 VERIFIED = "verified"
 UNKNOWN = "unknown"
 
-READ_HINT = '\n\n[truncated: get_guidance(mode="read", ids=["{id}"]) returns the full text]\n'
+# The last line of a body cut by inline=True (S2b contract of check_code's guidance).
+READ_HINT = '\n\n[truncated: get_guidance(mode="read", ids=["{id}"])]\n'
 
 
 def _strings(values: Iterable | None) -> list[str]:
@@ -170,6 +174,26 @@ def _version(revit_version: str | None, warnings: list[str]):
     return version
 
 
+def _signals(skill_categories, revit_categories, symbols, errors, exceptions, warnings: list[str]) -> tuple:
+    """The recommend inputs cleaned up: (skill, revit categories, symbols, error codes, exceptions)."""
+    skill = _strings(skill_categories)
+    for name in skill:
+        if name not in CATEGORIES:
+            warnings.append(f"skill_categories: {name!r} is not a guidance category")
+    codes = [code.upper() for code in _strings(errors)]
+    return skill, _strings(revit_categories), _strings(symbols), codes, _strings(exceptions)
+
+
+def _matches(library: Library, stage: str, signals: tuple):
+    """``(lesson, hits)`` for every lesson of ``stage`` that something hits, in library order."""
+    for lesson in library.lessons:
+        if stage not in lesson.stage:
+            continue
+        hits = _hits(lesson, stage, library.config.always, *signals)
+        if hits:
+            yield lesson, hits
+
+
 def recommend(library: Library, stage: str | None, *, skill_categories: Iterable[str] | None = None,
               revit_categories: Iterable[str] | None = None, symbols: Iterable[str] | None = None,
               errors: Iterable[str] | None = None, exceptions: Iterable[str] | None = None,
@@ -183,14 +207,7 @@ def recommend(library: Library, stage: str | None, *, skill_categories: Iterable
         return _reply("recommend", stage, library,
                       error=f"invalid_stage: {stage!r} is not one of {', '.join(STAGES)}")
     warnings: list[str] = []
-    skill = _strings(skill_categories)
-    for name in skill:
-        if name not in CATEGORIES:
-            warnings.append(f"skill_categories: {name!r} is not a guidance category")
-    revit_cats = _strings(revit_categories)
-    syms = _strings(symbols)
-    codes = [code.upper() for code in _strings(errors)]
-    excs = _strings(exceptions)
+    signals = _signals(skill_categories, revit_categories, symbols, errors, exceptions, warnings)
     seen = set(_strings(seen_hashes))
     version = _version(revit_version, warnings)
 
@@ -198,12 +215,7 @@ def recommend(library: Library, stage: str | None, *, skill_categories: Iterable
     max_items = min(budget.items, budget.fix_inline_items) if inline else budget.items
     max_bytes = budget.utf8_bytes
     items, omitted, used = [], [], 0
-    for lesson in library.lessons:
-        if stage not in lesson.stage:
-            continue
-        hits = _hits(lesson, stage, library.config.always, skill, revit_cats, syms, codes, excs)
-        if not hits:
-            continue
+    for lesson, hits in _matches(library, stage, signals):
         if _excluded(lesson, version):
             omitted.append(_omitted(lesson, "version"))
             continue
@@ -226,6 +238,29 @@ def summary(library: Library, lesson: Lesson) -> str:
     category = library.category(lesson.category)
     text = category.summary_of(lesson.slug) if category is not None else None
     return text or lesson.title
+
+
+def pointers(library: Library, stage: str, *, skill_categories: Iterable[str] | None = None,
+             revit_categories: Iterable[str] | None = None, symbols: Iterable[str] | None = None,
+             errors: Iterable[str] | None = None, exceptions: Iterable[str] | None = None,
+             revit_version: str | None = None) -> list[dict]:
+    """The lessons ``recommend`` would choose, as pointers: each the ``index`` item (``summary``,
+    no ``body``) with ``why``, at most ``budget.items``. Body sizes do not count; a lesson whose
+    range excludes ``revit_version`` is left out. ``get_guidance(mode="read")`` reads one."""
+    if stage not in STAGES:
+        raise ValueError(f"invalid_stage: {stage!r} is not one of {', '.join(STAGES)}")
+    signals = _signals(skill_categories, revit_categories, symbols, errors, exceptions, [])
+    version = _version(revit_version, [])
+    items: list[dict] = []
+    for lesson, hits in _matches(library, stage, signals):
+        if _excluded(lesson, version):
+            continue
+        if len(items) >= library.config.budget.items:
+            break
+        item = _head(lesson, _applicability(lesson, version), [f"stage:{stage}"] + hits)
+        item["summary"] = summary(library, lesson)
+        items.append(item)
+    return items
 
 
 def index(library: Library, *, revit_version: str | None = None, stage: str | None = None) -> dict:

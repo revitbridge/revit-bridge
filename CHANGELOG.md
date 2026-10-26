@@ -38,7 +38,7 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   `compiled`, `blocked`, `capability`, `reason`, `diagnostics` (line and
   column in the user's code), `truncated`, `fingerprint`, `hints` (for
   CS1061, CS0117, CS0246, CS0103, CS1501, CS1503 and CS7036, naming the
-  Revit version), `guidance` (always empty for now), `environment` and
+  Revit version), `guidance` (lessons, see Changed), `environment` and
   `warnings`. `checked: false` means the code was not pre-compiled: an older
   add-in, or the capability is unknown. Package API:
   `revit_bridge.checking.check_code(client, code, parameters)`.
@@ -102,6 +102,26 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   and symbols). To stay within 60 lines, step 6 of the server rendering no
   longer lists the rule names (each error names its rule) and step 8 is
   rewrapped.
+- `check_code` fills `guidance` (it was always empty), from the guidance
+  library and without a model; items have the `get_guidance` item shape. On
+  compile errors: up to two `fix` lessons with their bodies, chosen by the
+  diagnostic ids, their symbols and the API names in the code (comments and
+  string literals skipped); each body is at most 2400 UTF-8 bytes, and a cut
+  one has `truncated: true` and ends with the line
+  `[truncated: get_guidance(mode="read", ids=["<id>"])]`. When the code
+  compiles: up to five `write` lessons as pointers (`summary`, no body). The
+  Revit version in `environment` drops lessons for other versions and marks
+  the rest `verified`. Not checked or blocked: empty. A library that does
+  not load: empty, with the warning `guidance_unavailable: <first problem>`.
+  The reply keys and `hints` are unchanged. Package API:
+  `check_code(client, code, parameters, library=...)`,
+  `revit_bridge.guidance.pointers` and `revit_bridge.guidance.code_symbols`.
+- The server rendering and the `revit-bridge` skill read the lesson bodies
+  in `check_code`'s `guidance` before changing code (`get_guidance(mode="read")`
+  for a `truncated` one, `stage="fix"` for more) and treat the pointers of a
+  clean compile as optional reading. To stay within 60 lines, step 6 of the
+  server rendering no longer says that each error names its rule and step 7
+  no longer names `confirmation_invalid`.
 - `get_project_snapshot` and `query` say categories are OST_* names
   (`OST_Walls`).
 

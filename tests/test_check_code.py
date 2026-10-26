@@ -12,6 +12,10 @@ import pytest
 
 import revit_bridge.mcp_server as server
 from revit_bridge import checking
+from revit_bridge.guidance import code_symbols, recommend
+from revit_bridge.guidance import index as guidance_index
+from revit_bridge.guidance import load as load_guidance
+from revit_bridge.paths import guidance_dir
 from revit_bridge.revit import capabilities as caps_mod
 from revit_bridge.revit.capabilities import Capabilities, discover, error_kind
 from revit_bridge.revit.client import RevitClient, RevitResponse
@@ -20,6 +24,7 @@ from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.revit.settings import RevitSettings
 
 from tests.fake_revit import FakeRevit
+from tests.test_guidance import lesson, make_root
 
 CAPS = {
     "protocol": 2,
@@ -291,7 +296,11 @@ def test_check_code_on_a_new_addin_compiles_without_running(revit_env):
         "text": "Revit 2026.5: 'Wall' has no 'LocationCurve'. If an API lookup tool (search_revit_api) is "
                 "connected, query 'Wall LocationCurve' before changing the code.",
     }]
-    assert out["guidance"] == [] and out["warnings"] == []
+    # the code names ElementId and Wall: the fix lessons in category order (core first), bodies inline
+    assert [g["id"] for g in out["guidance"]] == [
+        "revit-core/elementid-value", "revit-geometry/wall-length-from-location"]
+    assert all(g["body"] and g["applicability"] == "verified" for g in out["guidance"])
+    assert out["warnings"] == []
     assert out["environment"]["source"] == "capabilities" and out["environment"]["revit"] == CAPS["revit"]
     # compile only: the capability once per connection, then two checks; nothing ran in Revit
     methods = [r["method"] for r in requests]
@@ -401,6 +410,207 @@ def test_hints_only_for_the_listed_ids_once_each_and_without_a_version_when_unkn
     assert upper["text"].endswith("query 'UnitTypeId' before changing the code.")
     assert checking.hint_for({"id": "CS1061", "message": "no quotes here"}) is None
     assert set(checking.HINT_IDS) == {"CS1061", "CS0117", "CS0246", "CS0103", "CS1501", "CS1503", "CS7036"}
+
+
+# -- guidance: lessons in the reply ----------------------------------------------------------------
+
+WALL = "revit-geometry/wall-length-from-location"
+COLLECTOR = "revit-collect/collector-needs-filter"
+ITEM_HEAD = {"id", "revision", "hash", "layer", "category", "title", "kind", "stage", "revit", "applicability", "why"}
+BODY_ITEM = ITEM_HEAD | {"body", "bytes", "truncated"}
+POINTER_ITEM = ITEM_HEAD | {"summary"}
+WALL_CODE = "var wall = document.GetElement(parameters[0] as string) as Wall;\nreturn wall.LocationCurve;"
+# Names that hit five fix lessons: internal units, ElementId, the collector, the wall and curve length.
+BUSY_CODE = (
+    "var ids = new FilteredElementCollector(document).OfClass(typeof(Wall)).ToElementIds();\n"
+    "var wall = document.GetElement(ids.First()) as Wall;\n"
+    "double feet = wall.LocationCurve.Curve.Length;\n"
+    "return UnitUtils.ConvertFromInternalUnits(feet, UnitTypeId.Meters) + new ElementId(1L).Value;"
+)
+
+
+@pytest.fixture(scope="module")
+def seed_library():
+    return load_guidance(guidance_dir())
+
+
+def failed_check(*diagnostics) -> dict:
+    return dict(FAILED_CHECK, diagnostics=list(diagnostics))
+
+
+def _checked(handler, code: str, library) -> dict:
+    """``checking.check_code`` against a fake add-in with this guidance library."""
+    async def scenario(client, fake):
+        return await checking.check_code(client, code, None, library=library)
+    return asyncio.run(_with_client(handler, scenario))
+
+
+def _never_loaded(calls: list):
+    def library():
+        calls.append("load")
+        raise AssertionError("the guidance library was asked for")
+    return library
+
+
+def test_compile_errors_inline_the_wall_lesson(revit_env):
+    replies, _ = asyncio.run(_tool(new_addin(), revit_env, [("check_code", {"code": WALL_CODE})]))
+    out = replies[0]
+    assert set(out) == REPLY_KEYS and out["compiled"] is False and out["warnings"] == []
+    assert out["hints"] == checking.hints_for([CS1061], "Revit 2026.5")             # hints unchanged
+    assert 1 <= len(out["guidance"]) <= 2
+    first = out["guidance"][0]
+    assert first["id"] == WALL and set(first) == BODY_ITEM
+    assert first["body"].startswith("## Scenario") and first["truncated"] is False
+    assert first["bytes"] == len(first["body"].encode("utf-8")) <= 2400
+    assert first["applicability"] == "verified" and first["layer"] == "framework"
+    assert first["why"][0] == "stage:fix"
+    error_hits = [w for w in first["why"] if w.startswith("error:CS1061+symbol:")]
+    assert len(error_hits) == 1 and "LocationCurve" in error_hits[0].split("+symbol:")[1].split(",")
+    assert all(set(g) == BODY_ITEM and g["bytes"] <= 2400 for g in out["guidance"])
+
+
+def test_an_error_without_any_lesson_symbol_gets_no_guidance(seed_library):
+    other = dict(CS1061, message="'Foo' does not contain a definition for 'Bar'", symbol="Bar")
+    out = _checked(new_addin(failed_check(other)), "var foo = new Foo();\nreturn foo.Bar;", seed_library)
+    assert out["checked"] is True and out["compiled"] is False
+    assert out["guidance"] == [] and out["warnings"] == []
+    assert [h["symbol"] for h in out["hints"]] == ["Bar"]
+
+
+def test_more_than_two_fix_lessons_inline_only_the_first_two(seed_library):
+    symbols = ["LocationCurve"] + code_symbols(BUSY_CODE)
+    every = recommend(seed_library, "fix", errors=["CS1061"], symbols=symbols)["items"]
+    assert len(every) >= 3
+    out = _checked(new_addin(), BUSY_CODE, seed_library)
+    assert set(out) == REPLY_KEYS                                   # no "omitted": the reply keys are fixed
+    assert [g["id"] for g in out["guidance"]] == [x["id"] for x in every[:2]]
+    assert [g["id"] for g in out["guidance"]] == ["revit-core/internal-units-feet", "revit-core/elementid-value"]
+
+
+def test_long_bodies_are_cut_to_2400_bytes_with_the_read_line(tmp_path):
+    long_body = "## Scenario\n\n" + "".join(f"line {i:04d} of a long lesson about walls\n" for i in range(200))
+    wide_body = "## Scenario\n\n" + chr(0x5899) * 1200 + "\n"                    # 3 UTF-8 bytes each
+    library = load_guidance(make_root(tmp_path, {
+        "revit-geometry/lessons/long.md": lesson("revit-geometry/long", body=long_body, order="1",
+                                                 triggers="\n  symbols: [Wall]\n  errors: [CS1061]"),
+        "revit-geometry/lessons/wide.md": lesson("revit-geometry/wide", body=wide_body, order="2"),
+    }))
+    out = _checked(new_addin(), WALL_CODE, library)
+    assert [g["id"] for g in out["guidance"]] == ["revit-geometry/long", "revit-geometry/wide"]
+    for item in out["guidance"]:
+        assert item["truncated"] is True
+        assert item["bytes"] == len(item["body"].encode("utf-8")) <= 2400
+        assert item["body"].rstrip("\n").splitlines()[-1] == f'[truncated: get_guidance(mode="read", ids=["{item["id"]}"])]'
+    assert out["guidance"][0]["body"].startswith(long_body[:100])
+    assert "error:CS1061+symbol:Wall" in out["guidance"][0]["why"]
+
+
+def test_a_clean_compile_points_at_write_lessons_without_bodies(seed_library):
+    code = "var walls = new FilteredElementCollector(document).OfClass(typeof(Wall)).ToElements();\nreturn walls.Count;"
+    out = _checked(new_addin(CLEAN_CHECK), code, seed_library)
+    assert out["compiled"] is True and out["warnings"] == [] and set(out) == REPLY_KEYS
+    ids = [g["id"] for g in out["guidance"]]
+    assert COLLECTOR in ids and 1 <= len(ids) <= 5
+    summaries = {x["id"]: x["summary"] for x in guidance_index(seed_library)["items"]}
+    for item in out["guidance"]:
+        assert set(item) == POINTER_ITEM and "body" not in item
+        assert item["summary"] == summaries[item["id"]] and item["why"][0] == "stage:write"
+        assert "write" in item["stage"]
+    # six write lessons named: still at most budget.items (5); names in comments do not count
+    code = BUSY_CODE + "\nvar picked = new UIDocument(document).Selection.GetElementIds(); // LookupParameter"
+    chosen = recommend(seed_library, "write", symbols=code_symbols(code))
+    assert len(chosen["items"]) + len(chosen["omitted"]) == 6
+    busy = _checked(new_addin(CLEAN_CHECK), code, seed_library)
+    assert [g["id"] for g in busy["guidance"]] == [x["id"] for x in chosen["items"][:5]]
+    assert all(set(g) == POINTER_ITEM for g in busy["guidance"])
+    # nothing that names a lesson: no pointers
+    assert _checked(new_addin(CLEAN_CHECK), "return 1;", seed_library)["guidance"] == []
+
+
+def test_unchecked_and_blocked_replies_have_no_guidance_and_never_load_it():
+    calls: list = []
+    library = _never_loaded(calls)
+    out = _checked(old_addin(), "return 1;", library)                               # unsupported
+    assert out["checked"] is False and out["guidance"] == []
+    no_feature = dict(CAPS, features={"check_code": False}, methods=["send_code_to_revit", "get_bridge_capabilities"])
+    out = _checked(new_addin(caps=no_feature), WALL_CODE, library)                  # supported, cannot check
+    assert out["checked"] is False and out["guidance"] == []
+    crashed = dict(FAILED_CHECK, diagnostics=[], errorMessage="Roslyn threw")
+    out = _checked(new_addin(crashed), WALL_CODE, library)                          # compiler_error
+    assert out["checked"] is False and out["guidance"] == []
+    out = _checked(new_addin(), 'return System.IO.File.ReadAllText("c:/x");', library)   # blocked locally
+    assert out["blocked"] is True and out["guidance"] == []
+    warning = dict(CS1061, id="CS0168", severity="warning", symbol=None)
+    out = _checked(new_addin(failed_check(warning)), WALL_CODE, library)            # no error diagnostic
+    assert out["checked"] is True and out["compiled"] is False and out["guidance"] == []
+    assert calls == [] and out["warnings"] == []
+    out = _checked(new_addin(), WALL_CODE, None)                                    # no library given
+    assert out["guidance"] == [] and out["warnings"] == []
+
+
+def test_check_code_without_revit_has_no_guidance(monkeypatch):
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
+    monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "1")
+    out = json.loads(asyncio.run(server.mcp.call_tool("check_code", {"code": WALL_CODE})).content[0].text)
+    assert out["checked"] is False and out["guidance"] == [] and set(out) == REPLY_KEYS
+
+
+def test_a_broken_library_gives_no_guidance_and_a_warning(tmp_path, monkeypatch, revit_env):
+    bad = make_root(tmp_path, {"revit-geometry/lessons/a.md": lesson("revit-geometry/b")})
+    monkeypatch.setattr(server, "guidance_dir", lambda: bad)
+    monkeypatch.setattr(server, "_guidance_library", None)
+    replies, _ = asyncio.run(_tool(new_addin(), revit_env, [("check_code", {"code": WALL_CODE})]))
+    out = replies[0]
+    assert set(out) == REPLY_KEYS and out["guidance"] == []
+    assert out["checked"] is True and out["compiled"] is False and out["diagnostics"] == [CS1061]
+    assert out["hints"] == checking.hints_for([CS1061], "Revit 2026.5")
+    assert len(out["warnings"]) == 1 and out["warnings"][0].startswith("guidance_unavailable: ")
+    assert "does not match its path" in out["warnings"][0]
+    replies, _ = asyncio.run(_tool(new_addin(CLEAN_CHECK), revit_env, [("check_code", {"code": BUSY_CODE})]))
+    assert replies[0]["compiled"] is True and replies[0]["guidance"] == []
+    assert replies[0]["warnings"][0].startswith("guidance_unavailable: ")
+
+    def exploding():
+        raise RuntimeError("disk gone")
+    out = _checked(new_addin(), WALL_CODE, exploding)
+    assert out["guidance"] == [] and out["warnings"] == ["guidance_unavailable: RuntimeError: disk gone"]
+
+
+def test_the_same_input_gives_the_same_guidance(revit_env, seed_library):
+    replies, _ = asyncio.run(_tool(new_addin(), revit_env, [
+        ("check_code", {"code": BUSY_CODE}), ("check_code", {"code": BUSY_CODE})]))
+    assert json.dumps(replies[0]) == json.dumps(replies[1]) and replies[0]["guidance"]
+    fresh = load_guidance(guidance_dir())
+    for check in (FAILED_CHECK, CLEAN_CHECK):
+        once = _checked(new_addin(check), BUSY_CODE, seed_library)
+        again = _checked(new_addin(check), BUSY_CODE, fresh)
+        assert json.dumps(once["guidance"]) == json.dumps(again["guidance"]) and once["guidance"]
+
+
+@pytest.mark.parametrize("revit,expected", [
+    ({"version_name": "Autodesk Revit 2026.5", "version_number": "2026"}, "2026.5"),
+    ({"version_name": "Autodesk Revit 2026", "version_number": "2026"}, "2026"),
+    ({"version_name": "Autodesk Revit 2024.3", "version_number": "2024"}, "2024"),
+    ({"version_name": "Autodesk Revit 2025.6"}, "2025.5"),
+    ({"version_name": None, "version_number": "2027"}, "2027"),
+    ({"version_name": "Autodesk Revit", "version_number": "2025"}, "2025"),
+    ({"version_name": None, "version_number": None}, None),
+    ({}, None),
+])
+def test_the_lesson_version_comes_from_the_environment(revit, expected):
+    assert checking.lesson_version({"revit": revit}) == expected
+
+
+def test_lesson_version_edge_cases():
+    assert checking.lesson_version(None) is None and checking.lesson_version({"revit": None}) is None
+
+
+def test_the_revit_version_filters_and_verifies_lessons(seed_library):
+    old = dict(CAPS, revit={"version_number": "2023", "version_build": "x", "version_name": "Autodesk Revit 2023"})
+    assert _checked(new_addin(caps=old), WALL_CODE, seed_library)["guidance"] == []     # >=2024 <2028 only
+    unknown = dict(CAPS, revit={"version_number": None, "version_build": None, "version_name": None})
+    out = _checked(new_addin(caps=unknown), WALL_CODE, seed_library)
+    assert out["guidance"][0]["id"] == WALL and out["guidance"][0]["applicability"] == "unknown"
 
 
 # -- the tool list, the status resource and `revit-bridge check` -----------------------------------

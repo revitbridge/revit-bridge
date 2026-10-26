@@ -105,8 +105,9 @@ describes the starter generator; it does not install or launch the add-in.
      that do not exist, missing parameters, readings to confirm (units, "on
      F2"), a stale snapshot.
    - `check_code(code, parameters)` — compiles C# for `execute_code` in Revit
-     without running it (no token): `diagnostics` with lines in your code and
-     `hints`; `checked: false` when the add-in cannot (an older add-in).
+     without running it (no token): `diagnostics` with lines in your code,
+     `hints`, and `guidance` (the lessons for those errors, or pointers once it
+     compiles); `checked: false` when the add-in cannot (an older add-in).
    - `get_guidance(stage=...)` — lessons for writing Revit code (the snippet
      contract, units, API pitfalls), chosen by stage, API symbols, OST_*
      categories and compiler errors; read-only, no token.
