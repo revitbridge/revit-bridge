@@ -26,6 +26,12 @@ device (JSON-RPC error ``-32001``) is ``error: "declined_on_device"`` with
 the token consumed and a ledger line; capability packs (``run_pack``),
 probes and reads never carry ``confirm``.
 
+A run that failed - not a refusal - and whose ``error`` names .NET exception
+types (``guidance.scan.exception_types``) gets a ``hint`` pointing at the fix
+lessons for them: ``call get_guidance(stage="fix", exceptions=[...])`` and
+what to do after (``failure_hint``, E3); a pack's retry advice follows it.
+Without such a name the ``hint`` is what it was. The reply keeps its keys.
+
 ``client`` needs ``send_code(code, parameters, confirm=None)`` - a client
 that receives ``confirm`` sends it in the request params, waits at least
 ``CONFIRM_TIMEOUT_SECONDS`` for the answer and reports a JSON-RPC error's
@@ -37,6 +43,7 @@ no ledger line.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -46,10 +53,12 @@ from pydantic import BaseModel, Field
 from revit_bridge.capabilities.schema import evaluate_preconditions, precondition_categories
 from revit_bridge.capabilities.store import SolidifiedTool, ToolStore
 from revit_bridge.evidence.ledger import CODE_HEAD_CHARS, LOCAL_SCOPE, Ledger, code_fields, summarize_result
+from revit_bridge.guidance.scan import exception_types
 from revit_bridge.revit import sandbox
 from revit_bridge.revit.client import DECLINED_ON_DEVICE
 from revit_bridge.revit.settings import env_flag
-from revit_bridge.snapshot.project import DEFAULT_CATEGORIES, take_snapshot
+from revit_bridge.snapshot.project import DEFAULT_CATEGORIES, ProjectSnapshot, fingerprint_of, levels_of, take_snapshot
+from revit_bridge.snapshot.query import RevitQueryExecutor
 from revit_bridge.spec.gate import Confirmation, Gate, GateError, confirmation_invalid, confirmation_required
 from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec, projection_hash
 from revit_bridge.validators.base import ValidationReport, ValidatorError, failed_report
@@ -67,6 +76,9 @@ RETRY_HINT = (
 )
 CONFIRM_TITLE = "revit-bridge"
 DECLINED_ERROR = "declined_on_device"
+# E3: a failed run whose error names .NET exception types points at the fix lessons for them.
+EXCEPTION_HINT = ('call get_guidance(stage="fix", exceptions={exceptions}) and read those lessons before '
+                  'changing the code; the changed code needs check_code and a new confirmation.')
 
 
 class ExecutionResult(BaseModel):
@@ -172,15 +184,25 @@ async def ensure_connected(client) -> None:
 
 
 async def document_info(client, warnings: list[str]) -> dict:
-    """``{title, revit_version}`` of the open document, for the ledger.
+    """``{title, revit_version, fingerprint}`` of the open document, for the ledger.
 
-    A transport failure (``OSError``: refused, reset, closed) propagates -
-    nothing reached Revit and the caller must not consume the token.
+    ``fingerprint`` is ``snapshot.project.fingerprint_of`` over the title, the
+    version and the levels, read with one more read-only query (the rows of
+    ``RevitQueryExecutor.get_levels``): for the same model state it equals the
+    ``fingerprint`` of ``get_project_snapshot``, so two documents with the same
+    title but other levels tell apart. When the levels cannot be read it is
+    None with a ``document: fingerprint ...`` warning and nothing else changes;
+    when the document itself was not identified (no title) it is None and the
+    levels are not read. A transport failure (``OSError``: refused, reset,
+    closed) propagates - nothing reached Revit and the caller must not consume
+    the token.
     """
     try:
         resp = await asyncio.wait_for(client.send_code(DOCUMENT_PROBE), timeout=PRECONDITION_SNAPSHOT_TIMEOUT)
         if resp.success and isinstance(resp.result, dict):
-            return {"title": resp.result.get("Title"), "revit_version": resp.result.get("RevitVersion")}
+            title, version = resp.result.get("Title"), resp.result.get("RevitVersion")
+            fingerprint = await _fingerprint(client, title, version, warnings) if title is not None else None
+            return {"title": title, "revit_version": version, "fingerprint": fingerprint}
         warnings.append(f"document: {resp.error or 'no result'}")
     except asyncio.TimeoutError:
         warnings.append("document: probe timed out")
@@ -188,7 +210,36 @@ async def document_info(client, warnings: list[str]) -> dict:
         raise
     except Exception as exc:  # noqa: BLE001 - the ledger line is still written
         warnings.append(f"document: {type(exc).__name__}: {exc}")
-    return {"title": None, "revit_version": None}
+    return {"title": None, "revit_version": None, "fingerprint": None}
+
+
+async def _fingerprint(client, title, revit_version, warnings: list[str]) -> str | None:
+    """The document fingerprint, or None with a warning when the levels cannot be read (5 s budget)."""
+    try:
+        rows = await asyncio.wait_for(RevitQueryExecutor(client).get_levels(strict=True),
+                                      timeout=PRECONDITION_SNAPSHOT_TIMEOUT)
+        levels = levels_of(rows)
+    except asyncio.TimeoutError:
+        warnings.append("document: fingerprint skipped: levels query timed out")
+        return None
+    except OSError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - no fingerprint, the execution goes on
+        warnings.append(f"document: fingerprint skipped: {type(exc).__name__}: {exc}")
+        return None
+    return fingerprint_of(str(title or ""), str(revit_version or ""), levels)
+
+
+# Snapshot warnings that leave its fingerprint without a document or without levels.
+_FINGERPRINT_FAILED = ("document:", "levels:", "snapshot code failed", "snapshot: unparseable")
+
+
+def snapshot_document(snapshot: ProjectSnapshot) -> dict:
+    """``document_info``'s shape from a snapshot: its fingerprint, or None when the
+    snapshot could not read the document or the levels."""
+    failed = any(str(w).startswith(_FINGERPRINT_FAILED) for w in snapshot.warnings)
+    return {"title": snapshot.document.get("title"), "revit_version": snapshot.document.get("revit_version"),
+            "fingerprint": None if failed else snapshot.fingerprint}
 
 
 async def preconditions(client, pack: SolidifiedTool, warnings: list[str]) -> tuple[list[str], dict]:
@@ -215,8 +266,7 @@ async def preconditions(client, pack: SolidifiedTool, warnings: list[str]) -> tu
         warnings.append(f"preconditions skipped: {type(exc).__name__}: {exc}")
         return [], await document_info(client, warnings)
     warnings.extend(f"snapshot: {w}" for w in snapshot.warnings)
-    document = {"title": snapshot.document.get("title"), "revit_version": snapshot.document.get("revit_version")}
-    return evaluate_preconditions(pack, snapshot), document
+    return evaluate_preconditions(pack, snapshot), snapshot_document(snapshot)
 
 
 def _record(ledger: Ledger, *, host: str, scope: str, bypass: bool, action: str, tool: SolidifiedTool | None,
@@ -269,6 +319,20 @@ def device_confirmation(code: str, conf: Confirmation | None) -> dict:
 
 def _declined(resp) -> bool:
     return getattr(resp, "error_code", None) == DECLINED_ON_DEVICE
+
+
+def failure_hint(error: str | None, hint: str | None = None) -> str | None:
+    """``hint`` for a failed run (E3): when ``error`` names .NET exception types,
+    ``EXCEPTION_HINT`` with them (``hint``, if any, after it); otherwise ``hint`` as is.
+
+    Only the failures of a run that was not refused use it: a refusal
+    (``confirmation_*``, ``blocked``, a pack check) keeps its own hint.
+    """
+    names = exception_types(error)
+    if not names:
+        return hint
+    call = EXCEPTION_HINT.format(exceptions=json.dumps(names))
+    return f"{call} {hint}" if hint else call
 
 
 # -- run_pack ---------------------------------------------------------------------------------
@@ -331,7 +395,8 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
         failed, document = await preconditions(client, pack, warnings)
     except Exception as e:                     # noqa: BLE001 - nothing reached Revit: nothing to record
         store.record_usage(name, success=False)
-        return ExecutionResult(success=False, tool=name, error=str(e) or type(e).__name__, warnings=warnings)
+        error = str(e) or type(e).__name__
+        return ExecutionResult(success=False, tool=name, error=error, warnings=warnings, hint=failure_hint(error))
 
     def refused(error: str) -> ExecutionResult:
         """A refusal before the token is consumed: no execution, but a ledger line
@@ -369,7 +434,8 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
             code=None, document=document, resp=None, validation=None, success=False, error=str(e),
             duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
         )
-        return ExecutionResult(success=False, tool=name, error=str(e), evidence_id=evidence_id, warnings=warnings)
+        return ExecutionResult(success=False, tool=name, error=str(e), evidence_id=evidence_id, warnings=warnings,
+                               hint=failure_hint(str(e)))
 
     validation: ValidationReport | None = None
     if validator is not None and resp.success:
@@ -388,7 +454,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     )
     return ExecutionResult(
         success=success, tool=name, result=resp.result, error=error, validation=validation,
-        evidence_id=evidence_id, warnings=warnings, hint=None if resp.success else RETRY_HINT,
+        evidence_id=evidence_id, warnings=warnings, hint=None if resp.success else failure_hint(error, RETRY_HINT),
     )
 
 
@@ -413,7 +479,8 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
         await ensure_connected(client)
         document = await document_info(client, warnings)
     except Exception as e:                     # noqa: BLE001 - nothing reached Revit: nothing to record
-        return ExecutionResult(success=False, error=str(e) or type(e).__name__, warnings=warnings)
+        error = str(e) or type(e).__name__
+        return ExecutionResult(success=False, error=error, warnings=warnings, hint=failure_hint(error))
     refusal = gate_refusal(gate, token, projection, env, consume=True, scope=scope)   # the last step before Revit
     if refusal:
         return _refused(refusal)
@@ -428,7 +495,8 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
             code=code, document=document, resp=None, validation=None, success=False, error=str(e),
             duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
         )
-        return ExecutionResult(success=False, error=str(e), evidence_id=evidence_id, warnings=warnings)
+        return ExecutionResult(success=False, error=str(e), evidence_id=evidence_id, warnings=warnings,
+                               hint=failure_hint(str(e)))
     duration_ms = int((time.monotonic() - started) * 1000)
     error = DECLINED_ERROR if _declined(resp) else resp.error       # the designer said No on the device
     evidence_id = _record(
@@ -437,7 +505,8 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
         duration_ms=duration_ms, preconditions_failed=[], warnings=warnings,
     )
     return ExecutionResult(success=resp.success, result=resp.result, error=error,
-                           evidence_id=evidence_id, warnings=warnings)
+                           evidence_id=evidence_id, warnings=warnings,
+                           hint=None if resp.success else failure_hint(error))
 
 
 # -- revalidate -----------------------------------------------------------------------------------

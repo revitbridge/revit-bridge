@@ -6,6 +6,69 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Ledger lines and `plan_verification` plans: `document` gains
+  `fingerprint`, the `get_project_snapshot` fingerprint of the document
+  (title, Revit version, levels). `execute_code` and `run_tool` read the
+  levels with one more read-only query before the code runs (a pack with
+  preconditions takes it from the snapshot it already reads); when that read
+  fails the fingerprint is null with a `document: fingerprint skipped: ...`
+  warning and the execution goes on. Lines written before keep their two
+  keys; `evidence` and `validate` read both alike.
+  `revit_bridge.snapshot.query.LEVELS_CODE` is the C# of that levels read,
+  and `revit_bridge.snapshot.project.levels_of` parses its rows.
+- Run-time exceptions lead to lessons (E3): when `execute_code` or `run_tool`
+  fails (not a refusal) and the error names .NET exception types, `hint` says
+  `call get_guidance(stage="fix", exceptions=[...])` with those names, then
+  that the changed code needs `check_code` and a new confirmation; a pack's
+  retry advice follows. Without such a name the hint is what it was, and the
+  reply has no new keys. `revit_bridge.guidance.scan.exception_types(error)`
+  finds the names (full or short, in order, each once; the bare word
+  `Exception` and quoted names do not count);
+  `revit_bridge.execution.failure_hint` writes the hint.
+- Two seed lessons with `triggers.exceptions`, each body under 2300 bytes,
+  checked against the revit-api-docs data set (Revit 2026), the RevitAPI.xml
+  of seven builds 2024.0-2027.2, and a compile of their code in the
+  `execute_code` wrapper against 2024.0, 2025.0 and 2026.4:
+  - `revit-families/activate-symbol-before-placement` - activate an inactive
+    `FamilySymbol` before `NewFamilyInstance`
+    (`Autodesk.Revit.Exceptions.ArgumentException` "The symbol is not
+    active"; `InvalidOperationException` for a level-based family placed
+    without a level);
+  - `revit-elements/floor-ceiling-type-and-level-ids` - `Floor.Create` /
+    `Ceiling.Create` need a FloorType / CeilingType id and a Level id
+    (`ArgumentException` otherwise).
+
+  The two categories' `SKILL.md` lesson indexes are regenerated.
+
+### Changed
+
+- Instructions (server rendering), step 8: a failed run whose `hint` names
+  `get_guidance` - call it before fixing, then `check_code` and confirm
+  again (one line). To stay within 60 lines the Notes name only the
+  `revit://connection-status` resource (the other three are still served).
+  The `revit-bridge` skill's step 8 says the same in one paragraph: report the
+  failure, read the lessons, then `check_code`, a new verification plan, a new
+  card and a new confirmation; after a pack, write `execute_code` C# instead.
+
+- `reconcile`: a value that is not among the names of a truncated candidate
+  list (a snapshot lists at most 50 types of a category) is now a
+  `model_fact` question - query that category first, ask only if the name is
+  still not there - and its `why` says so. The conflict is still
+  `ambiguous`; every other `ambiguous` value is still a `user_intent`
+  question.
+
+### Fixed
+
+- `verify_execution` took two open documents with the same title and Revit
+  version for one: the plan's and the execution's documents now compare by
+  fingerprint (`document_changed` when the levels differ). Title and version
+  still decide when either side has no fingerprint (an older line, a failed
+  levels read), when the plan was made after the execution, and for the
+  document read at verify time - the executed code may itself add or move
+  levels. `revit_bridge.verification.flow.same_document` holds the rule.
+
 ## [0.4.0] - 2026-10-26
 
 Writing Revit code through the bridge: `check_code` compiles `execute_code` C#

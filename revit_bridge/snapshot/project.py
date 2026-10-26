@@ -218,6 +218,12 @@ def validate_categories(categories: list[str] | None) -> list[str]:
     return cleaned
 
 
+def levels_of(rows: list) -> list[LevelInfo]:
+    """``LevelInfo`` from rows shaped ``{Id, Name, ElevationMm}``: the snapshot block's
+    ``Levels`` and the rows of ``RevitQueryExecutor.get_levels`` alike. Raises on a bad row."""
+    return _levels(rows)
+
+
 def fingerprint_of(title: str, revit_version: str, levels: list[LevelInfo]) -> str:
     """sha256 over title, Revit version and the sorted (name, elevation) pairs."""
     parts = [title, revit_version] + [

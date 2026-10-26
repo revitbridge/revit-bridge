@@ -23,6 +23,11 @@ the card, or "will not be verified") and run it after the execution
 executed but verification failed, executed and not verified. A host such as
 the web demo has none of these tools.
 
+Step 8 of the server rendering also says what to do with a failed run whose
+``hint`` names get_guidance (E3: Revit threw an exception the hint names):
+call it before fixing, then check_code and confirm again. To stay within 60
+lines, the Notes name only the revit://connection-status resource.
+
 Step 3 carries the clarification rules of both renderings (P10): known facts
 are not asked again, a question's ``kind`` says whether the model is checked
 first (``model_fact``), ``blocks`` names the steps to hold while the rest goes
@@ -143,6 +148,7 @@ _FLOW_TAIL = {
 8. Read the reply: `success` only if Revit succeeded AND the pack's validator passed
    (validation_failed: the model did not change as claimed). Quote `validation.checks`,
    error, evidence_id; validate(evidence_id) re-checks, evidence(limit, tool) lists runs.
+   If `hint` names get_guidance: call it before fixing, then check_code and confirm again.
    After execute_code: verify_execution(evidence_id, verification_id); report exactly one
    of: executed and verified / executed, verification failed / executed, not verified.
 """,
@@ -193,8 +199,7 @@ _NOTES_HEAD = """\
 
 _NOTES_TAIL = {
     "server": """\
-- solidify_tool saves code that worked as a v1 pack. Resources: revit://stats,
-  revit://tools/{name}, revit://evidence/recent, revit://connection-status.
+- solidify_tool saves code that worked as a v1 pack. Resources: revit://connection-status.
 """,
     "host": "",
 }

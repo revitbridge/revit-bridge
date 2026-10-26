@@ -9,11 +9,13 @@ from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ExecutionResult, revalidate, run_code, run_pack
 from revit_bridge.revit.client import RevitClient
+from revit_bridge.snapshot.project import take_snapshot
+from revit_bridge.snapshot.query import LEVELS_CODE
 from revit_bridge.spec.gate import Gate
 from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec
 
 from tests.fake_revit import FakeRevit
-from tests.test_gate import WALL, counting_handler
+from tests.test_gate import PROJECT1, WALL, counting_handler
 
 
 @pytest.fixture
@@ -67,7 +69,7 @@ def test_run_pack_from_a_web_host_writes_its_own_ledger(host):
     record = host["ledger"].get(result.evidence_id)
     assert record["host"] == "web" and record["action"] == "run_tool" and record["success"] is True
     assert record["token_prefix"] == token[:6] and record["confirmed_by"] == "designer"
-    assert record["document"] == {"title": "Project1", "revit_version": "2026"}
+    assert record["document"] == PROJECT1                           # the snapshot of the preconditions
     assert host["store"].load("create_wall").execution_count == 1
     assert host["gate"].peek(token).used_at                          # consumed
     # the result is the MCP JSON shape
@@ -410,6 +412,67 @@ def test_revalidate_refuses_a_record_from_another_scope(host):
     assert unknown == {"error": "unknown_evidence", "evidence_id": "ev_20000101T000000_ffffff"}
 
 
+# -- the document of a ledger line carries the snapshot fingerprint -----------------------------------
+
+def test_the_execution_records_the_fingerprint_get_project_snapshot_reports(host):
+    code = "return 1;"
+    token = code_token(host["gate"], code)
+
+    async def scenario(client, fake):
+        ran = await run_code(gate=host["gate"], ledger=host["ledger"], client=client, code=code, parameters=None,
+                             token=token, host="web")
+        codes = [req["params"]["code"] for req in fake.requests]
+        return ran, await take_snapshot(client), codes
+
+    ran, snapshot, codes = with_fake(counting_handler(0, 0), scenario)
+    assert ran.success is True and ran.warnings == []
+    record = host["ledger"].get(ran.evidence_id)
+    assert record["document"] == PROJECT1 == {"title": "Project1", "revit_version": "2026",
+                                              "fingerprint": snapshot.fingerprint}
+    assert codes[1:] == [LEVELS_CODE, code]                    # one more read-only round trip, before the code
+
+
+def test_a_failed_levels_read_leaves_the_fingerprint_null_and_the_execution_runs(host):
+    counting = counting_handler(0, 0)
+
+    def levels_fail(request):
+        if request["method"] == "send_code_to_revit" and request["params"]["code"] == LEVELS_CODE:
+            return FakeRevit.code_result(request["id"], None, success=False, error="no levels today")
+        return counting(request)
+
+    code = "return 1;"
+    ran = with_fake(levels_fail, lambda c, f: run_code(
+        gate=host["gate"], ledger=host["ledger"], client=c, code=code, parameters=None,
+        token=code_token(host["gate"], code), host="web"))
+    assert ran.success is True and ran.error is None
+    assert ran.warnings == ["document: fingerprint skipped: RevitQueryError: no levels today"]
+    record = host["ledger"].get(ran.evidence_id)
+    assert record["document"] == {"title": "Project1", "revit_version": "2026", "fingerprint": None}
+    assert record["warnings"] == ran.warnings and record["success"] is True
+
+    # a document the probe cannot name gets no fingerprint and no levels read at all
+    async def unnamed(client, fake):
+        out = await run_code(gate=host["gate"], ledger=host["ledger"], client=client, code=code, parameters=None,
+                             token=code_token(host["gate"], code), host="web")
+        return out, [req["params"]["code"] for req in fake.requests]
+
+    out, codes = with_fake(FakeRevit.default_handler, unnamed)
+    assert out.success is True and LEVELS_CODE not in codes
+    assert host["ledger"].get(out.evidence_id)["document"] == {"title": None, "revit_version": None,
+                                                              "fingerprint": None}
+
+
+def test_a_snapshot_that_could_not_read_the_levels_gives_no_fingerprint():
+    from revit_bridge.execution import snapshot_document
+    from tests.test_spec import snapshot
+
+    assert snapshot_document(snapshot()) == {"title": "Project1", "revit_version": "2026", "fingerprint": "abc"}
+    for warning in ("levels: no view", "document: no document", "snapshot code failed: CS0103",
+                    "snapshot: unparseable result (empty object)"):
+        assert snapshot_document(snapshot(warnings=[warning]))["fingerprint"] is None, warning
+    assert snapshot_document(snapshot(warnings=["links: no permission"]))["fingerprint"] == "abc"
+
+
 # -- phase 7: ad-hoc code asks the designer on the device; packs, probes and reads do not ----------
 
 def _confirm_fields(fake: FakeRevit) -> list:
@@ -429,8 +492,8 @@ def test_run_code_carries_confirm_and_run_pack_does_not(host):
                              token=token, host="web")
         confirms = _confirm_fields(fake)
         assert ran.success is True
-        # the document probe before it and the ping carry nothing; the execution carries the card
-        assert confirms[:-1] == [None, None] and fake.requests[-1]["params"]["code"] == code
+        # the ping, the document probe and its levels read carry nothing; the execution carries the card
+        assert confirms[:-1] == [None, None, None] and fake.requests[-1]["params"]["code"] == code
         assert confirms[-1] == {"kind": "execute_code", "title": "revit-bridge", "message": spec.card()}
         assert fake.requests[-1]["params"]["parameters"] == [7]
         assert spec.card().startswith("Task: two lines\nCode: execute_code (2 lines)")

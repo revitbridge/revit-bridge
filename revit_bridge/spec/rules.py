@@ -10,9 +10,11 @@ still stands between the draft and a confirmable spec.
 Question shape v1 (P10, D18): ``id, param, text, why, options, allow_other``
 plus ``kind`` and ``blocks``. ``kind`` says who can answer:
 ``user_intent`` (the designer: every ``missing_params`` question and every
-``ambiguous`` value ``reconcile`` finds), ``model_fact`` (a ``not_found``
-value: the model was claimed to hold something it does not - check the
-model before asking) or ``technical`` (reserved: the bridge never asks one;
+``ambiguous`` value ``reconcile`` finds among the candidates), ``model_fact``
+(a ``not_found`` value: the model was claimed to hold something it does
+not - check the model before asking; likewise a value missing from a
+truncated candidate list: query that category first, then ask) or
+``technical`` (reserved: the bridge never asks one;
 a failed lookup or check is not a question for the designer). ``blocks``
 lists the steps an open question holds up (``spec``, ``execute``,
 ``build``); a required parameter holds ``["spec", "execute"]``. The bridge
@@ -101,6 +103,8 @@ _T = {
         "stale": "规格依据的快照 {claimed} 与当前快照 {current} 不符，请重新对账",
         "tool_missing": "工具 {tool} 不存在",
         "no_candidates": "Revit \u672a\u8fd4\u56de\u5019\u9009\u3002",
+        "query_first": "\u3002\u5148\u7528\u4e0a\u9762\u7684 query \u8865\u67e5\u8be5\u7c7b\u522b\uff0c"
+                       "\u4ecd\u627e\u4e0d\u5230\u518d\u95ee\u3002",
     },
     "en": {
         "ask": "Please provide {param} ({description}).",
@@ -118,6 +122,7 @@ _T = {
         "stale": "the spec was reconciled against snapshot {claimed}, the current one is {current}; reconcile again",
         "tool_missing": "tool {tool} does not exist",
         "no_candidates": " Revit returned no candidates.",
+        "query_first": ". Run that query for the category first; ask only if the name is still not there.",
     },
 }
 
@@ -287,22 +292,29 @@ _CONFLICT_KINDS: dict[str, QuestionKind] = {"ambiguous": "user_intent", "not_fou
 
 
 def conflict_question(conflict: Conflict, pdef: dict, snapshot: ProjectSnapshot | None,
-                      language: str = "zh") -> Question | None:
+                      language: str = "zh", *, truncated: bool = False) -> Question | None:
     """The question for an ``ambiguous`` or ``not_found`` value of a pack parameter, or None.
 
     Options are the conflict's candidates as the snapshot lists them, in the
-    conflict's order; ``why`` is the conflict's message.
+    conflict's order; ``why`` is the conflict's message. ``truncated`` marks
+    an ``ambiguous`` conflict that only says the value is not among the names
+    a truncated list shows: that is a ``model_fact`` (query the category
+    first, then ask), and ``why`` says so.
     """
     kind = _CONFLICT_KINDS.get(conflict.kind)
     if kind is None:
         return None
+    why = conflict.message
+    if truncated and conflict.kind == "ambiguous":
+        kind = "model_fact"
+        why += _t(language, "query_first")
     by_value = {o["value"]: o for o in _options_for(pdef, snapshot)}
     options = [by_value[v] for v in conflict.available if v in by_value]
     return Question(
         id=f"q_{conflict.param}",
         param=conflict.param,
         text=_ask_text(pdef, options, language),
-        why=_why(conflict.message, pdef, options, language),
+        why=_why(why, pdef, options, language),
         options=options,
         kind=kind,
         blocks=list(REQUIRED_BLOCKS),
@@ -410,6 +422,7 @@ def reconcile(draft: TaskSpec, snapshot: ProjectSnapshot,
     """Compare the draft with the snapshot: conflicts, open questions, readings to confirm."""
     lang = draft.language
     conflicts: list[Conflict] = []
+    truncated: list[Conflict] = []          # the ambiguous ones a truncated candidate list produced
     questions: list[Question] = []
     required: list[Interpretation] = []
 
@@ -445,6 +458,7 @@ def reconcile(draft: TaskSpec, snapshot: ProjectSnapshot,
                     param=b.name, claimed=b.value, kind="ambiguous", available=list(candidates),
                     message=_t(lang, "truncated", param=b.name, claimed=b.value, shown=len(candidates),
                                count=known.total, category=known.category)))
+                truncated.append(conflicts[-1])
             elif not exact:
                 if len(fuzzy) > 1:
                     conflicts.append(Conflict(
@@ -471,7 +485,8 @@ def reconcile(draft: TaskSpec, snapshot: ProjectSnapshot,
         for conflict in conflicts:
             pdef = params.get(conflict.param)
             if pdef is not None and conflict.param in answered:
-                question = conflict_question(conflict, pdef, snapshot, lang)
+                question = conflict_question(conflict, pdef, snapshot, lang,
+                                             truncated=any(conflict is t for t in truncated))
                 if question is not None and all(q.id != question.id for q in questions):
                     questions.append(question)
         questions.extend(missing_params(pack, {b.name: b.value for b in draft.parameters}, snapshot, lang))

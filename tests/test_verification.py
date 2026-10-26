@@ -1,10 +1,11 @@
 """P9 read-back verification: plan_verification before an execute_code, verify_execution after it.
 
 The fake add-in below keeps a tiny model (elements with a category and
-parameters) and answers the bridge's fixed probes from it: the document
-probe, the count probe of count_delta, the existence probe of created_ids
-and the read-back probe of param_equals. Any other code is "the execution":
-it adds the elements the scenario says it creates.
+parameters, and levels) and answers the bridge's fixed probes from it: the
+document probe and its levels read, the count probe of count_delta, the
+existence probe of created_ids and the read-back probe of param_equals. Any
+other code is "the execution": it adds the elements (and levels) the
+scenario says it creates.
 """
 from __future__ import annotations
 
@@ -21,12 +22,15 @@ import revit_bridge.mcp_server as server
 from revit_bridge.evidence.ledger import OPTIONAL_FIELDS, RECORD_FIELDS, Ledger
 from revit_bridge.revit.client import RevitClient
 from revit_bridge.revit.pool import RevitClientPool
+from revit_bridge.snapshot.project import LevelInfo, fingerprint_of
+from revit_bridge.snapshot.query import LEVELS_CODE
 from revit_bridge.validators.builtin import _compare
 from revit_bridge.verification import VerificationStore, check_template, plan, verify
 from revit_bridge.verification.store import TTL_SECONDS, iso
 
 from tests.fake_revit import FakeRevit
-from tests.test_gate import WALL, _acall, _call, code_spec, counting_handler, isolated_store, revit_env  # noqa: F401
+from tests.test_gate import (  # noqa: F401
+    PROJECT1, WALL, _acall, _call, code_spec, counting_handler, isolated_store, revit_env)
 
 WALLS_CODE = 'return new { Status = "Created", Ids = new long[] { 501, 502 } };'
 
@@ -37,6 +41,8 @@ class Model:
     def __init__(self, title: str = "Project1", existing: int = 3, creates: dict | None = None,
                  result=None, fail_execution: bool = False):
         self.title = title
+        self.levels = [{"Id": 1, "Name": "L1", "ElevationMm": 0.0}]
+        self.creates_levels: list[dict] = []
         self.elements = {100 + i: {"category": "OST_Walls", "params": {}} for i in range(existing)}
         self.creates = creates if creates is not None else {
             501: {"category": "OST_Walls", "params": {"WALL_USER_HEIGHT_PARAM": ("length_mm", 3000.0),
@@ -60,10 +66,12 @@ class Model:
         ids = [int(x) for x in re.findall(r"(\d+)L", code)]
         if code == execution.DOCUMENT_PROBE:
             return FakeRevit.code_result(rid, {"Title": self.title, "RevitVersion": "2026"})
+        if code == LEVELS_CODE:
+            return FakeRevit.code_result(rid, self.levels)
         if "CategoryNames" in code:
             return FakeRevit.code_result(rid, {
                 "Document": {"Title": self.title, "RevitVersion": "2026", "IsWorkshared": False},
-                "Levels": [{"Id": 1, "Name": "L1", "ElevationMm": 0.0}], "CategoryNames": {}, "Warnings": []})
+                "Levels": self.levels, "CategoryNames": {}, "Warnings": []})
         if "GetElementCount" in code and category:
             return FakeRevit.code_result(rid, self.count(category.group(1)))
         if "Matches = matches" in code and category:
@@ -91,6 +99,7 @@ class Model:
         if self.fail_execution:
             return FakeRevit.code_result(rid, None, success=False, error="CS0103: boom")
         self.elements.update(copy.deepcopy(self.creates))
+        self.levels = self.levels + copy.deepcopy(self.creates_levels)
         return FakeRevit.code_result(rid, self.result)
 
 
@@ -125,7 +134,7 @@ def test_count_delta_two_walls_verifies_and_three_fails(revit_env, isolated_stor
                                params={"category": "OST_Walls", "expected": 2})
         assert planned["template"] == "count_delta" and planned["params"] == {"category": "OST_Walls", "expected": 2}
         assert planned["baseline"] == {"count": 3} and model.executions == 0     # sampled, nothing ran
-        assert planned["document"] == {"title": "Project1", "revit_version": "2026"}
+        assert planned["document"] == PROJECT1                     # with the snapshot's fingerprint
         assert re.fullmatch(r"v_[0-9a-f]{16}", planned["verification_id"])
         created = datetime.fromisoformat(planned["created_at"].replace("Z", "+00:00"))
         expires = datetime.fromisoformat(planned["expires_at"].replace("Z", "+00:00"))
@@ -173,7 +182,7 @@ def test_the_verify_line_in_the_ledger(revit_env, isolated_store):
     assert line["success"] is True and line["error"] is None and line["scope"] == "local" and line["host"] == "mcp"
     assert line["validation"]["validator"] == "created_ids" and line["validation"]["passed"] is True
     assert line["params"] == {"template": "created_ids", "params": {"category": "OST_Walls"}}
-    assert line["document"] == {"title": "Project1", "revit_version": "2026"}
+    assert line["document"] == PROJECT1
     executed = server._ledger.get(out["evidence_id"])
     assert list(executed) == list(RECORD_FIELDS)                               # the execution line is unchanged
     assert line["spec_hash"] == executed["spec_hash"] and line["code_sha256"] == executed["code_sha256"]
@@ -407,6 +416,122 @@ def test_another_document_is_document_changed(revit_env, isolated_store):
     ran_elsewhere, reads_elsewhere, back = with_model(model, revit_env, scenario)
     assert ran_elsewhere["error"] == "document_changed" and reads_elsewhere["error"] == "document_changed"
     assert back["verified"] is True                   # document_changed did not consume the plan
+
+
+def test_same_title_other_levels_is_another_document(revit_env, isolated_store):
+    """The fingerprint (title, version, levels) tells two documents named Project1 apart."""
+    model = Model(title="Project1")
+
+    async def scenario(fake):
+        planned = await _acall("plan_verification", template="created_ids", params={"category": "OST_Walls"})
+        model.levels = [{"Id": 7, "Name": "Level 1", "ElevationMm": 0.0}]     # another Project1 is active
+        out = await _execute()
+        other = await _acall("verify_execution", evidence_id=out["evidence_id"],
+                             verification_id=planned["verification_id"])
+        replanned = await _acall("plan_verification", template="created_ids", params={"category": "OST_Walls"})
+        out = await _execute()
+        same = await _acall("verify_execution", evidence_id=out["evidence_id"],
+                            verification_id=replanned["verification_id"])
+        return planned, out, other, same
+
+    planned, out, other, same = with_model(model, revit_env, scenario)
+    executed = server._ledger.get(out["evidence_id"])["document"]
+    assert planned["document"]["title"] == executed["title"] == "Project1"
+    assert planned["document"]["fingerprint"] != executed["fingerprint"]
+    assert executed["fingerprint"] == fingerprint_of("Project1", "2026", [LevelInfo(id=7, name="Level 1",
+                                                                                     elevation_mm=0.0)])
+    assert other["verified"] is False and other["error"] == "document_changed"
+    assert same["verified"] is True and same["error"] is None
+
+
+def test_code_that_adds_a_level_still_verifies(revit_env, isolated_store):
+    """The document read after the execution is compared by title and version: the code may move levels."""
+    model = Model()
+    model.creates_levels = [{"Id": 2, "Name": "L2", "ElevationMm": 3000.0}]
+
+    async def scenario(fake):
+        planned = await _acall("plan_verification", template="count_delta",
+                               params={"category": "OST_Walls", "expected": 2})
+        out = await _execute()
+        ok = await _acall("verify_execution", evidence_id=out["evidence_id"],
+                          verification_id=planned["verification_id"])
+        return planned, ok
+
+    planned, ok = with_model(model, revit_env, scenario)
+    line = server._ledger.get(ok["verification_evidence_id"])
+    assert line["document"]["fingerprint"] != planned["document"]["fingerprint"]       # L2 is new
+    assert ok["verified"] is True and ok["error"] is None
+
+
+def test_records_and_plans_without_a_fingerprint_compare_by_title_and_version(tmp_path):
+    """Lines written before the fingerprint existed (or whose levels read failed) still verify,
+    and so does a plan made after the execution; a fingerprint taken before both still decides."""
+    other_levels = fingerprint_of("Project1", "2026", [LevelInfo(id=9, name="X", elevation_mm=0.0)])
+    cases = {
+        "old": ({"title": "Project1", "revit_version": "2026"}, None),
+        "null": ({"title": "Project1", "revit_version": "2026", "fingerprint": None}, None),
+        "other_title": ({"title": "Project2", "revit_version": "2026"}, None),
+        "planned_after": (dict(PROJECT1, fingerprint=other_levels), "2026-01-01T00:00:00Z"),
+        "planned_before": (dict(PROJECT1, fingerprint=other_levels), "2999-01-01T00:00:00Z"),
+    }
+
+    async def go():
+        model = Model()
+        model.elements.update(copy.deepcopy(model.creates))
+        async with FakeRevit(model.handler) as fake:
+            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=2)
+            store, ledger = VerificationStore(tmp_path / "plans"), Ledger(tmp_path / "evidence")
+            replies = {}
+            for name, (document, ts) in cases.items():
+                planned = await plan(store, client, "created_ids", {"category": "OST_Walls"})
+                assert planned["document"] == PROJECT1
+                record = {"action": "execute_code", "success": True, "document": document,
+                          "result_summary": {"ids": [501, 502]}}
+                ran = ledger.append(dict(record, ts=ts) if ts else record)
+                replies[name] = await verify(store, ledger, client, ran, planned["verification_id"])
+            await client.disconnect()
+            return replies
+    replies = asyncio.run(go())
+    assert {k: (v["verified"], v["error"]) for k, v in replies.items()} == {
+        "old": (True, None), "null": (True, None), "other_title": (False, "document_changed"),
+        "planned_after": (True, None), "planned_before": (False, "document_changed")}
+
+
+def test_same_document_rules():
+    from revit_bridge.verification.flow import same_document
+    a = {"title": "P", "revit_version": "2026", "fingerprint": "aaaa"}
+    assert same_document(a, dict(a)) and not same_document(a, dict(a, fingerprint="bbbb"))
+    assert same_document(a, dict(a, fingerprint="bbbb"), by_fingerprint=False)
+    assert same_document(a, {"title": "P", "revit_version": "2026"})                 # an old record
+    assert same_document(a, dict(a, fingerprint=None))                                # a failed levels read
+    assert not same_document(a, {"title": "P", "revit_version": "2027"})
+    assert not same_document(a, {"title": "Q", "revit_version": "2026", "fingerprint": "aaaa"}, by_fingerprint=False)
+    assert not same_document({"title": None, "revit_version": None, "fingerprint": None}, a)
+    assert not same_document(None, a) and not same_document(a, {})
+
+
+def test_an_old_ledger_line_still_lists_and_validates(revit_env, isolated_store):
+    """evidence() and validate() read lines without document.fingerprint as before."""
+    old = {"host": "mcp", "action": "run_tool", "tool": "create_wall", "tool_version": "1.0.0",
+           "params": dict(WALL), "document": {"title": "Project1", "revit_version": "2026"}, "success": True,
+           "result_summary": {"ids": [4242]},
+           "validation": {"validator": "count_delta", "passed": True, "checks": [],
+                          "before": {"category": "OST_Walls", "count": 1}, "after": {}}}
+    evidence_id = server._ledger.append(old)
+
+    async def scenario():
+        async with FakeRevit(counting_handler(2, 2)) as fake:            # the wall is there now
+            revit_env(fake.port)
+            try:
+                return await _acall("evidence", limit=5), await _acall("validate", evidence_id=evidence_id)
+            finally:
+                await RevitClientPool.disconnect()
+
+    listed, again = asyncio.run(scenario())
+    assert [r["id"] for r in listed] == [evidence_id]
+    assert listed[0]["document"] == {"title": "Project1", "revit_version": "2026"}
+    assert again["evidence_id"] == evidence_id and again["passed"] is True
+    assert again["checks"][0]["detail"] == "OST_Walls: before 1, after 2, delta 1, expected 1"
 
 
 def test_count_delta_planned_after_the_execution_cannot_pass(tmp_path):

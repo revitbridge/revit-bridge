@@ -11,4 +11,4 @@ Lessons in this category are chosen and ordered by the revit-bridge MCP server's
 
 ## Lessons
 
-None yet.
+- [activate-symbol-before-placement](lessons/activate-symbol-before-placement.md) - `if (!symbol.IsActive) symbol.Activate();` before `NewFamilyInstance`, or `ArgumentException` "The symbol is not active"

@@ -111,7 +111,7 @@ describes the starter generator; it does not install or launch the add-in.
      compiles); `checked: false` when the add-in cannot (an older add-in).
    - `get_guidance(stage=...)` — lessons for writing Revit code (the snippet
      contract, units, API pitfalls), chosen by stage, API symbols, OST_*
-     categories and compiler errors; read-only, no token.
+     categories, compiler errors and run-time exceptions; read-only, no token.
    - `confirm_spec(spec)` with the TaskSpec the designer confirmed, then
      `run_tool(name, params, token)` with exactly the confirmed values.
    - `plan_verification(template, params)` / `verify_execution(evidence_id,
@@ -120,7 +120,9 @@ describes the starter generator; it does not install or launch the add-in.
 
    `execute_code` takes arbitrary C# for tasks no pack covers. The code runs
    inside Revit with `document` in scope and a transaction already open; end it
-   with `return <object>;`. `solidify_tool` saves code that worked as a new pack.
+   with `return <object>;`. When it throws in Revit, the reply's `hint` names
+   the `get_guidance(stage="fix", exceptions=[...])` call for that exception.
+   `solidify_tool` saves code that worked as a new pack.
 
    A pack's validator (`created_ids`, `count_delta` or `param_equals`) asserts
    the outcome after the run: `success` is true only when Revit succeeded *and*

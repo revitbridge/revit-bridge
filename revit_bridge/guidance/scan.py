@@ -18,6 +18,14 @@
 
 ``recommend`` then matches the names against ``triggers.symbols`` as whole
 words, case sensitively.
+
+``exception_types(error)`` is the same kind of scan for a run-time failure
+(E3): the .NET exception type names in the error text the add-in returns
+(``Autodesk.Revit.Exceptions.ArgumentException: ...``, or the short name the
+add-in reports, ``ArgumentException: ...``), in order, each once.
+``execute_code`` / ``run_tool`` put them in their ``hint`` as
+``get_guidance(stage="fix", exceptions=[...])``, which matches them against
+``triggers.exceptions`` (a short name by its last segment).
 """
 from __future__ import annotations
 
@@ -52,10 +60,32 @@ _LITERALS_AND_COMMENTS = re.compile(
 )
 _SYMBOL = re.compile(r"(?<![A-Za-z0-9_])[A-Z][A-Za-z0-9_]*")
 
+# A dotted .NET type name whose last segment ends in "Exception" after at least
+# one more character (the bare word "Exception" names no type worth a lesson).
+# A name in quotes or backticks is a mention - a compiler message quoting an
+# unknown type, say - not what was thrown, and is skipped.
+_EXCEPTION = re.compile(
+    r"(?<![A-Za-z0-9_.'\"`])"
+    r"((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Z][A-Za-z0-9_]*Exception)"
+    r"(?![A-Za-z0-9_'\"`])"
+)
+
 
 def strip_literals_and_comments(code: str) -> str:
     """``code`` with every comment and string / char literal replaced by a space."""
     return _LITERALS_AND_COMMENTS.sub(" ", code or "")
+
+
+def exception_types(error: str | None) -> list[str]:
+    """The .NET exception type names in an error text, full or short, in order of
+    first appearance, each once; ``[]`` for no text or no name."""
+    if not isinstance(error, str) or not error:
+        return []
+    names: list[str] = []
+    for name in _EXCEPTION.findall(error):
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def code_symbols(code: str | None) -> list[str]:
