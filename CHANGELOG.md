@@ -6,6 +6,19 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Ledger lines and `plan_verification` plans: `document` gains
+  `fingerprint`, the `get_project_snapshot` fingerprint of the document
+  (title, Revit version, levels). `execute_code` and `run_tool` read the
+  levels with one more read-only query before the code runs (a pack with
+  preconditions takes it from the snapshot it already reads); when that read
+  fails the fingerprint is null with a `document: fingerprint skipped: ...`
+  warning and the execution goes on. Lines written before keep their two
+  keys; `evidence` and `validate` read both alike.
+  `revit_bridge.snapshot.query.LEVELS_CODE` is the C# of that levels read,
+  and `revit_bridge.snapshot.project.levels_of` parses its rows.
+
 ### Changed
 
 - `reconcile`: a value that is not among the names of a truncated candidate
@@ -14,6 +27,16 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   still not there - and its `why` says so. The conflict is still
   `ambiguous`; every other `ambiguous` value is still a `user_intent`
   question.
+
+### Fixed
+
+- `verify_execution` took two open documents with the same title and Revit
+  version for one: the plan's and the execution's documents now compare by
+  fingerprint (`document_changed` when the levels differ). Title and version
+  still decide when either side has no fingerprint (an older line, a failed
+  levels read), when the plan was made after the execution, and for the
+  document read at verify time - the executed code may itself add or move
+  levels. `revit_bridge.verification.flow.same_document` holds the rule.
 
 ## [0.4.0] - 2026-10-26
 

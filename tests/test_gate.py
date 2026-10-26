@@ -15,6 +15,8 @@ import revit_bridge.execution as execution
 import revit_bridge.mcp_server as server
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.revit.pool import RevitClientPool
+from revit_bridge.snapshot.project import LevelInfo, fingerprint_of
+from revit_bridge.snapshot.query import LEVELS_CODE
 
 from revit_bridge.spec.gate import Gate
 from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec
@@ -76,8 +78,16 @@ def drop_pack(store: ToolStore, name: str, text: str) -> None:
     (store.user_dir / f"{name}.yaml").write_text(text, encoding="utf-8")
 
 
+# The document counting_handler holds, as the ledger records it.
+PROJECT1 = {"title": "Project1", "revit_version": "2026",
+            "fingerprint": fingerprint_of("Project1", "2026", [LevelInfo(id=1, name="L1", elevation_mm=0.0)])}
+
+
 def counting_handler(before: int, after: int, result=None):
-    """A fake add-in whose count probe answers ``before`` until code has run, then ``after``."""
+    """A fake add-in whose count probe answers ``before`` until code has run, then ``after``.
+
+    It holds one document (Project1, Revit 2026, level L1 at 0) and answers the
+    snapshot block, the document probe and the levels query from it."""
     state = {"ran": False}
 
     def handler(request):
@@ -93,6 +103,8 @@ def counting_handler(before: int, after: int, result=None):
                 return FakeRevit.code_result(rid, after if state["ran"] else before)
             if code == execution.DOCUMENT_PROBE:
                 return FakeRevit.code_result(rid, {"Title": "Project1", "RevitVersion": "2026"})
+            if code == LEVELS_CODE:                                       # the document fingerprint's read
+                return FakeRevit.code_result(rid, [{"Id": 1, "Name": "L1", "ElevationMm": 0.0}])
             state["ran"] = True
             return FakeRevit.code_result(rid, result if result is not None else {"Status": "Created", "ElementId": 4242})
         return FakeRevit.default_handler(request)
@@ -624,7 +636,7 @@ def test_run_tool_success_needs_the_validator_to_pass(isolated_store, revit_env,
                 assert record["validation"]["passed"] is False
                 assert record["tool"] == "create_wall" and record["tool_version"] == "1.0.0"
                 assert record["token_prefix"] == token[:6] and record["confirmed_by"] == "designer"
-                assert record["document"] == {"title": "Project1", "revit_version": "2026"}
+                assert record["document"] == PROJECT1
                 assert record["params"] == WALL and record["result_summary"]["ids"] == [4242]
                 assert record["host"] == "mcp" and record["action"] == "run_tool"
                 assert isolated_store.load("create_wall").failure_count == 1   # counted as a failure

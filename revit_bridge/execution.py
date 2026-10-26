@@ -49,7 +49,8 @@ from revit_bridge.evidence.ledger import CODE_HEAD_CHARS, LOCAL_SCOPE, Ledger, c
 from revit_bridge.revit import sandbox
 from revit_bridge.revit.client import DECLINED_ON_DEVICE
 from revit_bridge.revit.settings import env_flag
-from revit_bridge.snapshot.project import DEFAULT_CATEGORIES, take_snapshot
+from revit_bridge.snapshot.project import DEFAULT_CATEGORIES, ProjectSnapshot, fingerprint_of, levels_of, take_snapshot
+from revit_bridge.snapshot.query import RevitQueryExecutor
 from revit_bridge.spec.gate import Confirmation, Gate, GateError, confirmation_invalid, confirmation_required
 from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec, projection_hash
 from revit_bridge.validators.base import ValidationReport, ValidatorError, failed_report
@@ -172,15 +173,25 @@ async def ensure_connected(client) -> None:
 
 
 async def document_info(client, warnings: list[str]) -> dict:
-    """``{title, revit_version}`` of the open document, for the ledger.
+    """``{title, revit_version, fingerprint}`` of the open document, for the ledger.
 
-    A transport failure (``OSError``: refused, reset, closed) propagates -
-    nothing reached Revit and the caller must not consume the token.
+    ``fingerprint`` is ``snapshot.project.fingerprint_of`` over the title, the
+    version and the levels, read with one more read-only query (the rows of
+    ``RevitQueryExecutor.get_levels``): for the same model state it equals the
+    ``fingerprint`` of ``get_project_snapshot``, so two documents with the same
+    title but other levels tell apart. When the levels cannot be read it is
+    None with a ``document: fingerprint ...`` warning and nothing else changes;
+    when the document itself was not identified (no title) it is None and the
+    levels are not read. A transport failure (``OSError``: refused, reset,
+    closed) propagates - nothing reached Revit and the caller must not consume
+    the token.
     """
     try:
         resp = await asyncio.wait_for(client.send_code(DOCUMENT_PROBE), timeout=PRECONDITION_SNAPSHOT_TIMEOUT)
         if resp.success and isinstance(resp.result, dict):
-            return {"title": resp.result.get("Title"), "revit_version": resp.result.get("RevitVersion")}
+            title, version = resp.result.get("Title"), resp.result.get("RevitVersion")
+            fingerprint = await _fingerprint(client, title, version, warnings) if title is not None else None
+            return {"title": title, "revit_version": version, "fingerprint": fingerprint}
         warnings.append(f"document: {resp.error or 'no result'}")
     except asyncio.TimeoutError:
         warnings.append("document: probe timed out")
@@ -188,7 +199,36 @@ async def document_info(client, warnings: list[str]) -> dict:
         raise
     except Exception as exc:  # noqa: BLE001 - the ledger line is still written
         warnings.append(f"document: {type(exc).__name__}: {exc}")
-    return {"title": None, "revit_version": None}
+    return {"title": None, "revit_version": None, "fingerprint": None}
+
+
+async def _fingerprint(client, title, revit_version, warnings: list[str]) -> str | None:
+    """The document fingerprint, or None with a warning when the levels cannot be read (5 s budget)."""
+    try:
+        rows = await asyncio.wait_for(RevitQueryExecutor(client).get_levels(strict=True),
+                                      timeout=PRECONDITION_SNAPSHOT_TIMEOUT)
+        levels = levels_of(rows)
+    except asyncio.TimeoutError:
+        warnings.append("document: fingerprint skipped: levels query timed out")
+        return None
+    except OSError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - no fingerprint, the execution goes on
+        warnings.append(f"document: fingerprint skipped: {type(exc).__name__}: {exc}")
+        return None
+    return fingerprint_of(str(title or ""), str(revit_version or ""), levels)
+
+
+# Snapshot warnings that leave its fingerprint without a document or without levels.
+_FINGERPRINT_FAILED = ("document:", "levels:", "snapshot code failed", "snapshot: unparseable")
+
+
+def snapshot_document(snapshot: ProjectSnapshot) -> dict:
+    """``document_info``'s shape from a snapshot: its fingerprint, or None when the
+    snapshot could not read the document or the levels."""
+    failed = any(str(w).startswith(_FINGERPRINT_FAILED) for w in snapshot.warnings)
+    return {"title": snapshot.document.get("title"), "revit_version": snapshot.document.get("revit_version"),
+            "fingerprint": None if failed else snapshot.fingerprint}
 
 
 async def preconditions(client, pack: SolidifiedTool, warnings: list[str]) -> tuple[list[str], dict]:
@@ -215,8 +255,7 @@ async def preconditions(client, pack: SolidifiedTool, warnings: list[str]) -> tu
         warnings.append(f"preconditions skipped: {type(exc).__name__}: {exc}")
         return [], await document_info(client, warnings)
     warnings.extend(f"snapshot: {w}" for w in snapshot.warnings)
-    document = {"title": snapshot.document.get("title"), "revit_version": snapshot.document.get("revit_version")}
-    return evaluate_preconditions(pack, snapshot), document
+    return evaluate_preconditions(pack, snapshot), snapshot_document(snapshot)
 
 
 def _record(ledger: Ledger, *, host: str, scope: str, bypass: bool, action: str, tool: SolidifiedTool | None,

@@ -59,6 +59,20 @@ QUERY_KINDS: dict[str, tuple[str, ...]] = {
 }
 
 
+# The levels read (``get_levels``, ``query("levels")``, the execution's document
+# fingerprint): rows {Id, Name, ElevationMm}, the shape of the snapshot block.
+LEVELS_CODE = (
+    'var levels = new FilteredElementCollector(document)\n'
+    '    .OfClass(typeof(Level))\n'
+    '    .Cast<Level>()\n'
+    '    .OrderBy(l => l.Elevation)\n'
+    '    .Select(l => new { Id = l.Id.Value, Name = l.Name, '
+    'ElevationMm = Math.Round(l.Elevation * 304.8, 1) })\n'
+    '    .ToList();\n'
+    'return levels;'
+)
+
+
 class RevitQueryError(RuntimeError):
     """Revit answered, but with an error (compile failure, no document, timeout)."""
 
@@ -108,17 +122,7 @@ class RevitQueryExecutor:
 
     async def get_levels(self, strict: bool = False) -> list[dict]:
         """Query all levels via send_code_to_revit (no dedicated command for this)."""
-        code = (
-            'var levels = new FilteredElementCollector(document)\n'
-            '    .OfClass(typeof(Level))\n'
-            '    .Cast<Level>()\n'
-            '    .OrderBy(l => l.Elevation)\n'
-            '    .Select(l => new { Id = l.Id.Value, Name = l.Name, '
-            'ElevationMm = Math.Round(l.Elevation * 304.8, 1) })\n'
-            '    .ToList();\n'
-            'return levels;'
-        )
-        resp = await self.client.send_code(code)
+        resp = await self.client.send_code(LEVELS_CODE)
         return _list_result(resp, strict)
 
     async def trigger_selection(self) -> list[dict]:

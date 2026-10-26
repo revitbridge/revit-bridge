@@ -9,7 +9,7 @@ store, and the model shows it under the card as one line of text.
 ``plan(store, client, template, params)``::
 
     {"verification_id", "template", "params", "baseline": {"count"} | null,
-     "document": {"title", "revit_version"}, "created_at", "expires_at"}
+     "document": {"title", "revit_version", "fingerprint"}, "created_at", "expires_at"}
     | {"error": "invalid_template", "problems": [...]}          nothing written
     | {"error": "revit_unreachable" | "probe_failed" | "store_failed", "message"}
 
@@ -23,13 +23,22 @@ store, and the model shows it under the card as one line of text.
 one), ``not_executed`` (the record's ``success`` is false),
 ``unknown_verification`` / ``verification_used`` / ``verification_expired``,
 ``document_changed`` (the document of the plan differs from the execution's
-or from the one open now, or the open one cannot be identified),
+or from the one open now, or the open one cannot be identified; see
+``same_document``),
 ``revit_unreachable`` (nothing could be read).
 Otherwise the validator's ``after`` runs on the recorded result (its ids,
 ``extract_ids``) or, for ``count_delta``, on the baseline; the plan is
 consumed and a ledger line with ``action: "verify_execution"`` is written.
 ``verified`` is true only when the validator passed - and, for
 ``count_delta``, the execution was recorded after the baseline was taken.
+
+Documents compare by ``fingerprint`` (title, version and levels) when both
+identities carry one and both were taken before the code ran: the plan's and
+the execution's in the usual order (plan, confirm, execute). Otherwise - an
+execution record or a plan without a fingerprint (written before it existed,
+or its levels query failed), a plan made after the execution, and always the
+document read at verify time, after the code that may itself have added or
+moved levels - title and Revit version decide.
 """
 from __future__ import annotations
 
@@ -97,6 +106,26 @@ def _reply(evidence_id: Any, verification_id: Any, template: str | None = None, 
     }
 
 
+def same_document(a: dict | None, b: dict | None, by_fingerprint: bool = True) -> bool:
+    """Whether two ``document_info`` identities name the same document.
+
+    With ``by_fingerprint`` and a fingerprint on both, the fingerprints decide;
+    otherwise title and Revit version do. One without a title is no identity.
+    """
+    a, b = a or {}, b or {}
+    if not a.get("title") or not b.get("title"):
+        return False
+    if by_fingerprint and a.get("fingerprint") and b.get("fingerprint"):
+        return a["fingerprint"] == b["fingerprint"]
+    return (a.get("title"), a.get("revit_version")) == (b.get("title"), b.get("revit_version"))
+
+
+def _planned_before(saved: dict, record: dict) -> bool:
+    """The plan was taken before the execution was recorded (True when either time is unreadable)."""
+    planned, ran = parse_iso(saved.get("created_at")), parse_iso(record.get("ts"))
+    return planned is None or ran is None or planned <= ran
+
+
 def _order_check(record: dict, saved: dict) -> Check | None:
     """count_delta: a failing check when the execution was recorded before the baseline."""
     ran, planned = parse_iso(record.get("ts")), parse_iso(saved.get("created_at"))
@@ -130,7 +159,8 @@ async def verify(store: VerificationStore, ledger: Ledger, client, evidence_id: 
     except Exception:  # noqa: BLE001 - nothing reached Revit: nothing to record, the plan stays
         return _reply(evidence_id, verification_id, template, error="revit_unreachable")
     planned = saved.get("document")
-    if record.get("document") != planned or current != planned or not (planned or {}).get("title"):
+    if (not same_document(record.get("document"), planned, by_fingerprint=_planned_before(saved, record))
+            or not same_document(current, planned, by_fingerprint=False)):
         return _reply(evidence_id, verification_id, template, error="document_changed")
 
     validator, spec, cfg, keywords = validator_call(template, params)

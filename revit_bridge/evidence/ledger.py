@@ -8,7 +8,7 @@ document, what came back and what the validator concluded::
      "spec_hash": ..., "projection_hash": ..., "token_prefix": ...,
      "confirmed_by": ..., "channel": ..., "params": {...},
      "code_sha256": ..., "code_head": "<first 200 chars>",
-     "document": {"title": ..., "revit_version": ...},
+     "document": {"title": ..., "revit_version": ..., "fingerprint": ...},
      "success": bool, "error": ..., "result_summary": {...},
      "validation": {...} | null, "duration_ms": int,
      "preconditions_failed": [...], "warnings": [...]}
@@ -16,6 +16,9 @@ document, what came back and what the validator concluded::
 Parameters are recorded as given (packs carry no secrets); code only as its
 hash and first 200 characters. ``scope`` (0.3) is the device the execution
 ran on, or ``"local"``; lines written before it existed read as ``"local"``.
+``document.fingerprint`` (after 0.4.0) is the snapshot fingerprint of the
+document the execution ran on (title, version, levels), or null when the
+levels could not be read; older lines have no such key.
 
 A read-back check (``verify_execution``) is a line of its own with
 ``action`` and ``tool`` both ``"verify_execution"``, the report in
