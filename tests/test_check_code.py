@@ -410,6 +410,7 @@ def test_tool_names_and_the_check_code_schema():
     assert set(tools) == {
         "get_project_snapshot", "query", "missing_params", "reconcile", "confirm_spec", "check_code",
         "execute_code", "solidify_tool", "list_tools", "get_tool_choices", "run_tool", "evidence", "validate",
+        "get_guidance",
     }
     check = tools["check_code"]
     assert check.annotations.model_dump(by_alias=True)["readOnlyHint"] is True

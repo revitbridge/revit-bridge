@@ -19,14 +19,16 @@ def test_declared_dependencies_are_the_allowed_set():
     assert data["project"]["scripts"] == {"revit-bridge": "revit_bridge.mcp_server:main"}
 
 
-def test_wheel_bundles_packs_and_skills():
+def test_wheel_bundles_packs_skills_and_guidance():
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     included = data["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
     assert included == {
         "capabilities": "revit_bridge/capabilities/builtin",
         "plugin/skills": "revit_bridge/skills",
+        "plugin/guidance": "revit_bridge/guidance_content",
     }
-    assert "plugin/skills" in data["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+    sdist = data["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+    assert "plugin/skills" in sdist and "plugin/guidance" in sdist
 
 
 def test_importing_the_server_pulls_no_forbidden_modules():

@@ -107,6 +107,9 @@ describes the starter generator; it does not install or launch the add-in.
    - `check_code(code, parameters)` — compiles C# for `execute_code` in Revit
      without running it (no token): `diagnostics` with lines in your code and
      `hints`; `checked: false` when the add-in cannot (an older add-in).
+   - `get_guidance(stage=...)` — lessons for writing Revit code (the snippet
+     contract, units, API pitfalls), chosen by stage, API symbols, OST_*
+     categories and compiler errors; read-only, no token.
    - `confirm_spec(spec)` with the TaskSpec the designer confirmed, then
      `run_tool(name, params, token)` with exactly the confirmed values.
 
@@ -147,7 +150,7 @@ Hosts that run their own confirmation flow can set
 `REVIT_BRIDGE_ALLOW_UNCONFIRMED=1`.
 
 Resources: `revit://stats`, `revit://tools/{name}`, `revit://evidence/recent`,
-`revit://connection-status`.
+`revit://connection-status`, `revit://guidance/index`.
 
 The plugin ships an eval suite (`plugin/evals/`, the three baseline tasks and
 two second-turn cases, with mocks of the MCP server). Run it by hand from

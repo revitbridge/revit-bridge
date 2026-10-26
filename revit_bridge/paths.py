@@ -15,6 +15,7 @@ data root that every host shares.
     auth_dir()                  <data_root>/auth (pairing codes, device tokens)
     builtin_capabilities_dir()  packs shipped in the wheel, or <repo>/capabilities
     skills_dir()                skills shipped in the wheel, or <repo>/plugin/skills
+    guidance_dir()              guidance content shipped in the wheel, or <repo>/plugin/guidance
 
 Nothing here creates a directory; the code that writes creates what it needs.
 """
@@ -90,3 +91,15 @@ def skills_dir() -> Path:
     if packaged.is_dir():
         return packaged
     return _REPO_ROOT / "plugin" / "skills"
+
+
+def guidance_dir() -> Path:
+    """The framework guidance content: inside the wheel, or the repo's ``plugin/guidance``.
+
+    The wheel ships it as ``revit_bridge/guidance_content`` - a content
+    directory next to the ``revit_bridge.guidance`` code package, not inside it.
+    """
+    packaged = _PACKAGE_DIR / "guidance_content"
+    if packaged.is_dir():
+        return packaged
+    return _REPO_ROOT / "plugin" / "guidance"
