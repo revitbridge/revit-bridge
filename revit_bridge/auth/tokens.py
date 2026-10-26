@@ -4,8 +4,8 @@ Slot token helpers - pure functions shared by the web relay and its tests.
 .. deprecated:: 0.3
    Slots are gone: a remote connection is a *device* now, paired with a
    pairing code and authenticated with its own token
-   (:mod:`revit_bridge.auth.devices`). These functions are kept for one
-   version so a host can migrate, and are removed in 0.4.
+   (:mod:`revit_bridge.auth.devices`). These functions are kept so a host
+   can migrate: deprecated since 0.3; removal planned for 0.5.
 
 A "slot" is one remote Revit connection on the web host. Each slot may be
 protected by a pre-shared token. The functions here only read configuration
@@ -41,7 +41,7 @@ _TRUE_VALUES = {"1", "true", "yes"}
 def slot_token_required(env: Mapping[str, str] | None = None) -> bool:
     """True when the deployment demands a token for every slot.
 
-    Deprecated (0.3), removed in 0.4: see the module docstring.
+    Deprecated since 0.3; removal planned for 0.5: see the module docstring.
     """
     env = os.environ if env is None else env
     return env.get(ENV_REQUIRE_SLOT_TOKEN, "").strip().lower() in _TRUE_VALUES
@@ -57,8 +57,8 @@ def load_slot_tokens(
     Raises ``RuntimeError`` when a referenced secret file is unreadable or
     empty, or when tokens are required but none are configured.
 
-    Deprecated (0.3), removed in 0.4: ``DeviceStore.redeem`` issues a token
-    per device instead of a pre-shared one per slot.
+    Deprecated since 0.3; removal planned for 0.5: ``DeviceStore.redeem``
+    issues a token per device instead of a pre-shared one per slot.
     """
     env = os.environ if env is None else env
     tokens: dict[str, str] = {
@@ -98,7 +98,8 @@ def verify_slot_token(tokens: Mapping[str, str], slot_id: str | int | None, prov
 
     Returns False for unknown slots, missing tokens and non-string input.
 
-    Deprecated (0.3), removed in 0.4: use ``DeviceStore.verify_device``.
+    Deprecated since 0.3; removal planned for 0.5: use
+    ``DeviceStore.verify_device``.
     """
     if slot_id is None or not isinstance(provided, str):
         return False
@@ -115,8 +116,9 @@ def parse_handshake_token(first_message: str | bytes | None) -> str | None:
     ``{"type": "auth", "slot_id": "1", "token": "..."}``. Anything that is
     not a JSON object with a string ``token`` yields ``None``.
 
-    Deprecated (0.3), removed in 0.4: the handshake carries ``device_id``
-    now, and the token is checked with ``DeviceStore.verify_device``.
+    Deprecated since 0.3; removal planned for 0.5: the handshake carries
+    ``device_id`` now, and the token is checked with
+    ``DeviceStore.verify_device``.
     """
     if first_message is None:
         return None

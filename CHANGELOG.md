@@ -265,6 +265,14 @@ the data directory gains `verifications/`. Other replies only gain keys.
   `revit-core` and `revit-addin-dev` skills and the reworded `revit-bridge`
   skill.
 
+### Deprecated
+
+- `revit_bridge.auth.tokens` (the slot helpers `slot_token_required`,
+  `load_slot_tokens`, `verify_slot_token`, `parse_handshake_token`) and the
+  `MCP_BRIDGE_SLOT_TOKEN*` environment variables: deprecated since 0.3;
+  removal planned for 0.5 (0.3.0 announced it for 0.4). They still work in
+  0.4; use `revit_bridge.auth.devices`.
+
 ### Fixed
 
 - `missing_params`: a known value of null or a blank string no longer hides
@@ -333,7 +341,7 @@ runs.
 - `revit_bridge.auth.tokens` (the slot helpers `slot_token_required`,
   `load_slot_tokens`, `verify_slot_token`, `parse_handshake_token`) and with
   them the `MCP_BRIDGE_SLOT_TOKEN*` environment variables: devices replace
-  slots. They still work in 0.3 and are removed in 0.4.
+  slots. They still work in 0.3 and are removed in 0.4 (postponed to 0.5).
 
 ## [0.2.1] - 2026-09-21
 

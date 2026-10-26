@@ -78,14 +78,21 @@ def test_handshake_parsing():
     assert parse_handshake_token(None) is None
 
 
-def test_the_slot_helpers_are_marked_for_removal_in_0_4():
-    """Phase 7: devices replace slots; these stay one version with a deprecation note."""
+def test_the_slot_helpers_are_marked_for_removal_in_0_5():
+    """Phase 7: devices replace slots; the slot helpers stay with a deprecation note.
+
+    S5: the removal announced for 0.4 is postponed to 0.5.
+    """
     import revit_bridge.auth.tokens as tokens
     from revit_bridge.auth import DeviceStore
 
-    assert "deprecated:: 0.3" in tokens.__doc__ and "removed in 0.4" in tokens.__doc__
+    assert "deprecated:: 0.3" in tokens.__doc__
+    assert "deprecated since 0.3; removal planned for 0.5" in tokens.__doc__
+    assert "removed in 0.4" not in tokens.__doc__
     assert "revit_bridge.auth.devices" in tokens.__doc__
     for func in (tokens.slot_token_required, tokens.load_slot_tokens,
                  tokens.verify_slot_token, tokens.parse_handshake_token):
-        assert "0.4" in func.__doc__, func.__name__
+        doc = " ".join(func.__doc__.split())
+        assert "Deprecated since 0.3; removal planned for 0.5" in doc, func.__name__
+        assert "0.4" not in doc, func.__name__
     assert DeviceStore is not None                       # the replacement is exported beside them
