@@ -12,8 +12,10 @@
    ``checked: false`` with ``capability`` and ``reason``: the code was not
    pre-compiled, which says nothing about whether it compiles.
 3. ``hints`` - one per distinct diagnostic whose id is in ``HINT_IDS``,
-   naming the Revit version when it is known and pointing at an API lookup
-   tool.
+   naming the Revit version when it is known and, when the error names an
+   API, pointing at ``search_revit_api`` of the revit-api-docs server: cite
+   the data set version from its first output line, or mark the API
+   unverified without it.
 4. ``guidance`` - lessons from the guidance library (``library``), items
    shaped as ``get_guidance`` items, chosen without a model:
 
@@ -78,6 +80,7 @@ from revit_bridge.revit.environment import get_environment, version_label
 SCHEMA_VERSION = 1
 HINT_IDS = ("CS1061", "CS0117", "CS0246", "CS0103", "CS1501", "CS1503", "CS7036")
 API_LOOKUP_TOOL = "search_revit_api"
+API_LOOKUP_SERVER = "revit-api-docs"
 # The usings the CS0246 hint names come from the snippet contract lesson, its one source;
 # should it not load, the hint points at the lesson instead.
 SNIPPET_USINGS = SNIPPET_CONTRACT_USINGS or f"see the {CONTRACT_ID} lesson"
@@ -210,8 +213,10 @@ def hint_for(diagnostic: dict, label: str | None = None) -> dict | None:
         query = symbol.replace(".", " ")
     text = _sentence(label, body)
     if query:
-        text += (f" If an API lookup tool ({API_LOOKUP_TOOL}) is connected, query '{query}' "
-                 f"before changing the code.")
+        text += (f" If the host has the {API_LOOKUP_SERVER} MCP server, query '{query}' with "
+                 f"{API_LOOKUP_TOOL} before changing the code and cite the data set version from its "
+                 f"first output line (e.g. data set: Revit 2026); without that tool, mark this API as "
+                 f"unverified.")
     return {"id": diag_id, "symbol": symbol, "text": text}
 
 

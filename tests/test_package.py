@@ -68,3 +68,19 @@ def test_the_0_1_slot_models_are_gone():
         assert not hasattr(models, name), name
         assert name not in spec.__all__, name
     assert {"TaskSpec", "ParamBinding", "Source", "Interpretation", "Action", "WorkflowState"} <= set(spec.__all__)
+
+
+def test_the_plugin_starts_only_revit_bridge_and_the_readme_shows_the_pair():
+    """S5: revit-api-docs is opt-in (its first run downloads 335 MB); the README shows both servers."""
+    import json
+    import re
+
+    plugin = json.loads((ROOT / "plugin" / ".mcp.json").read_text(encoding="utf-8"))
+    assert plugin == {"mcpServers": {"revit-bridge": {"command": "uvx", "args": ["revit-bridge"]}}}
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    section = readme[readme.index("## Pair with revit-api-docs"):readme.index("## Configure")]
+    assert len(section.strip().splitlines()) <= 15
+    pair = json.loads(re.search(r"```json\n(.*?)```", section, re.S).group(1))
+    assert pair["mcpServers"] == {"revit-bridge": {"command": "uvx", "args": ["revit-bridge"]},
+                                  "revit-api-docs": {"command": "uvx", "args": ["revit-api-docs"]}}
+    assert "uvx revit-api-docs download" in section and "TYPESAFE_API_KEY" in section

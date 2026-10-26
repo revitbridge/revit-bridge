@@ -173,6 +173,22 @@ two second-turn cases, with mocks of the MCP server). Run it by hand from
 `chcp 65001` first, or the Chinese prompts reach the model garbled); it is not
 part of CI.
 
+## Pair with revit-api-docs
+
+[revit-api-docs](https://github.com/revitbridge/revit-api-docs) is an optional
+second server: `search_revit_api` looks API names up in the Revit 2026 API
+reference, and `check_code` hints point at it. The plugin does not start it: add
+it with `claude mcp add revit-api-docs -- uvx revit-api-docs`, or in one config:
+
+```json
+{"mcpServers": {"revit-bridge": {"command": "uvx", "args": ["revit-bridge"]},
+                "revit-api-docs": {"command": "uvx", "args": ["revit-api-docs"]}}}
+```
+
+Its first run downloads a 335 MB data set (`uvx revit-api-docs download` fetches
+it ahead of time). Optional Jev reranking (`REVIT_API_DOCS_RERANK_PROVIDER=jev`,
+`TYPESAFE_API_KEY`): see [its README](https://github.com/revitbridge/revit-api-docs#configure).
+
 ## Configure
 
 | Variable | Default | Meaning |

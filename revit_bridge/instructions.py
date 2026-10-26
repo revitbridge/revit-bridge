@@ -75,7 +75,7 @@ SNIPPET_CONTRACT_SUMMARY = _CONTRACT.summary if _CONTRACT is not None else FALLB
 SNIPPET_CONTRACT_USINGS = _CONTRACT.usings() if _CONTRACT is not None else None    # check_code's CS0246 hint
 
 _INTRO = """\
-You are connected to a running Autodesk Revit through revit-bridge 0.3. The server
+You are connected to a running Autodesk Revit through revit-bridge 0.4. The server
 runs capability packs and C# in Revit; it never calls a model. You turn the
 designer's words into a TaskSpec in which every parameter has a source, {closing}
 """

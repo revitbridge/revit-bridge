@@ -54,6 +54,14 @@ REPLY_KEYS = {"schema_version", "checked", "compiled", "blocked", "capability", 
 ENV_KEYS = {"source", "revit", "runtime", "kit", "capability", "error"}
 
 
+def lookup(query: str) -> str:
+    """The sentence a hint ends with when its error names an API (S5 wording: revit-api-docs 0.2 puts
+    the data set version on its first output line)."""
+    return (f" If the host has the revit-api-docs MCP server, query '{query}' with search_revit_api before "
+            f"changing the code and cite the data set version from its first output line (e.g. data set: "
+            f"Revit 2026); without that tool, mark this API as unverified.")
+
+
 def new_addin(check_reply=FAILED_CHECK, caps=CAPS):
     """A handler for an add-in that has both new methods."""
     def handler(request):
@@ -293,8 +301,7 @@ def test_check_code_on_a_new_addin_compiles_without_running(revit_env):
     assert out["diagnostics"] == [CS1061] and out["truncated"] == 0 and out["fingerprint"] == "sha256:abc"
     assert out["hints"] == [{
         "id": "CS1061", "symbol": "LocationCurve",
-        "text": "Revit 2026.5: 'Wall' has no 'LocationCurve'. If an API lookup tool (search_revit_api) is "
-                "connected, query 'Wall LocationCurve' before changing the code.",
+        "text": "Revit 2026.5: 'Wall' has no 'LocationCurve'." + lookup("Wall LocationCurve"),
     }]
     # the code names ElementId and Wall: the lesson about the reported error first, bodies inline
     assert [g["id"] for g in out["guidance"]] == [
@@ -373,26 +380,21 @@ def test_check_code_without_the_feature_or_with_a_compiler_failure_is_not_checke
 
 @pytest.mark.parametrize("diag_id,message,symbol,text", [
     ("CS0117", "'Wall' does not contain a definition for 'Create'", "Create",
-     "Revit 2026.5: 'Wall' has no 'Create'. If an API lookup tool (search_revit_api) is connected, "
-     "query 'Wall Create' before changing the code."),
+     "Revit 2026.5: 'Wall' has no 'Create'." + lookup("Wall Create")),
     ("CS0246", "The type or namespace name 'FilteredElementColector' could not be found (are you missing "
                "a using directive or an assembly reference?)", "FilteredElementColector",
      "Revit 2026.5: type or namespace 'FilteredElementColector' is not found with the snippet's usings "
      "(System, System.Linq, System.Collections.Generic, Autodesk.Revit.DB, Autodesk.Revit.UI) and "
-     "references (base library, RevitAPI, RevitAPIUI). If an API lookup tool (search_revit_api) is "
-     "connected, query 'FilteredElementColector' before changing the code."),
+     "references (base library, RevitAPI, RevitAPIUI)." + lookup("FilteredElementColector")),
     ("CS0103", "The name 'doc' does not exist in the current context", "doc",
      "Revit 2026.5: 'doc' does not exist here; the snippet has only `document` and `parameters` in scope."),
     ("CS1501", "No overload for method 'Create' takes 3 arguments", "Create",
-     "Revit 2026.5: no overload of 'Create' takes 3 arguments. If an API lookup tool (search_revit_api) "
-     "is connected, query 'Create' before changing the code."),
+     "Revit 2026.5: no overload of 'Create' takes 3 arguments." + lookup("Create")),
     ("CS1503", "Argument 2: cannot convert from 'double' to 'Autodesk.Revit.DB.XYZ'", "XYZ",
-     "Revit 2026.5: argument 2 is 'double' but must be 'XYZ'. If an API lookup tool (search_revit_api) "
-     "is connected, query 'XYZ' before changing the code."),
+     "Revit 2026.5: argument 2 is 'double' but must be 'XYZ'." + lookup("XYZ")),
     ("CS7036", "There is no argument given that corresponds to the required parameter 'level' of "
                "'Wall.Create(Document, Curve, ElementId, bool)'", "Wall.Create",
-     "Revit 2026.5: 'Wall.Create' needs an argument for its parameter 'level'. If an API lookup tool "
-     "(search_revit_api) is connected, query 'Wall Create' before changing the code."),
+     "Revit 2026.5: 'Wall.Create' needs an argument for its parameter 'level'." + lookup("Wall Create")),
 ])
 def test_hints_for_the_listed_ids(diag_id, message, symbol, text):
     hint = checking.hint_for({"id": diag_id, "severity": "error", "message": message, "symbol": None},
@@ -407,7 +409,9 @@ def test_hints_only_for_the_listed_ids_once_each_and_without_a_version_when_unkn
     assert [h["id"] for h in hints] == ["CS1061"]
     assert hints[0]["text"].startswith("'Wall' has no 'LocationCurve'.")
     upper = checking.hint_for({"id": "CS0103", "message": "The name 'UnitTypeId' does not exist in the current context"})
-    assert upper["text"].endswith("query 'UnitTypeId' before changing the code.")
+    assert upper["text"].endswith(lookup("UnitTypeId"))
+    lower = checking.hint_for({"id": "CS0103", "message": "The name 'doc' does not exist in the current context"})
+    assert "search_revit_api" not in lower["text"] and "unverified" not in lower["text"]   # a scope slip: no lookup
     assert checking.hint_for({"id": "CS1061", "message": "no quotes here"}) is None
     assert set(checking.HINT_IDS) == {"CS1061", "CS0117", "CS0246", "CS0103", "CS1501", "CS1503", "CS7036"}
 
