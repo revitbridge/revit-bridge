@@ -153,6 +153,16 @@ Hosts that run their own confirmation flow can set
 Resources: `revit://stats`, `revit://tools/{name}`, `revit://evidence/recent`,
 `revit://connection-status`, `revit://guidance/index`.
 
+**Guidance layers and CLI.** `get_guidance` and `check_code` read the packaged
+lessons (framework) and up to three directories laid out the same way: company
+(`REVIT_BRIDGE_GUIDANCE_COMPANY`), project (`REVIT_BRIDGE_GUIDANCE_PROJECT`) and
+personal (`<data dir>/guidance`). A higher layer replaces a lesson of the same id,
+except a company lesson with `enforced: true`; a layer that fails validation is
+left out with a `layer_invalid` warning. `uvx revit-bridge guidance check` validates
+them (exit 1 on a problem), `guidance index [DIR] [--check]` rebuilds the lesson
+indexes and the `revit-core` skill export, and `guidance explain --stage fix --errors
+CS1061 --symbols Wall LocationCurve` prints what would be recommended, and why.
+
 The plugin ships an eval suite (`plugin/evals/`, the three baseline tasks and
 two second-turn cases, with mocks of the MCP server). Run it by hand from
 `plugin/` with `claude plugin eval .` (on Windows in a UTF-8 console:
@@ -169,10 +179,11 @@ part of CI.
 | `REVIT_BRIDGE_TIMEOUT` | `60` | Seconds to wait for a command to finish |
 | `REVIT_BRIDGE_ALLOW_UNCONFIRMED` | *(unset)* | `1` lifts the confirmation-token gate (host-internal flows only) |
 | `REVIT_BRIDGE_CONFIRM_TTL` | `600` | Seconds a confirmation token stays valid |
-| `REVIT_BRIDGE_DATA_DIR` | `%LOCALAPPDATA%
-evit-bridge` (Windows), `~/.local/share/revit-bridge` (else) | Per-user data: solidified packs, `usage.json`, the evidence ledger, `auth/devices.json` |
+| `REVIT_BRIDGE_DATA_DIR` | `%LOCALAPPDATA%\revit-bridge` (Windows), `~/.local/share/revit-bridge` (else) | Per-user data: solidified packs, `usage.json`, the evidence ledger, `auth/devices.json` |
 | `REVIT_BRIDGE_CAPABILITIES_DIR` | `<data dir>/capabilities` | User pack directory; the packs shipped in the wheel stay visible, a user pack of the same name replaces one |
 | `REVIT_BRIDGE_EVIDENCE_DIR` | `<data dir>/evidence` | Evidence ledger (`<YYYY-MM>.jsonl`) and pending confirmations |
+| `REVIT_BRIDGE_GUIDANCE_COMPANY` | *(unset)* | Company guidance layer: a directory laid out like `plugin/guidance`; its lessons replace packaged ones of the same id |
+| `REVIT_BRIDGE_GUIDANCE_PROJECT` | *(unset)* | Project guidance layer, above the company one; the personal layer is `<data dir>/guidance` when it exists |
 
 Development:
 
@@ -181,6 +192,8 @@ uv sync
 uv run pytest
 uv build
 uvx --from . revit-bridge check
+uv run revit-bridge guidance check plugin/guidance
+uv run revit-bridge guidance index plugin/guidance --check
 ```
 
 License: MIT. Issues and discussion: <https://github.com/revitbridge/revit-bridge/issues>.

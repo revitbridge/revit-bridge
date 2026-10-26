@@ -81,6 +81,36 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   storage types, built-in parameters, wall location curves, curve length and
   `Line.CreateBound`. API facts are checked against the Revit 2026 API
   documentation data set and the Revit API assemblies 2024-2027.
+- Guidance layers: `get_guidance` and `check_code` read the packaged lessons
+  (framework) plus a company (`REVIT_BRIDGE_GUIDANCE_COMPANY`), a project
+  (`REVIT_BRIDGE_GUIDANCE_PROJECT`) and a personal (`<data dir>/guidance`)
+  directory with the same layout, each optional. The same id in a higher
+  layer replaces the lower lesson whole (`index` lists the replaced one in
+  `omitted` as `overridden_by:<layer>`); a company lesson with
+  `enforced: true` is kept (warning `enforced_kept: <id> ignored <layer>`).
+  A higher layer's `guidance.yaml` may reorder or add categories and add
+  `always` categories, never set the budget. A layer that fails validation
+  is left out alone (warning `layer_invalid: <layer>: <first problem>`); the
+  framework still answers. `supersedes` now takes effect (`omitted` reason
+  `superseded_by:<id>`), across layers; a `supersedes` cycle rejects the
+  library. Every `get_guidance` reply's `warnings` start with the layer
+  warnings. Package API: `guidance.load_layers`,
+  `paths.guidance_layer_dirs()`.
+- `revit-bridge guidance check [DIR ...]` (validate the layers; every
+  problem and warning, exit 1 on a problem), `guidance index [DIR]
+  [--check]` (rebuild the generated parts: each category's `## Lessons`
+  index, the native skill export and the skill's contract block; `--check`
+  exits 1 when something is out of date) and `guidance explain --stage S`
+  (`--code`, `--errors`, `--symbols`, `--categories`, `--exceptions`,
+  `--revit`, `--inline`: what `get_guidance` would recommend, with `why`,
+  bytes and omitted lessons; no model, no Revit, no lesson bodies printed).
+- Lesson front matter: an optional one-line `summary` (at most 160
+  characters), the lesson's line in its category index; format version
+  stays 1. Every seed lesson has one.
+- Native skill export: `plugin/skills/revit-core/` is generated, byte for
+  byte, from `plugin/guidance/revit-core/` by `guidance index` (and ships in
+  the wheel under `revit_bridge/skills/revit-core`); no other category is
+  exported.
 
 ### Changed
 
@@ -126,8 +156,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   only with them; otherwise with `symbols`, as before.
 - Guidance writing rule: a lesson body should stay at or under 2300 UTF-8
   bytes (noted in `revit-core/SKILL.md`); the loader lists larger bodies in
-  `Library.warnings` without rejecting them. Four seed lessons (2314-2376
-  bytes) are over it today.
+  `Library.warnings` without rejecting them; every seed lesson now keeps it
+  (see the seed revisions below).
 - The server rendering and the `revit-bridge` skill read the lesson bodies
   in `check_code`'s `guidance` before changing code (`get_guidance(mode="read")`
   for a `truncated` one, `stage="fix"` for more) and treat the pointers of a
@@ -136,6 +166,20 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   no longer names `confirmation_invalid`.
 - `get_project_snapshot` and `query` say categories are OST_* names
   (`OST_Walls`).
+- The snippet contract has one source, the lesson
+  `revit-core/snippet-contract`: the "Snippet contract" note of both
+  instruction renderings is rendered from its new `## Contract` section
+  (the text is unchanged), the `check_code` and `execute_code` descriptions
+  carry its `summary`, and the `revit-bridge` skill's contract block is
+  written by `guidance index`. Should the packaged lesson not load, the
+  exported copy is used, then a pointer to the lesson, with a warning.
+- Seed lessons: `revit-core/snippet-contract` (revision 2: `## Contract` and
+  `summary`), `revit-collect/collector-needs-filter`,
+  `revit-params/lookup-parameter-storage-type` and
+  `revit-params/builtin-parameter-first` (revision 2) are trimmed to the
+  2300-byte writing rule (2282, 2295, 2281 and 2290 bytes) with the same API
+  facts; all thirteen have a `summary`, and their category indexes are
+  generated from it.
 
 ## [0.3.0] - 2026-09-22
 

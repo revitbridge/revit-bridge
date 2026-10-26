@@ -1,8 +1,9 @@
 ---
 schema_version: 1
 id: revit-params/builtin-parameter-first
-revision: 1
+revision: 2
 title: "Built-in parameters: get_Parameter(BuiltInParameter), not LookupParameter(name)"
+summary: "`get_Parameter(BuiltInParameter.X)` instead of a translated display name"
 stage: [write, fix]
 kind: convention
 revit: ">=2024 <2028"
@@ -13,12 +14,12 @@ triggers:
 
 ## Scenario
 
-`LookupParameter("Unconnected Height")` matches the translated display name: it finds nothing in a Revit running in another language, and a project or shared parameter with the same name can be returned instead. In C#, `element.get_Parameter(BuiltInParameter.X)` (the indexed property `Parameter[BuiltInParameter]`) finds a built-in parameter in any language. Shared parameters: `get_Parameter(Guid)`. Every parameter with a given name: `GetParameters(name)`.
+`LookupParameter("Unconnected Height")` matches the translated display name: it finds nothing in Revit in another language, and may return a project or shared parameter of the same name. `element.get_Parameter(BuiltInParameter.X)` (C# for the indexed property `Parameter[BuiltInParameter]`) works in any language. Shared parameters: `get_Parameter(Guid)`. All parameters of a name: `GetParameters(name)`.
 
 ## Wrong
 
 ```csharp
-Parameter height = wall.LookupParameter("Unconnected Height");   // English Revit only
+Parameter height = wall.LookupParameter("Unconnected Height"); // English Revit only
 ```
 
 ## Right
@@ -33,7 +34,7 @@ double? heightMm = height == null ? (double?)null
 return new { Found = true, HeightMm = heightMm, Comments = comments != null ? comments.AsString() : null };
 ```
 
-`get_Parameter` returns null when the element does not have that parameter: check before use. Validators and packs name built-in parameters the same way (`WALL_USER_HEIGHT_PARAM`, not "Unconnected Height").
+`get_Parameter` returns null when the element lacks the parameter: check it. Packs and validators use the built-in name too (`WALL_USER_HEIGHT_PARAM`, not "Unconnected Height").
 
 ## Versions
 

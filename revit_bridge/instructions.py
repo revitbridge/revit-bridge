@@ -18,8 +18,47 @@ pre-compiled locally" on the card when the check could not run. check_code's
 ``truncated`` one through get_guidance(mode="read"); more through stage
 "fix") and pointers once it compiles. A host such as the web demo has
 neither tool.
+
+The snippet contract in Notes is not written here: it is rendered at import
+from its one source, the ``## Contract`` section of the framework lesson
+``revit-core/snippet-contract`` (``SNIPPET_CONTRACT_NOTE``), and the tool
+descriptions take that lesson's ``summary`` (``SNIPPET_CONTRACT_SUMMARY``).
+Only the packaged content is read, never a configured layer. Should it fail
+to load, the generated copy in ``skills/revit-core`` is tried, then a one-line
+pointer to the lesson stands in, with a warning (``SNIPPET_CONTRACT_WARNINGS``),
+so the instructions never lose the item.
 """
 from __future__ import annotations
+
+import warnings
+from collections.abc import Iterable
+from pathlib import Path
+
+from revit_bridge.guidance.contract import CONTRACT_ID, SnippetContract, load_contract
+from revit_bridge.guidance.loader import GuidanceError
+from revit_bridge.paths import guidance_dir, skills_dir
+
+FALLBACK_SUMMARY = f"see the {CONTRACT_ID} lesson"
+FALLBACK_NOTE = f"- Snippet contract (execute_code): see the {CONTRACT_ID} lesson.\n"
+
+
+def snippet_contract(roots: Iterable[Path] | None = None) -> tuple[SnippetContract | None, tuple[str, ...]]:
+    """The contract from the first root that renders it (default: the packaged framework
+    content, then the exported ``revit-core`` skill), and a warning for each root that did not."""
+    problems = []
+    for root in roots if roots is not None else (guidance_dir(), skills_dir()):
+        try:
+            return load_contract(root), tuple(problems)
+        except GuidanceError as e:
+            problems.append(f"snippet contract: {root}: {e.problems[0]}")
+    return None, tuple(problems)
+
+
+_CONTRACT, SNIPPET_CONTRACT_WARNINGS = snippet_contract()
+for _warning in SNIPPET_CONTRACT_WARNINGS:
+    warnings.warn(_warning, RuntimeWarning, stacklevel=1)
+SNIPPET_CONTRACT_NOTE = _CONTRACT.note() if _CONTRACT is not None else FALLBACK_NOTE
+SNIPPET_CONTRACT_SUMMARY = _CONTRACT.summary if _CONTRACT is not None else FALLBACK_SUMMARY
 
 _INTRO = """\
 You are connected to a running Autodesk Revit through revit-bridge 0.3. The server
@@ -130,12 +169,6 @@ _NOTES_HEAD = """\
 
 - Revit internal units are feet; packs take millimetres. Read-only tools also run
   in a transaction on the add-in: they fail on a read-only document.
-- Snippet contract (execute_code): a method body with `document` and `parameters`
-  (object[]) in scope, already inside a transaction (never open one); usings
-  System, System.Linq, System.Collections.Generic, Autodesk.Revit.DB,
-  Autodesk.Revit.UI; references only the base library, RevitAPI and RevitAPIUI
-  (no JSON library); IO, Process, Assembly, DllImport, File, Registry, reflection
-  and threading are refused; end with `return <object>;`; categories are OST_*.
 """
 
 _NOTES_TAIL = {
@@ -153,7 +186,7 @@ def _render(kind: str) -> str:
         _FLOW_TITLE + _FLOW_START[kind] + _FLOW_HEAD + _FLOW_CHECK[kind] + _FLOW_CARD + _FLOW_TAIL[kind],
         _TASKSPEC,
         _NEVER_HEAD + _NEVER_TAIL[kind],
-        _NOTES_HEAD + _NOTES_TAIL[kind],
+        _NOTES_HEAD + SNIPPET_CONTRACT_NOTE + _NOTES_TAIL[kind],
     ])
 
 

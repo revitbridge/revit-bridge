@@ -5,6 +5,10 @@ Usage:
     revit-bridge            run the MCP server on stdio (what hosts call)
     revit-bridge check      ping the Revit add-in and print the connection status,
                             its capability and environment
+    revit-bridge guidance check|index|explain
+                            validate the guidance layers, rebuild the generated
+                            index, or show what get_guidance would recommend
+                            (see revit_bridge.guidance_cli)
     python -m revit_bridge.mcp_server
 
 Tools:
@@ -40,15 +44,15 @@ from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
 from revit_bridge import __version__
-from revit_bridge import checking
+from revit_bridge import checking, guidance_cli
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ENV_ALLOW_UNCONFIRMED, ExecutionResult, run_code, run_pack
 from revit_bridge.execution import gate_refusal as _gate_refusal
 from revit_bridge.execution import revalidate as _revalidate
-from revit_bridge.instructions import server_instructions
-from revit_bridge.paths import guidance_dir
+from revit_bridge.instructions import SNIPPET_CONTRACT_SUMMARY, server_instructions
+from revit_bridge.paths import guidance_dir, guidance_layer_dirs
 from revit_bridge.revit.capabilities import Capabilities
 from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.revit.probe import CHECK_PROBE, check_connection  # noqa: F401 - re-exported
@@ -68,10 +72,13 @@ _guidance_library: _guidance.Library | None = None   # loaded on first use, then
 
 
 def guidance_library() -> _guidance.Library:
-    """The framework guidance, validated on first use and cached; raises GuidanceError."""
+    """The guidance layers, validated on first use and cached; raises GuidanceError when the
+    framework layer is invalid. The company, project and personal directories are read from
+    the environment here, once per load (``paths.guidance_layer_dirs``); a bad one is left out
+    with a ``layer_invalid`` warning."""
     global _guidance_library
     if _guidance_library is None:
-        _guidance_library = _guidance.load(guidance_dir())
+        _guidance_library = _guidance.load_layers(guidance_dir(), **guidance_layer_dirs())
     return _guidance_library
 
 
@@ -277,11 +284,20 @@ def confirm_spec(spec: dict | str, confirmed_by: str = "designer", channel: str 
 
 # -- Execution Tools ----------------------------------------------------------
 
+def _with_snippet_contract(fn):
+    """Put the snippet contract sentence - the summary of the revit-core/snippet-contract
+    lesson, its one source - where the tool description says <snippet contract>."""
+    fn.__doc__ = fn.__doc__.replace("<snippet contract>", f"Snippet contract: {SNIPPET_CONTRACT_SUMMARY}.")
+    return fn
+
+
 @mcp.tool(annotations=_READ_ONLY)
+@_with_snippet_contract
 async def check_code(code: str, parameters: list | None = None) -> str:
     """Compile C# for execute_code inside Revit WITHOUT running it: only
     compiles, never executes, needs no token or confirmation, changes nothing
-    (same wrapper, references and blocked symbols as execute_code). Call it
+    (same wrapper, references and blocked symbols as execute_code).
+    <snippet contract> Call it
     before showing the card for execute_code and fix the code until
     `compiled` is true. Returns {schema_version, checked, compiled, blocked,
     capability, reason, diagnostics: [{id, severity, line, column, message,
@@ -305,8 +321,10 @@ async def check_code(code: str, parameters: list | None = None) -> str:
 
 
 @mcp.tool(annotations=_MUTATING)
+@_with_snippet_contract
 async def execute_code(code: str, parameters: list | None = None, token: str = "") -> str:
     """Send C# code to Revit for execution over the local TCP socket.
+    <snippet contract>
     Requires a token from confirm_spec for a TaskSpec whose action is
     execute_code with exactly this code and parameters.
     Returns execution result or error message."""
@@ -527,7 +545,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("serve", help="run the MCP server on stdio (default)")
     sub.add_parser("check", help="ping the Revit add-in and print the connection status, "
                                  "its capability and environment")
+    guidance_cli.add_parser(sub)
     args = parser.parse_args(argv)
+
+    if args.command == "guidance":
+        return guidance_cli.run(args)
 
     if args.command == "check":
         status = asyncio.run(check_connection(environment=True))

@@ -16,6 +16,10 @@ data root that every host shares.
     builtin_capabilities_dir()  packs shipped in the wheel, or <repo>/capabilities
     skills_dir()                skills shipped in the wheel, or <repo>/plugin/skills
     guidance_dir()              guidance content shipped in the wheel, or <repo>/plugin/guidance
+                                (the framework layer)
+    guidance_layer_dirs()       the other guidance layers: company and project from
+                                REVIT_BRIDGE_GUIDANCE_COMPANY / _PROJECT (None when
+                                unset), personal = <data_root>/guidance
 
 Nothing here creates a directory; the code that writes creates what it needs.
 """
@@ -28,6 +32,8 @@ from pathlib import Path
 ENV_DATA_DIR = "REVIT_BRIDGE_DATA_DIR"
 ENV_CAPABILITIES_DIR = "REVIT_BRIDGE_CAPABILITIES_DIR"
 ENV_EVIDENCE_DIR = "REVIT_BRIDGE_EVIDENCE_DIR"
+ENV_GUIDANCE_COMPANY = "REVIT_BRIDGE_GUIDANCE_COMPANY"
+ENV_GUIDANCE_PROJECT = "REVIT_BRIDGE_GUIDANCE_PROJECT"
 
 APP_DIR_NAME = "revit-bridge"
 
@@ -103,3 +109,20 @@ def guidance_dir() -> Path:
     if packaged.is_dir():
         return packaged
     return _REPO_ROOT / "plugin" / "guidance"
+
+
+def personal_guidance_dir(env: Mapping[str, str] | None = None) -> Path:
+    """The personal guidance layer: ``<data_root>/guidance``, loaded when it exists."""
+    return data_root(env) / "guidance"
+
+
+def guidance_layer_dirs(env: Mapping[str, str] | None = None) -> dict[str, Path | None]:
+    """The guidance layers above the framework, as ``load_layers`` keyword arguments:
+    ``company`` and ``project`` from their environment variables (None when unset) and
+    ``personal`` under the data root. A directory that does not exist is skipped by the loader."""
+    env = _env(env)
+    return {
+        "company": _override(env, ENV_GUIDANCE_COMPANY),
+        "project": _override(env, ENV_GUIDANCE_PROJECT),
+        "personal": personal_guidance_dir(env),
+    }

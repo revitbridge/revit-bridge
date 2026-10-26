@@ -1,2 +1,4 @@
 # Guidance lessons are identified by the sha256 of their bytes: keep LF on every platform.
 plugin/guidance/** text eol=lf
+# The native revit-core skill is generated from plugin/guidance/revit-core and must stay byte-identical.
+plugin/skills/revit-core/** text eol=lf

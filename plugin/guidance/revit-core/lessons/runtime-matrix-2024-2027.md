@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-core/runtime-matrix-2024-2027
 revision: 1
 title: "Revit 2024-2027: target framework, global.json and manifest folder per release"
+summary: "target framework, `global.json` and manifest folder per Revit release"
 stage: [orient, port]
 kind: fact
 revit: ">=2024 <2028"

@@ -2,7 +2,8 @@
 
 Every test runs with ``REVIT_BRIDGE_DATA_DIR`` pointing at a private temporary
 directory, so nothing a test writes (solidified packs, usage.json, evidence)
-lands in the developer's real data directory or the source tree.
+lands in the developer's real data directory or the source tree, and no
+personal, company or project guidance layer of the developer's leaks in.
 """
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("REVIT_BRIDGE_DATA_DIR", str(data))
     monkeypatch.delenv("REVIT_BRIDGE_CAPABILITIES_DIR", raising=False)
     monkeypatch.delenv("REVIT_BRIDGE_EVIDENCE_DIR", raising=False)
+    monkeypatch.delenv("REVIT_BRIDGE_GUIDANCE_COMPANY", raising=False)
+    monkeypatch.delenv("REVIT_BRIDGE_GUIDANCE_PROJECT", raising=False)
     server = sys.modules.get("revit_bridge.mcp_server")
     if server is not None:
         from revit_bridge.capabilities.store import ToolStore

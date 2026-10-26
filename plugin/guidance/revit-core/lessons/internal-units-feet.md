@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-core/internal-units-feet
 revision: 1
 title: "Lengths in the API are decimal feet: convert with UnitUtils and UnitTypeId"
+summary: "lengths are decimal feet; convert with `UnitUtils` and `UnitTypeId`"
 stage: [orient, write, fix]
 kind: fact
 revit: ">=2024 <2028"

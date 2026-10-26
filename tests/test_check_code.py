@@ -592,6 +592,29 @@ def test_a_broken_library_gives_no_guidance_and_a_warning(tmp_path, monkeypatch,
     assert out["guidance"] == [] and out["warnings"] == ["guidance_unavailable: RuntimeError: disk gone"]
 
 
+def test_check_code_uses_the_guidance_layers(tmp_path, monkeypatch, revit_env):
+    """A company lesson replaces the framework one in check_code too; a bad project layer is
+    left out without an error or a warning in check_code's reply."""
+    rel = "revit-geometry/lessons/wall-length-from-location.md"
+    text = (guidance_dir() / rel).read_text(encoding="utf-8")
+    company = tmp_path / "company"
+    (company / "revit-geometry" / "lessons").mkdir(parents=True)
+    (company / rel).write_text(text.replace('title: "Wall length', 'title: "Company rule: wall length', 1),
+                               encoding="utf-8", newline="\n")
+    project = tmp_path / "project"
+    (project / "revit-core" / "lessons").mkdir(parents=True)
+    (project / "revit-core" / "lessons" / "bad.md").write_text("no front matter\n", encoding="utf-8")
+    monkeypatch.setenv("REVIT_BRIDGE_GUIDANCE_COMPANY", str(company))
+    monkeypatch.setenv("REVIT_BRIDGE_GUIDANCE_PROJECT", str(project))
+    monkeypatch.setattr(server, "_guidance_library", None)
+    replies, _ = asyncio.run(_tool(new_addin(), revit_env, [("check_code", {"code": WALL_CODE})]))
+    out = replies[0]
+    assert set(out) == REPLY_KEYS and out["warnings"] == [] and out["compiled"] is False
+    first = out["guidance"][0]
+    assert first["id"] == WALL and first["layer"] == "company" and first["title"].startswith("Company rule")
+    assert [x.state for x in server.guidance_library().layers] == ["loaded", "loaded", "invalid", "missing"]
+
+
 def test_the_same_input_gives_the_same_guidance(revit_env, seed_library):
     replies, _ = asyncio.run(_tool(new_addin(), revit_env, [
         ("check_code", {"code": BUSY_CODE}), ("check_code", {"code": BUSY_CODE})]))

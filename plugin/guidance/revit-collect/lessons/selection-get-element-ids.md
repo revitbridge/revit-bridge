@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-collect/selection-get-element-ids
 revision: 1
 title: "The current selection is Selection.GetElementIds(); Selection.Elements does not exist"
+summary: "`Selection.GetElementIds()`; there is no `Selection.Elements`"
 stage: [write, fix]
 kind: pitfall
 revit: ">=2024 <2028"

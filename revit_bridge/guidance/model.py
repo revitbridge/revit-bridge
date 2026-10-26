@@ -17,7 +17,14 @@ import re
 from dataclasses import dataclass, field
 
 SCHEMA_VERSION = 1
+
+# D11: the layers, lowest first. A higher layer replaces a lower one's lesson
+# of the same id; ``enforced`` counts only in the company layer.
 LAYER_FRAMEWORK = "framework"
+LAYER_COMPANY = "company"
+LAYER_PROJECT = "project"
+LAYER_PERSONAL = "personal"
+LAYERS: tuple[str, ...] = (LAYER_FRAMEWORK, LAYER_COMPANY, LAYER_PROJECT, LAYER_PERSONAL)
 
 # D13: the category table. Category ids are the namespace of lesson ids, so
 # renaming one is a migration; new categories go through planning.
@@ -41,6 +48,8 @@ TRIGGER_KEYS: tuple[str, ...] = ("categories", "symbols", "errors", "exceptions"
 
 DEFAULT_ORDER = 100
 MAX_TITLE_CHARS = 120
+# The optional ``summary`` key (one line): the lesson's line in its category index.
+MAX_SUMMARY_CHARS = 160
 MAX_BODY_BYTES = 16384
 # Writing rule (D12), a warning and not a load failure: a body this size or smaller is
 # never cut by a fix inline (2400 bytes), even translated, with room for the cut line.
@@ -155,6 +164,7 @@ class Lesson:
     hash: str
     layer: str
     path: str                     # relative to the root, "/"-separated
+    summary: str | None = None    # the optional front matter key
 
     @property
     def body_bytes(self) -> int:
@@ -169,6 +179,7 @@ class Category:
     name: str
     description: str
     summaries: tuple[tuple[str, str], ...] = ()   # (slug, summary) from the "Lessons" section
+    layer: str = LAYER_FRAMEWORK
 
     def summary_of(self, slug: str) -> str | None:
         for key, text in self.summaries:
@@ -199,3 +210,21 @@ class Config:
         if category in self.order:
             return self.order.index(category)
         return len(self.order) + (CATEGORIES.index(category) if category in CATEGORIES else len(CATEGORIES))
+
+
+# What happened to one layer when a library was loaded.
+LAYER_LOADED = "loaded"       # validated and merged
+LAYER_UNSET = "unset"         # no directory configured
+LAYER_MISSING = "missing"     # configured, but not a directory: skipped
+LAYER_INVALID = "invalid"     # rejected as a whole; the other layers still load
+
+
+@dataclass(frozen=True)
+class Layer:
+    """One layer of a library: its name, its directory, its state and, when rejected, why."""
+
+    name: str
+    root: str | None
+    state: str
+    lessons: int = 0
+    problems: tuple[str, ...] = ()

@@ -554,9 +554,8 @@ def test_a_body_over_the_writing_rule_loads_with_a_warning(tmp_path, seed):
     }))
     assert [x.id for x in library.lessons] == ["revit-core/a", "revit-core/b"]
     assert library.warnings == ("revit-core/lessons/b.md: body is 2301 UTF-8 bytes, over the 2300-byte writing rule",)
-    over = sorted(w.split(":")[0] for w in seed.warnings)        # the seed lessons that break the rule today
-    assert over == sorted(f"{x.path}" for x in seed.lessons if x.body_bytes > 2300)
-    assert all(x.body_bytes <= 2400 for x in seed.lessons)
+    assert seed.warnings == ()                                    # every seed keeps the rule (S3b trim)
+    assert all(x.body_bytes <= 2300 for x in seed.lessons)
     core = (CONTENT / "revit-core" / "SKILL.md").read_text(encoding="utf-8")
     assert "## Writing lessons" in core and "at or under 2300 UTF-8 bytes" in core
     assert len(seed.category("revit-core").summaries) == 5            # the note does not join the index
@@ -646,11 +645,14 @@ def test_seed_lessons(seed):
         headings = re.findall(r"^## (\w+)", item.body, flags=re.M)
         if item.id == "revit-core/runtime-matrix-2024-2027":          # a table of facts: no wrong/right code
             assert headings == ["Scenario", "Versions", "Source"], item.id
+        elif item.id == "revit-core/snippet-contract":                 # P2: the rendered contract comes first
+            assert headings == ["Contract", "Scenario", "Wrong", "Right", "Versions", "Source"], item.id
         else:
             assert headings == ["Scenario", "Wrong", "Right", "Versions", "Source"], item.id
         source = item.body.split("## Source", 1)[1].strip()
         assert source and ("revit-api-docs" in source or "revit-addin-dev" in source), item.id
-        assert item.body_bytes <= 2400, item.id
+        assert item.body_bytes <= 2300, item.id                       # D12 writing rule
+        assert item.summary and item.summary == seed.category(item.category).summary_of(item.slug), item.id
         assert item.revit.text in ("any", ">=2024 <2028"), item.id
         if item.category == "revit-core":
             assert "orient" in item.stage, item.id
@@ -668,6 +670,27 @@ def test_seed_files_keep_lf_line_endings():
     for path in CONTENT.rglob("*"):
         if path.is_file():
             assert b"\r" not in path.read_bytes(), path
+
+
+EXPORT = ROOT / "plugin" / "skills" / "revit-core"
+
+
+def test_revit_core_is_exported_byte_for_byte_as_a_native_skill():
+    source = {p.relative_to(CONTENT / "revit-core").as_posix(): p.read_bytes()
+              for p in (CONTENT / "revit-core").rglob("*") if p.is_file()}
+    export = {p.relative_to(EXPORT).as_posix(): p.read_bytes() for p in EXPORT.rglob("*") if p.is_file()}
+    assert export == source and "SKILL.md" in export and len(export) == 6
+    assert all(b"\r" not in content for content in export.values())
+    meta, _ = guidance.loader.read_skill(EXPORT / "SKILL.md")
+    assert set(meta) == {"name", "description"} and meta["name"] == "revit-core"
+    assert len(meta["description"]) <= 1024
+    exported = sorted(p.name for p in (ROOT / "plugin" / "skills").iterdir() if p.is_dir())
+    assert exported == ["revit-addin-dev", "revit-bridge", "revit-core"]      # D9: only revit-core
+
+
+def test_the_gitattributes_keep_generated_content_lf():
+    text = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "plugin/guidance/** text eol=lf" in text and "plugin/skills/revit-core/** text eol=lf" in text
 
 
 def test_guidance_dir_resolves_to_the_repo_content():
@@ -717,15 +740,17 @@ def test_get_guidance_reports_invalid_content_instead_of_raising(tmp_path, monke
 def test_the_library_is_loaded_once(monkeypatch):
     monkeypatch.setattr(server, "_guidance_library", None)
     calls = []
-    real = guidance.load
+    real = guidance.load_layers
 
-    def counting(root):
-        calls.append(root)
-        return real(root)
+    def counting(root, **layers):
+        calls.append((root, layers))
+        return real(root, **layers)
 
-    monkeypatch.setattr(server._guidance, "load", counting)
+    monkeypatch.setattr(server._guidance, "load_layers", counting)
     first = server.guidance_library()
     assert server.guidance_library() is first and len(calls) == 1
+    root, layers = calls[0]
+    assert root == paths.guidance_dir() and layers == paths.guidance_layer_dirs()
 
 
 def test_guidance_index_resource(seed):

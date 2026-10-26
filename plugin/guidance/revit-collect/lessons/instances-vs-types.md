@@ -3,6 +3,7 @@ schema_version: 1
 id: revit-collect/instances-vs-types
 revision: 1
 title: "Say whether you want instances or types: WhereElementIsNotElementType / WhereElementIsElementType"
+summary: "a category holds its types: say `WhereElementIsNotElementType` or `WhereElementIsElementType`"
 stage: [write, fix]
 kind: pitfall
 revit: ">=2024 <2028"

@@ -1,4 +1,4 @@
-"""Load and validate one guidance root (format v1).
+"""Load and validate guidance: one root (format v1), or the four layers (D11).
 
 ``load(root)`` reads ``guidance.yaml``, every category directory's
 ``SKILL.md`` and every ``<category>/lessons/<slug>.md``, checks them all and
@@ -11,17 +11,37 @@ category directories are in the category table; per lesson: schema_version,
 the id is ``<directory>/<file name without .md>`` with a ``[a-z0-9-]+`` slug,
 every key's type and value, the version range syntax, the trigger rules (not
 all four lists empty; ``errors`` only together with ``symbols``), unknown
-keys, body size; across lessons: duplicate ids, ``supersedes`` /
-``superseded_by`` targets that exist and are not the lesson itself.
+keys, the optional one-line ``summary`` (at most 160 characters), body size;
+across lessons: duplicate ids, ``supersedes`` / ``superseded_by`` targets
+that exist and are not the lesson itself, no ``supersedes`` cycle.
 
-Only the framework layer exists in S3a; ``layer`` is recorded on every
-lesson so the output carries it from the start. Nothing here reads the
-environment or the network.
+``load_layers(framework, company=..., project=..., personal=...)`` stacks the
+layers, lowest first. The framework root is loaded with ``load`` and must be
+valid (else ``GuidanceError``). Every other layer is a directory with the
+same structure and an optional ``guidance.yaml`` that may set only
+``schema_version``, ``order`` and ``always`` (no ``budget``): a layer that is
+not configured (None) or not a directory is skipped; one that fails
+validation is rejected as a whole, with a ``layer_invalid: <layer>: <first
+problem>`` warning, and the other layers still load. A higher layer's
+``order`` reorders the categories it names (they take the slots those
+categories had, in its order), appends the ones not yet listed and leaves the
+rest in place; ``always`` only adds. The same id in several layers: the
+highest layer's lesson replaces the others whole (they are kept in
+``Library.overridden``), except that a company lesson with ``enforced: true``
+is not replaced by project or personal (warning ``enforced_kept: <id> ignored
+<layer>``). ``enforced`` in the framework layer is ignored with a warning; in
+the project or personal layer it is a validation problem. ``supersedes`` and
+``superseded_by`` targets may live in any loaded layer; a ``supersedes``
+cycle among the lessons in force rejects the whole library.
+
+Nothing here reads the environment or the network: the caller passes the
+layer directories.
 """
 from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -37,8 +57,17 @@ from revit_bridge.guidance.model import (
     ERROR_RE,
     IDENTIFIER_RE,
     KINDS,
+    LAYER_COMPANY,
     LAYER_FRAMEWORK,
+    LAYER_INVALID,
+    LAYER_LOADED,
+    LAYER_MISSING,
+    LAYER_PERSONAL,
+    LAYER_PROJECT,
+    LAYER_UNSET,
+    LAYERS,
     MAX_BODY_BYTES,
+    MAX_SUMMARY_CHARS,
     MAX_TITLE_CHARS,
     SCHEMA_VERSION,
     SLUG_RE,
@@ -47,6 +76,7 @@ from revit_bridge.guidance.model import (
     Budget,
     Category,
     Config,
+    Layer,
     Lesson,
     Triggers,
     VersionRange,
@@ -58,11 +88,12 @@ SKILL_FILE = "SKILL.md"
 LESSONS_DIR = "lessons"
 
 LESSON_KEYS = frozenset({
-    "schema_version", "id", "revision", "title", "stage", "kind", "revit", "triggers",
+    "schema_version", "id", "revision", "title", "summary", "stage", "kind", "revit", "triggers",
     "order", "supersedes", "superseded_by", "enforced",
 })
 REQUIRED_KEYS = ("schema_version", "id", "revision", "title", "stage", "kind", "revit", "triggers")
 CONFIG_KEYS = frozenset({"schema_version", "order", "always", "budget"})
+LAYER_CONFIG_KEYS = frozenset({"schema_version", "order", "always"})
 BUDGET_KEYS = ("items", "utf8_bytes", "fix_inline_items", "fix_inline_bytes")
 
 _LESSONS_HEADING = re.compile(r"^##\s+Lessons\s*$", re.IGNORECASE)
@@ -80,10 +111,16 @@ class GuidanceError(Exception):
 
 @dataclass(frozen=True)
 class Library:
-    """One validated guidance root. Lessons are sorted: category order, ``order``, ``id``.
+    """A validated library: one root, or the layers merged. Lessons are the ones in force,
+    sorted: category order, ``order``, ``id``.
 
     ``warnings`` are problems that do not stop the load: a body over the
-    ``BODY_WRITING_BYTES`` writing rule.
+    ``BODY_WRITING_BYTES`` writing rule, and the layer warnings.
+    ``layer_warnings`` are only the layer warnings (``layer_invalid``,
+    ``enforced_kept``, ``enforced_ignored``): the ones tool replies carry.
+    ``layers`` says what happened to each layer; ``overridden`` holds each
+    lesson replaced by a higher layer's lesson of the same id, with that
+    layer's name.
     """
 
     root: str
@@ -92,18 +129,34 @@ class Library:
     categories: tuple[Category, ...]
     lessons: tuple[Lesson, ...]
     warnings: tuple[str, ...] = ()
+    layers: tuple[Layer, ...] = ()
+    overridden: tuple[tuple[Lesson, str], ...] = ()
+    layer_warnings: tuple[str, ...] = ()
     # Set in __post_init__; no default (Python 3.11 refuses an unhashable dataclass default).
     _by_id: Mapping[str, Lesson] = field(init=False, repr=False, compare=False)
+    _superseded: Mapping[str, str] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "_by_id", MappingProxyType({lesson.id: lesson for lesson in self.lessons}))
+        by_id = {lesson.id: lesson for lesson in self.lessons}
+        superseded: dict[str, str] = {}
+        for lesson in self.lessons:                       # library order: the first one wins
+            for target in lesson.supersedes:
+                if target in by_id:
+                    superseded.setdefault(target, lesson.id)
+        object.__setattr__(self, "_by_id", MappingProxyType(by_id))
+        object.__setattr__(self, "_superseded", MappingProxyType(superseded))
 
     def get(self, lesson_id: str) -> Lesson | None:
         return self._by_id.get(lesson_id)
 
-    def category(self, category_id: str) -> Category | None:
+    def superseded_by(self, lesson_id: str) -> str | None:
+        """The id of the lesson in force whose ``supersedes`` names this one, or None."""
+        return self._superseded.get(lesson_id)
+
+    def category(self, category_id: str, layer: str | None = None) -> Category | None:
+        """A category directory: the lowest layer's, or the given layer's."""
         for category in self.categories:
-            if category.id == category_id:
+            if category.id == category_id and (layer is None or category.layer == layer):
                 return category
         return None
 
@@ -181,27 +234,22 @@ def _str_list(value: Any, what: str, problems: list[str], pattern: re.Pattern | 
 
 # -- guidance.yaml -------------------------------------------------------------------
 
-def _load_config(root: Path, problems: list[str]) -> Config | None:
+def _read_config(root: Path, problems: list[str]) -> dict | None:
     path = root / CONFIG_FILE
-    if not path.is_file():
-        problems.append(f"{CONFIG_FILE}: missing")
-        return None
-    where = CONFIG_FILE
     try:
         data = _yaml(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
-        problems.append(f"{where}: cannot be read: {e}")
+        problems.append(f"{CONFIG_FILE}: cannot be read: {e}")
         return None
     if not isinstance(data, dict):
-        problems.append(f"{where}: must be a mapping")
+        problems.append(f"{CONFIG_FILE}: must be a mapping")
         return None
-    local: list[str] = []
-    for key in sorted(set(data) - CONFIG_KEYS, key=str):
-        local.append(f"unknown key {key!r}")
-    if not (_is_int(data.get("schema_version")) and data.get("schema_version") == SCHEMA_VERSION):
-        local.append(f"schema_version must be {SCHEMA_VERSION}")
+    return data
+
+
+def _order_and_always(data: dict, local: list[str], *, order_required: bool) -> tuple[tuple, tuple]:
     order = _str_list(data.get("order"), "order", local)
-    if "order" not in data:
+    if order_required and "order" not in data:
         local.append("order is required")
     for category in order:
         if category not in CATEGORIES:
@@ -209,6 +257,25 @@ def _load_config(root: Path, problems: list[str]) -> Config | None:
     if len(set(order)) != len(order):
         local.append("order: a category is listed twice")
     always = _str_list(data.get("always"), "always", local)
+    if len(set(always)) != len(always):
+        local.append("always: a category is listed twice")
+    return order, always
+
+
+def _load_config(root: Path, problems: list[str]) -> Config | None:
+    """The framework's ``guidance.yaml``: required, the only one that sets ``budget``."""
+    if not (root / CONFIG_FILE).is_file():
+        problems.append(f"{CONFIG_FILE}: missing")
+        return None
+    data = _read_config(root, problems)
+    if data is None:
+        return None
+    local: list[str] = []
+    for key in sorted(set(data) - CONFIG_KEYS, key=str):
+        local.append(f"unknown key {key!r}")
+    if not (_is_int(data.get("schema_version")) and data.get("schema_version") == SCHEMA_VERSION):
+        local.append(f"schema_version must be {SCHEMA_VERSION}")
+    order, always = _order_and_always(data, local, order_required=True)
     for category in always:
         if category not in order:
             local.append(f"always: {category!r} is not in order")
@@ -226,10 +293,47 @@ def _load_config(root: Path, problems: list[str]) -> Config | None:
             local.append(f"budget.{key} must be a positive integer")
             value = getattr(defaults, key)
         budget_values[key] = value
-    problems.extend(f"{where}: {p}" for p in local)
+    problems.extend(f"{CONFIG_FILE}: {p}" for p in local)
     if local:
         return None
     return Config(schema_version=SCHEMA_VERSION, order=order, always=always, budget=Budget(**budget_values))
+
+
+def _load_layer_config(root: Path, problems: list[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """A higher layer's optional ``guidance.yaml``: ``(order, always)``, both empty without one."""
+    if not (root / CONFIG_FILE).is_file():
+        return (), ()
+    data = _read_config(root, problems)
+    if data is None:
+        return (), ()
+    local: list[str] = []
+    if "budget" in data:
+        local.append("budget is set only in the framework layer")
+    for key in sorted(set(data) - LAYER_CONFIG_KEYS - {"budget"}, key=str):
+        local.append(f"unknown key {key!r}")
+    if not (_is_int(data.get("schema_version")) and data.get("schema_version") == SCHEMA_VERSION):
+        local.append(f"schema_version must be {SCHEMA_VERSION}")
+    order, always = _order_and_always(data, local, order_required=False)
+    for category in always:
+        if category not in CATEGORIES:
+            local.append(f"always: unknown category {category!r}")
+    problems.extend(f"{CONFIG_FILE}: {p}" for p in local)
+    return order, always
+
+
+def merge_order(lower: tuple[str, ...], higher: tuple[str, ...]) -> tuple[str, ...]:
+    """A higher layer's ``order`` on top of the lower one: the categories it names that are
+    already listed take the slots they had, in its order; the others are appended; the
+    categories it does not name stay where they are."""
+    named = [category for category in higher if category in lower]
+    slots = iter(named)
+    merged = [next(slots) if category in named else category for category in lower]
+    return tuple(merged) + tuple(category for category in higher if category not in lower)
+
+
+def merge_always(lower: tuple[str, ...], higher: tuple[str, ...]) -> tuple[str, ...]:
+    """``always`` only grows: the lower list, then what the higher one adds."""
+    return tuple(lower) + tuple(category for category in higher if category not in lower)
 
 
 # -- SKILL.md ------------------------------------------------------------------------
@@ -263,20 +367,22 @@ def index_summaries(body: str) -> tuple[tuple[str, str], ...]:
     return tuple(out)
 
 
-def _load_category(directory: Path) -> Category:
+def _load_category(directory: Path, layer: str) -> Category:
     skill = read_skill(directory / SKILL_FILE)
     if skill is None:
-        return Category(id=directory.name, name=directory.name, description="")
+        return Category(id=directory.name, name=directory.name, description="", layer=layer)
     meta, body = skill
     return Category(id=directory.name, name=str(meta.get("name") or directory.name),
-                    description=str(meta.get("description") or ""), summaries=index_summaries(body))
+                    description=str(meta.get("description") or ""), summaries=index_summaries(body),
+                    layer=layer)
 
 
 # -- lessons -------------------------------------------------------------------------
 
-def _load_lesson(root: Path, path: Path, layer: str,
-                 problems: list[str]) -> tuple[Lesson | None, dict | None]:
-    """The lesson (None when it has problems) and its parsed front matter (None when unreadable)."""
+def load_lesson(root: Path, path: Path, layer: str,
+                problems: list[str]) -> tuple[Lesson | None, dict | None]:
+    """One lesson file checked on its own: the lesson (None when it has problems, which are
+    appended to ``problems``) and its parsed front matter (None when unreadable)."""
     rel = path.relative_to(root).as_posix()
     local: list[str] = []
     category, slug = path.parent.parent.name, path.stem
@@ -331,6 +437,16 @@ def _load_lesson(root: Path, path: Path, layer: str,
             local.append("title must be a non-empty string")
         elif len(title) > MAX_TITLE_CHARS:
             local.append(f"title is longer than {MAX_TITLE_CHARS} characters")
+
+    summary = meta.get("summary")
+    if "summary" in meta:
+        if not isinstance(summary, str) or not summary.strip():
+            local.append("summary must be a non-empty string")
+            summary = None
+        elif summary.splitlines()[0] != summary:
+            local.append("summary must be one line")
+        elif len(summary.strip()) > MAX_SUMMARY_CHARS:
+            local.append(f"summary is longer than {MAX_SUMMARY_CHARS} characters")
 
     stage: tuple[str, ...] = ()
     if "stage" in meta:
@@ -389,6 +505,8 @@ def _load_lesson(root: Path, path: Path, layer: str,
     if not isinstance(enforced, bool):
         local.append("enforced must be true or false")
         enforced = False
+    elif enforced and layer in (LAYER_PROJECT, LAYER_PERSONAL):
+        local.append(f"enforced: true is allowed only in the company layer, not the {layer} layer")
 
     body = _clean_body(split[1])
     size = len(body.encode("utf-8"))
@@ -403,40 +521,110 @@ def _load_lesson(root: Path, path: Path, layer: str,
         stage=stage, kind=kind, revit=VersionRange.parse(revit), triggers=triggers, order=order,
         supersedes=supersedes, superseded_by=superseded_by, enforced=enforced, body=body,
         hash=hashlib.sha256(raw).hexdigest()[:16], layer=layer, path=rel,
+        summary=summary.strip() if isinstance(summary, str) else None,
     )
     return lesson, meta
 
 
-def _cross_check(declared: list[tuple[str, dict | None]], problems: list[str]) -> None:
-    """Duplicate ids and ``supersedes`` / ``superseded_by`` targets, on what each file declares
-    (a file with other problems still takes part)."""
-    def own_id(meta):
-        value = meta.get("id") if meta else None
-        return value if isinstance(value, str) else None
+def _own_id(meta: dict | None) -> str | None:
+    value = meta.get("id") if meta else None
+    return value if isinstance(value, str) else None
 
+
+def _references(meta: dict | None) -> list[tuple[str, str]]:
+    """``(key, target)`` for each ``supersedes`` / ``superseded_by`` target a file declares."""
+    if not meta:
+        return []
+    supersedes = meta.get("supersedes") if isinstance(meta.get("supersedes"), list) else []
+    out = [("supersedes", t) for t in supersedes if isinstance(t, str)]
+    if isinstance(meta.get("superseded_by"), str):
+        out.append(("superseded_by", meta["superseded_by"]))
+    return out
+
+
+def _duplicates_and_self(declared: list[tuple[str, dict | None]], problems: list[str]) -> set[str]:
+    """Duplicate ids and references to the file's own id, on what each file declares (a file
+    with other problems still takes part); returns the declared ids."""
     where: dict[str, list[str]] = {}
     for rel, meta in declared:
-        if own_id(meta) is not None:
-            where.setdefault(own_id(meta), []).append(rel)
+        if _own_id(meta) is not None:
+            where.setdefault(_own_id(meta), []).append(rel)
     for lesson_id, paths in sorted(where.items()):
         if len(paths) > 1:
             problems.append(f"duplicate id {lesson_id!r} in {', '.join(paths)}")
     for rel, meta in declared:
-        if not meta:
+        for key, target in _references(meta):
+            if target == _own_id(meta):
+                problems.append(f"{rel}: supersedes itself" if key == "supersedes"
+                                else f"{rel}: superseded_by points at itself")
+    return set(where)
+
+
+def _dangling(declared: list[tuple[str, dict | None]], known: set[str]) -> list[str]:
+    """References to ids that no loaded lesson declares."""
+    problems = []
+    for rel, meta in declared:
+        for key, target in _references(meta):
+            if target != _own_id(meta) and target not in known:
+                problems.append(f"{rel}: {key} unknown id {target!r}")
+    return problems
+
+
+def supersedes_cycles(lessons: Iterable[Lesson]) -> list[str]:
+    """A problem for each group of lessons whose ``supersedes`` form a cycle."""
+    edges = {lesson.id: tuple(lesson.supersedes) for lesson in lessons}
+    edges = {node: tuple(t for t in targets if t in edges) for node, targets in edges.items()}
+
+    def reach(start: str) -> set[str]:
+        seen: set[str] = set()
+        stack = list(edges[start])
+        while stack:
+            node = stack.pop()
+            if node not in seen:
+                seen.add(node)
+                stack.extend(edges[node])
+        return seen
+
+    reachable = {node: reach(node) for node in sorted(edges)}
+    problems, done = [], set()
+    for node in sorted(edges):
+        if node in done or node not in reachable[node]:
             continue
-        own = own_id(meta)
-        supersedes = meta.get("supersedes") if isinstance(meta.get("supersedes"), list) else []
-        for target in (t for t in supersedes if isinstance(t, str)):
-            if target == own:
-                problems.append(f"{rel}: supersedes itself")
-            elif target not in where:
-                problems.append(f"{rel}: supersedes unknown id {target!r}")
-        superseded_by = meta.get("superseded_by")
-        if isinstance(superseded_by, str):
-            if superseded_by == own:
-                problems.append(f"{rel}: superseded_by points at itself")
-            elif superseded_by not in where:
-                problems.append(f"{rel}: superseded_by unknown id {superseded_by!r}")
+        group = sorted(other for other in reachable[node] if node in reachable[other])
+        done.update(group)
+        problems.append(f"supersedes form a cycle: {', '.join(group)}")
+    return problems
+
+
+def _writing_warnings(lessons: Iterable[Lesson]) -> list[str]:
+    return [f"{lesson.path}: body is {lesson.body_bytes} UTF-8 bytes, over the "
+            f"{BODY_WRITING_BYTES}-byte writing rule" for lesson in lessons
+            if lesson.body_bytes > BODY_WRITING_BYTES]
+
+
+def scan(root: Path, layer: str, problems: list[str]) -> tuple[list[Category], list[Lesson], list]:
+    """Category directories and lesson files of one root, each file checked on its own:
+    ``(categories, valid lessons, [(path, front matter)] of every lesson file)``."""
+    categories: list[Category] = []
+    lesson_paths: list[Path] = []
+    for directory in sorted(p for p in root.iterdir() if p.is_dir()):
+        if directory.name.startswith((".", "__")):
+            continue
+        if directory.name not in CATEGORIES:
+            problems.append(f"{directory.name}/: not a category in the category table")
+        else:
+            categories.append(_load_category(directory, layer))
+        lessons_dir = directory / LESSONS_DIR
+        if lessons_dir.is_dir():
+            lesson_paths.extend(sorted(lessons_dir.glob("*.md")))
+    lessons: list[Lesson] = []
+    declared: list[tuple[str, dict | None]] = []
+    for path in lesson_paths:
+        lesson, meta = load_lesson(root, path, layer, problems)
+        declared.append((path.relative_to(root).as_posix(), meta))
+        if lesson is not None:
+            lessons.append(lesson)
+    return categories, lessons, declared
 
 
 def load(root: str | Path, layer: str = LAYER_FRAMEWORK) -> Library:
@@ -447,36 +635,138 @@ def load(root: str | Path, layer: str = LAYER_FRAMEWORK) -> Library:
         raise GuidanceError([f"{root}: not a directory"])
 
     config = _load_config(root, problems)
-
-    categories: list[Category] = []
-    lesson_paths: list[Path] = []
-    for directory in sorted(p for p in root.iterdir() if p.is_dir()):
-        if directory.name.startswith((".", "__")):
-            continue
-        if directory.name not in CATEGORIES:
-            problems.append(f"{directory.name}/: not a category in the category table")
-        else:
-            categories.append(_load_category(directory))
-        lessons_dir = directory / LESSONS_DIR
-        if lessons_dir.is_dir():
-            lesson_paths.extend(sorted(lessons_dir.glob("*.md")))
-
-    lessons: list[Lesson] = []
-    declared: list[tuple[str, dict | None]] = []
-    for path in lesson_paths:
-        lesson, meta = _load_lesson(root, path, layer, problems)
-        declared.append((path.relative_to(root).as_posix(), meta))
-        if lesson is not None:
-            lessons.append(lesson)
-    _cross_check(declared, problems)
+    categories, lessons, declared = scan(root, layer, problems)
+    known = _duplicates_and_self(declared, problems)
+    problems.extend(_dangling(declared, known))
+    if not problems:
+        problems.extend(supersedes_cycles(lessons))
 
     if problems:
         raise GuidanceError(problems)
     assert config is not None
     lessons.sort(key=lambda lesson: (config.category_rank(lesson.category), lesson.order, lesson.id))
     categories.sort(key=lambda category: (config.category_rank(category.id), category.id))
-    warnings = tuple(f"{lesson.path}: body is {lesson.body_bytes} UTF-8 bytes, over the "
-                     f"{BODY_WRITING_BYTES}-byte writing rule" for lesson in lessons
-                     if lesson.body_bytes > BODY_WRITING_BYTES)
     return Library(root=str(root), layer=layer, config=config, categories=tuple(categories),
-                   lessons=tuple(lessons), warnings=warnings)
+                   lessons=tuple(lessons), warnings=tuple(_writing_warnings(lessons)),
+                   layers=(Layer(layer, str(root), LAYER_LOADED, len(lessons)),))
+
+
+# -- layers --------------------------------------------------------------------------
+
+@dataclass
+class _Upper:
+    """A higher layer that passed its own checks."""
+
+    name: str
+    root: Path
+    order: tuple[str, ...]
+    always: tuple[str, ...]
+    categories: list[Category]
+    lessons: list[Lesson]
+    declared: list[tuple[str, dict | None]]
+
+
+def _read_upper(root: Path, name: str, problems: list[str]) -> _Upper:
+    order, always = _load_layer_config(root, problems)
+    categories, lessons, declared = scan(root, name, problems)
+    _duplicates_and_self(declared, problems)
+    return _Upper(name=name, root=root, order=order, always=always, categories=categories,
+                  lessons=lessons, declared=declared)
+
+
+def load_layers(framework: str | Path, *, company: str | Path | None = None,
+                project: str | Path | None = None, personal: str | Path | None = None) -> Library:
+    """The four layers merged (see the module doc). Raises ``GuidanceError`` only when the
+    framework root is invalid or the lessons in force form a ``supersedes`` cycle."""
+    base = load(framework, LAYER_FRAMEWORK)
+    states: dict[str, Layer] = {LAYER_FRAMEWORK: base.layers[0]}
+    invalid: dict[str, list[str]] = {}
+    read: list[tuple[_Upper, list[str]]] = []
+    for name, root in ((LAYER_COMPANY, company), (LAYER_PROJECT, project), (LAYER_PERSONAL, personal)):
+        if root is None:
+            states[name] = Layer(name, None, LAYER_UNSET)
+            continue
+        path = Path(root)
+        if not path.is_dir():
+            states[name] = Layer(name, str(path), LAYER_MISSING)
+            continue
+        problems: list[str] = []
+        read.append((_read_upper(path, name, problems), problems))
+    declared_anywhere = {lesson.id for lesson in base.lessons}
+    for upper, _ in read:
+        declared_anywhere.update(i for i in (_own_id(meta) for _, meta in upper.declared) if i)
+    uppers: list[_Upper] = []
+    for upper, problems in read:
+        if problems:                                   # rejected already: list every problem it has
+            problems.extend(_dangling(upper.declared, declared_anywhere))
+            invalid[upper.name] = problems
+            states[upper.name] = Layer(upper.name, str(upper.root), LAYER_INVALID, 0, tuple(problems))
+        else:
+            uppers.append(upper)
+
+    # Checks that need the other layers: reference targets and always-in-order. Rejecting a
+    # layer can break a higher one, so start over until every remaining layer passes.
+    while True:
+        known = {lesson.id for lesson in base.lessons}
+        for upper in uppers:
+            known.update(lesson.id for lesson in upper.lessons)
+        order, always = base.config.order, base.config.always
+        rejected = None
+        for upper in uppers:
+            problems = _dangling(upper.declared, known)
+            merged = merge_order(order, upper.order)
+            problems.extend(f"{CONFIG_FILE}: always: {category!r} is not in order"
+                            for category in upper.always if category not in merged)
+            if problems:
+                rejected = upper
+                invalid[upper.name] = problems
+                states[upper.name] = Layer(upper.name, str(upper.root), LAYER_INVALID, 0, tuple(problems))
+                break
+            order, always = merged, merge_always(always, upper.always)
+        if rejected is None:
+            break
+        uppers.remove(rejected)
+
+    # The lessons in force: the highest layer's lesson of each id, except over an enforced
+    # company lesson.
+    kept_warnings: list[str] = []
+    in_force: dict[str, Lesson] = {lesson.id: lesson for lesson in base.lessons}
+    replaced: dict[str, list[Lesson]] = {}
+    for upper in uppers:
+        for lesson in sorted(upper.lessons, key=lambda x: x.id):
+            current = in_force.get(lesson.id)
+            if current is not None and current.layer == LAYER_COMPANY and current.enforced:
+                kept_warnings.append(f"enforced_kept: {lesson.id} ignored {upper.name}")
+                continue
+            if current is not None:
+                replaced.setdefault(lesson.id, []).append(current)
+            in_force[lesson.id] = lesson
+        states[upper.name] = Layer(upper.name, str(upper.root), LAYER_LOADED, len(upper.lessons))
+
+    cycles = supersedes_cycles(in_force.values())
+    if cycles:
+        raise GuidanceError(cycles)
+
+    config = Config(schema_version=SCHEMA_VERSION, order=order, always=always, budget=base.config.budget)
+    lessons = sorted(in_force.values(),
+                     key=lambda lesson: (config.category_rank(lesson.category), lesson.order, lesson.id))
+    categories = list(base.categories)
+    for upper in uppers:
+        categories.extend(upper.categories)
+    categories.sort(key=lambda c: (config.category_rank(c.id), LAYERS.index(c.layer), c.id))
+    overridden = tuple((old, in_force[lesson_id].layer)
+                       for lesson_id in sorted(replaced) for old in replaced[lesson_id])
+
+    layer_warnings = [f"enforced_ignored: {lesson.id}: enforced counts only in the company layer"
+                      for lesson in base.lessons if lesson.enforced]
+    layer_warnings.extend(f"layer_invalid: {name}: {invalid[name][0]}" for name in LAYERS if name in invalid)
+    layer_warnings.extend(kept_warnings)
+    writing = list(base.warnings)
+    for upper in uppers:
+        writing.extend(f"{upper.name}: {w}" for w in _writing_warnings(upper.lessons))
+    return Library(
+        root=base.root, layer=LAYER_FRAMEWORK, config=config, categories=tuple(categories),
+        lessons=tuple(lessons), warnings=tuple(writing + layer_warnings),
+        layers=tuple(states[name] for name in LAYERS), overridden=overridden,
+        layer_warnings=tuple(layer_warnings),
+    )
