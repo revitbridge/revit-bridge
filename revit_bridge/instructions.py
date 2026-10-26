@@ -23,6 +23,12 @@ the card, or "will not be verified") and run it after the execution
 executed but verification failed, executed and not verified. A host such as
 the web demo has none of these tools.
 
+Step 3 carries the clarification rules of both renderings (P10): known facts
+are not asked again, a question's ``kind`` says whether the model is checked
+first (``model_fact``), ``blocks`` names the steps to hold while the rest goes
+on, an answer is recorded as ``source: answer``, and a changed request voids
+what it touched until reconcile runs again.
+
 Section headings are followed directly by their text (no blank line): the
 budget counts every line, and a blank one under a heading says nothing.
 
@@ -94,6 +100,8 @@ _FLOW_HEAD = """\
    selection, view_elements, units, counts. No token. Never write C# for a read.
 3. list_tools, then missing_params(tool, known) - the questions still open, with
    the real options (levels, types). Ask the designer all of them in one round.
+   Never re-ask what is known; `model_fact`: query first; pause only what `blocks` lists.
+   An answer is source answer; a changed request voids what it touched: reconcile again.
 4. reconcile(spec, snapshot) - a draft TaskSpec against the model: values that do
    not exist, ambiguous names, units and range words to confirm, stale snapshot.
 """

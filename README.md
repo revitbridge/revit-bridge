@@ -99,7 +99,8 @@ describes the starter generator; it does not install or launch the add-in.
    - `list_tools` — the capability packs (eight built-ins such as
      `create_wall`, `create_structural_column`, `query_levels`, plus your own);
      `missing_params(tool, known)` — the questions still open, with the real
-     options; `get_tool_choices(name)` — levels, types or elements for a pack's
+     options, who can answer each (`kind`) and the steps it holds up
+     (`blocks`); `get_tool_choices(name)` — levels, types or elements for a pack's
      dynamic parameters.
    - `reconcile(spec, snapshot)` — a draft TaskSpec against the model: values
      that do not exist, missing parameters, readings to confirm (units, "on
@@ -113,6 +114,9 @@ describes the starter generator; it does not install or launch the add-in.
      categories and compiler errors; read-only, no token.
    - `confirm_spec(spec)` with the TaskSpec the designer confirmed, then
      `run_tool(name, params, token)` with exactly the confirmed values.
+   - `plan_verification(template, params)` / `verify_execution(evidence_id,
+     verification_id)` — for `execute_code`: a read-back check (`created_ids`,
+     `count_delta`, `param_equals`) planned before confirming, run after; no token.
 
    `execute_code` takes arbitrary C# for tasks no pack covers. The code runs
    inside Revit with `document` in scope and a transaction already open; end it
@@ -179,7 +183,7 @@ part of CI.
 | `REVIT_BRIDGE_TIMEOUT` | `60` | Seconds to wait for a command to finish |
 | `REVIT_BRIDGE_ALLOW_UNCONFIRMED` | *(unset)* | `1` lifts the confirmation-token gate (host-internal flows only) |
 | `REVIT_BRIDGE_CONFIRM_TTL` | `600` | Seconds a confirmation token stays valid |
-| `REVIT_BRIDGE_DATA_DIR` | `%LOCALAPPDATA%\revit-bridge` (Windows), `~/.local/share/revit-bridge` (else) | Per-user data: solidified packs, `usage.json`, the evidence ledger, `auth/devices.json` |
+| `REVIT_BRIDGE_DATA_DIR` | `%LOCALAPPDATA%\revit-bridge` (Windows), `~/.local/share/revit-bridge` (else) | Per-user data: solidified packs, `usage.json`, the evidence ledger, `auth/devices.json`, `verifications/` (read-back plans) |
 | `REVIT_BRIDGE_CAPABILITIES_DIR` | `<data dir>/capabilities` | User pack directory; the packs shipped in the wheel stay visible, a user pack of the same name replaces one |
 | `REVIT_BRIDGE_EVIDENCE_DIR` | `<data dir>/evidence` | Evidence ledger (`<YYYY-MM>.jsonl`) and pending confirmations |
 | `REVIT_BRIDGE_GUIDANCE_COMPANY` | *(unset)* | Company guidance layer: a directory laid out like `plugin/guidance`; its lessons replace packaged ones of the same id |

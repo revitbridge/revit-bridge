@@ -163,6 +163,54 @@ def test_the_skill_plans_and_reports_the_verification():
     assert 'is there a verification line under the card, or "will not be verified"?' in text
 
 
+# -- P10: asking the designer (both renderings and both skills) ---------------------------
+
+def test_both_renderings_carry_the_clarification_rules_in_step_3():
+    rules = ("Never re-ask what is known; `model_fact`: query first; pause only what `blocks` lists.",
+             "An answer is source answer; a changed request voids what it touched: reconcile again.")
+    for text in (server_instructions(), host_instructions()):
+        rendered = lines(text)
+        step3 = next(i for i, line in enumerate(rendered) if line.startswith("3. list_tools"))
+        assert rendered[step3 + 1].endswith("Ask the designer all of them in one round.")
+        assert [line.strip() for line in rendered[step3 + 2:step3 + 4]] == list(rules)
+        assert rendered[step3 + 4].startswith("4. reconcile(")
+        assert len(rendered) <= 60
+
+
+def test_the_skill_asks_by_kind_and_pauses_only_what_blocks():
+    import pathlib
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    questions = text[text.index("## Questions"):text.index("## The TaskSpec")]
+    for phrase in ("`kind`, `blocks`", "`user_intent` - only the designer can: ask",
+                   "`model_fact` - a value you or the designer gave is not in the model",
+                   "`technical` is reserved: the bridge never asks one", "pause only those",
+                   "Never ask again what the designer already said or what the spec already holds",
+                   "`source: answer` with the question id as `evidence`",
+                   "silence, a timeout or your own guess is not an answer",
+                   "every value, interpretation and answer the change touches is void",
+                   "`reconcile` again", "never offer names you made up"):
+        assert phrase in questions, phrase
+    assert "Do not run a step an open question `blocks`" in text[text.index("4. **Ask**"):text.index("5. **Reconcile**")]
+
+
+def test_the_addin_skill_settles_five_things_before_building():
+    import pathlib
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-addin-dev" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    start = text.index("Before building, these five must be settled")
+    assert text.index("## Continue the user's project") < start < text.index("## Use the bridge where it helps")
+    block = text[start:text.index("## Use the bridge where it helps")]
+    items = ["1. **Output rules**", "2. **Scope**", "3. **Target Revit version**", "4. **Install location**",
+             "5. **Cancel and empty selection**"]
+    assert [block.index(item) for item in items] == sorted(block.index(item) for item in items)
+    assert "ask about it - all open ones in one round - before you build" in block
+    assert "a project that compiles has not settled them" in block
+    assert "runtime input" in block
+
+
 # -- P2: the snippet contract has one source -----------------------------------------
 
 def _contract():
