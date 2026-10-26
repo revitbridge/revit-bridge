@@ -615,6 +615,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(status, indent=2, ensure_ascii=False))
         return 0 if status["reachable"] else 1
 
+    # The log goes to stderr in whatever code page the console has (GBK on a
+    # Chinese Windows); hosts read it as UTF-8. stdout is the MCP transport and
+    # is left alone.
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     mcp.run(transport="stdio")
     return 0
 
