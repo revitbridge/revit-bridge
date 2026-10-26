@@ -72,6 +72,7 @@ for _warning in SNIPPET_CONTRACT_WARNINGS:
     warnings.warn(_warning, RuntimeWarning, stacklevel=1)
 SNIPPET_CONTRACT_NOTE = _CONTRACT.note() if _CONTRACT is not None else FALLBACK_NOTE
 SNIPPET_CONTRACT_SUMMARY = _CONTRACT.summary if _CONTRACT is not None else FALLBACK_SUMMARY
+SNIPPET_CONTRACT_USINGS = _CONTRACT.usings() if _CONTRACT is not None else None    # check_code's CS0246 hint
 
 _INTRO = """\
 You are connected to a running Autodesk Revit through revit-bridge 0.3. The server

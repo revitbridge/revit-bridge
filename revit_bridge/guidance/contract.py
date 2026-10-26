@@ -1,7 +1,7 @@
 """The execute_code snippet contract, from its one source (P2): the lesson
 ``revit-core/snippet-contract`` of the framework layer.
 
-Three places render it instead of repeating it:
+Four places render it instead of repeating it:
 
 - the "Snippet contract" note of the model instructions (both renderings),
   from the lesson's ``## Contract`` section: at most six lines, rendered as
@@ -11,7 +11,9 @@ Three places render it instead of repeating it:
   descriptions, from the lesson's ``summary`` key;
 - the block between ``<!-- snippet-contract:begin -->`` and
   ``<!-- snippet-contract:end -->`` in the ``revit-bridge`` skill, written by
-  ``revit-bridge guidance index`` (``replace_marked``).
+  ``revit-bridge guidance index`` (``replace_marked``);
+- the usings named in ``check_code``'s CS0246 hint (``usings()``: the list
+  after the word "usings" up to the next semicolon, the lines joined).
 
 ``load_contract(root)`` reads only that one file (checked like any lesson)
 and raises ``GuidanceError`` when it is missing, invalid, without
@@ -32,6 +34,7 @@ MAX_CONTRACT_LINES = 6
 BEGIN_MARK = "<!-- snippet-contract:begin -->"
 END_MARK = "<!-- snippet-contract:end -->"
 
+_USINGS = re.compile(r"\busings\s+([^;]+);")
 _CONTRACT_HEADING = re.compile(r"^##\s+Contract\s*$")
 _NEXT_HEADING = re.compile(r"^#{1,2}\s")
 
@@ -47,6 +50,11 @@ class SnippetContract:
     def note(self) -> str:
         """The ``## Contract`` lines as one Markdown list item, ending with a newline."""
         return "".join(("- " if i == 0 else "  ") + line + "\n" for i, line in enumerate(self.lines))
+
+    def usings(self) -> str | None:
+        """The default usings as the contract lists them (``System, System.Linq, ...``), or None."""
+        found = _USINGS.search(" ".join(line.strip() for line in self.lines))
+        return " ".join(found.group(1).split()) if found else None
 
 
 def contract_lines(body: str) -> tuple[str, ...] | None:

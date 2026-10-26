@@ -242,10 +242,26 @@ def test_no_python_source_restates_the_contract():
     contract = _contract()
     phrases = [line.strip() for line in contract.lines] + [contract.summary, "already inside a transaction",
                                                              "IO, Process, Assembly, DllImport", "(no JSON library)"]
-    for path in (package / "instructions.py", package / "mcp_server.py"):
+    for path in (package / "instructions.py", package / "mcp_server.py", package / "checking.py"):
         text = path.read_text(encoding="utf-8")
         for phrase in phrases:
             assert phrase not in text, (path.name, phrase)
+
+
+def test_the_cs0246_hint_names_the_usings_of_the_contract():
+    """S3c: checking.SNIPPET_USINGS is rendered from the lesson; the hint text is byte for byte as before."""
+    from revit_bridge import checking
+    from revit_bridge.guidance.contract import SnippetContract
+
+    usings = "System, System.Linq, System.Collections.Generic, Autodesk.Revit.DB, Autodesk.Revit.UI"
+    assert _contract().usings() == usings == checking.SNIPPET_USINGS
+    hint = checking.hint_for({"id": "CS0246", "message": "The type or namespace name 'Foo' could not be found"},
+                             "Revit 2026.5")
+    assert hint["text"].startswith(f"Revit 2026.5: type or namespace 'Foo' is not found with the snippet's usings "
+                                   f"({usings}) and references (base library, RevitAPI, RevitAPIUI).")
+    assert SnippetContract(summary="s", lines=("no list here",), path="p").usings() is None
+    wrapped = SnippetContract(summary="s", lines=("a body; usings A,", "  B.C, D; references", "x"), path="p")
+    assert wrapped.usings() == "A, B.C, D"
 
 
 def test_the_tool_descriptions_carry_the_contract_summary():

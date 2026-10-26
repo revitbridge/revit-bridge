@@ -204,6 +204,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   carry its `summary`, and the `revit-bridge` skill's contract block is
   written by `guidance index`. Should the packaged lesson not load, the
   exported copy is used, then a pointer to the lesson, with a warning.
+  `check_code`'s CS0246 hint takes its list of usings from the same section
+  (the hint text is unchanged).
 - Seed lessons: `revit-core/snippet-contract` (revision 2: `## Contract` and
   `summary`), `revit-collect/collector-needs-filter`,
   `revit-params/lookup-parameter-storage-type` and
