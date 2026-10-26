@@ -6,6 +6,15 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `reconcile`: a value that is not among the names of a truncated candidate
+  list (a snapshot lists at most 50 types of a category) is now a
+  `model_fact` question - query that category first, ask only if the name is
+  still not there - and its `why` says so. The conflict is still
+  `ambiguous`; every other `ambiguous` value is still a `user_intent`
+  question.
+
 ## [0.4.0] - 2026-10-26
 
 Writing Revit code through the bridge: `check_code` compiles `execute_code` C#

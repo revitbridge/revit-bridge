@@ -511,11 +511,48 @@ def test_reconcile_turns_ambiguous_values_into_user_intent_and_missing_ones_into
     result = reconcile(good_spec(level_name=binding("level_name", " l2", Source.answer, "q")), snapshot(), pack)
     assert result.questions[0].kind == "model_fact" and [o["value"] for o in result.questions[0].options] == ["L2", "L1"]
 
-    # a truncated type list is an ambiguous conflict: the designer's to resolve, with the listed names only
+    # a truncated type list is an ambiguous conflict, but its question is a fact to check (see below)
     trunc = snapshot(family_types=[TypeSummary(category="OST_Walls", count=80, names=[f"Type {i:02d}" for i in range(50)])])
     result = reconcile(good_spec(type_name=binding("type_name", "Type 77", Source.answer, "q")), trunc, pack)
     [q] = result.questions
-    assert q.kind == "user_intent" and len(q.options) == 50 and "Type 77" not in [o["value"] for o in q.options]
+    assert q.kind == "model_fact" and len(q.options) == 50 and "Type 77" not in [o["value"] for o in q.options]
+
+
+def test_a_value_missing_from_a_truncated_list_is_a_model_fact_an_ambiguous_one_stays_user_intent(pack):
+    """S3c ruling: the snapshot shows 50 of 80 names, so the value may well exist - query first, then ask."""
+    names = [f"Type {i:02d}" for i in range(50)]
+    trunc = snapshot(family_types=[TypeSummary(category="OST_Walls", count=80, names=names)])
+    for language, suffix in (
+            ("zh", "\u3002\u5148\u7528\u4e0a\u9762\u7684 query \u8865\u67e5\u8be5\u7c7b\u522b\uff0c"
+                   "\u4ecd\u627e\u4e0d\u5230\u518d\u95ee\u3002"),
+            ("en", ". Run that query for the category first; ask only if the name is still not there.")):
+        draft = good_spec(type_name=binding("type_name", "Type 77", Source.answer, "q"), language=language)
+        result = reconcile(draft, trunc, pack)
+        [conflict] = result.conflicts
+        assert conflict.kind == "ambiguous"                         # the conflict itself is unchanged
+        [q] = result.questions
+        assert (q.id, q.param, q.kind, q.blocks) == ("q_type_name", "type_name", "model_fact", ["spec", "execute"])
+        assert q.why == conflict.message + suffix
+        assert 'query("family_types", {"categories": ["OST_Walls"]})' in q.why
+        assert [o["value"] for o in q.options] == names and result.ready is False
+    # the same value against the complete list: not_found, a model_fact without the truncation note
+    complete = snapshot(family_types=[TypeSummary(category="OST_Walls", count=50, names=names)])
+    [q] = reconcile(good_spec(type_name=binding("type_name", "Type 77", Source.answer, "q")), complete, pack).questions
+    assert q.kind == "model_fact" and "\u5148\u7528\u4e0a\u9762\u7684 query" not in q.why
+    # an ordinary ambiguous value (several names of a complete list fold to it) is still the designer's to choose
+    folded = snapshot(levels=[LevelInfo(id=1, name="L1", elevation_mm=0.0), LevelInfo(id=2, name="l 1", elevation_mm=100.0)],
+                      family_types=[TypeSummary(category="OST_Walls", count=4,
+                                                names=["Generic - 200mm", "Wall A", "wall a", "Wall B"])])
+    for draft in (good_spec(level_name=binding("level_name", "l1", Source.answer, "q")),
+                  good_spec(type_name=binding("type_name", "WALL A", Source.answer, "q"))):
+        result = reconcile(draft, folded, pack)
+        [q] = result.questions
+        assert result.conflicts[0].kind == "ambiguous" and q.kind == "user_intent"
+        assert q.why == result.conflicts[0].message and len(q.options) == 2
+    # in a truncated list even a folded match is first a fact: the exact name may be among the unlisted ones
+    folded_trunc = snapshot(family_types=[TypeSummary(category="OST_Walls", count=80, names=["Wall A", "wall a"] + names[2:])])
+    [q] = reconcile(good_spec(type_name=binding("type_name", "WALL A", Source.answer, "q")), folded_trunc, pack).questions
+    assert q.kind == "model_fact"
 
 
 def test_reconcile_asks_nothing_for_other_conflicts_and_never_a_technical_question(pack):

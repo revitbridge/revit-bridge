@@ -249,8 +249,8 @@ async def reconcile(spec: dict | str, snapshot: dict | str | None = None) -> str
     snapshot from get_project_snapshot, or omit it and the server takes one.
     Returns {conflicts, questions, interpretations_required, ready}. A value
     that matches several names is also a question of kind "user_intent"; one
-    that does not exist is kind "model_fact": check the model (query) before
-    asking the designer."""
+    that does not exist, or is not among the names of a truncated list, is
+    kind "model_fact": check the model (query) before asking the designer."""
     try:
         draft = TaskSpec.model_validate(_parse_json_arg(spec, "spec"))
     except (ValidationError, json.JSONDecodeError, TypeError) as e:
