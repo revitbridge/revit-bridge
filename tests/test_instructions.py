@@ -211,6 +211,38 @@ def test_the_addin_skill_settles_five_things_before_building():
     assert "runtime input" in block
 
 
+# -- S5: API lookup (revit-api-docs) and the version the skill needs ------------------------
+
+def test_the_skill_needs_0_4_and_says_how_to_work_with_a_0_3_server():
+    import pathlib
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    intro = text[text.index("# revit-bridge"):text.index("## The bridge flow")]
+    assert "**0.4 or newer**" in intro and "0.3 or newer" not in intro
+    assert "`check_code`, `get_guidance` and `plan_verification` need 0.4" in intro
+    for fallback in ('"not pre-compiled locally"', '"Verification: none - will not be verified"',
+                     "there is no guidance to read", "**executed, not verified**",
+                     "older than 0.3: tell the designer to update with `uvx --refresh revit-bridge` and stop"):
+        assert fallback in intro, fallback
+
+
+def test_the_skill_says_how_to_use_and_read_the_api_lookup():
+    import pathlib
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    section = text[text.index("## API lookup"):text.index("## References")]
+    assert len(section.strip().splitlines()) <= 8
+    for phrase in ("`revit-api-docs` is an optional second MCP server", "`search_revit_api`",
+                   "cite the data set version it names", "Without the tool, say the API is unverified",
+                   "`Rerank: jev | cohere | none`", "`Relevance:`",
+                   "not that the member does not exist", "for reference only",
+                   "Whether a member exists in the connected Revit is what `check_code` says",
+                   "is not the data set's release", "unverified until `check_code` compiles them"):
+        assert phrase in section, phrase
+
+
 # -- P2: the snippet contract has one source -----------------------------------------
 
 def _contract():

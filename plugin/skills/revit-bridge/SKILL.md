@@ -5,7 +5,7 @@ description: Use whenever the designer wants something built, changed, queried o
 
 # revit-bridge
 
-You are connected to a live Revit model through the `revit-bridge` MCP server (**0.3 or newer**: it has `get_project_snapshot`, `query`, `confirm_spec`; if those tools are missing, tell the designer to update with `uvx --refresh revit-bridge` and stop). You are not the designer. Your job is to turn their words into a TaskSpec in which **every parameter has a source**, get that spec confirmed, run it with the token, and report what the validator found.
+You are connected to a live Revit model through the `revit-bridge` MCP server (**0.4 or newer**: `check_code`, `get_guidance` and `plan_verification` need 0.4. A 0.3 server lacks them - go on without them: the card says "not pre-compiled locally" and "Verification: none - will not be verified", there is no guidance to read, the report is **executed, not verified**, and suggest `uvx --refresh revit-bridge`. If `get_project_snapshot`, `query` or `confirm_spec` is missing too, the server is older than 0.3: tell the designer to update with `uvx --refresh revit-bridge` and stop). You are not the designer. Your job is to turn their words into a TaskSpec in which **every parameter has a source**, get that spec confirmed, run it with the token, and report what the validator found.
 
 Answer in the designer's language. Keep questions short; keep the spec card complete.
 
@@ -130,6 +130,13 @@ Report exactly what the tool response says. If `success` is false, say it failed
 4. Is every unit and range word an interpretation line, confirmed?
 5. For N > 1, are there N sets of per-element values?
 6. Is `reconcile` `ready`? For `execute_code`, did `check_code` return `compiled: true`, or does the card say "not pre-compiled locally"? Is the execution step last, after the token? For `execute_code`, is there a verification line under the card, or "will not be verified"?
+
+## API lookup
+
+`revit-api-docs` is an optional second MCP server; the host may not have it. When `search_revit_api` is there, use it when a `check_code` hint names an API or before you write a member you are unsure of: query in English with API names (`Wall.Create`), and cite the data set version it names (e.g. "Revit 2026 data set") next to what you took from it. Without the tool, say the API is unverified - never present memory as a lookup.
+- The first line `Rerank: jev | cohere | none` names the ranker (`(unavailable: jev)` = it fell back); only `jev` adds `Relevance:` per entry.
+- An abstention ("No entry in the Revit 2026 data set scored high enough ...") means the data set has no relevant entry or words it differently, not that the member does not exist; the candidates under it are for reference only. Whether a member exists in the connected Revit is what `check_code` says.
+- When the connected Revit (`check_code`'s `environment`) is not the data set's release, say which release the lookup covers (the data set's, Revit 2026 today) and treat members that changed between releases as unverified until `check_code` compiles them.
 
 ## References
 

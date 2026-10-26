@@ -241,6 +241,20 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   skill lists five things to settle before building a standalone add-in
   (output rules, scope, target Revit version, install location, cancel and
   empty selection) and asks about the open ones first.
+- `check_code` hints for an error that names an API end with: if the host
+  has the revit-api-docs MCP server, query it with `search_revit_api` before
+  changing the code and cite the data set version it reports (e.g. Revit
+  2026 data set); without that tool, mark the API as unverified. The hint
+  keys, and which errors get a hint, are unchanged.
+- The `revit-bridge` skill needs a 0.4 server (`check_code`, `get_guidance`,
+  `plan_verification`) and says how to go on with a 0.3 one ("not
+  pre-compiled locally", no guidance, "executed, not verified"). A new "API
+  lookup" section: when to call `search_revit_api`, how to read its `Rerank:`
+  line and an abstention (the data set has no relevant entry, which does not
+  mean the member is missing: `check_code` decides), and what to say when the
+  connected Revit is not the data set's release. README: "Pair with
+  revit-api-docs" (both servers in one config, the 335 MB first download,
+  Jev). The plugin's `.mcp.json` still starts only `revit-bridge`.
 
 ## [0.3.0] - 2026-09-22
 
