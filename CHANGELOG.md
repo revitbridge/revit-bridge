@@ -6,6 +6,12 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `revit-bridge serve` writes its stderr log as UTF-8 (it followed the console
+  code page, GBK on a Chinese Windows, so hosts reading it as UTF-8 saw
+  mojibake); stdout, the MCP transport, is unchanged.
+
 ## [0.4.1] - 2026-10-26
 
 A patch on 0.4.0: the verification tools and ledger record the document fingerprint, a run-time exception points the model at the fix lessons for that exception (E3), two exception lessons, and a value missing from a truncated candidate list is a `model_fact` question.
