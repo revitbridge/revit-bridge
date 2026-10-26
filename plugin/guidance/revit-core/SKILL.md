@@ -16,3 +16,7 @@ Lessons in this category are chosen and ordered by the revit-bridge MCP server's
 - [elementid-value](lessons/elementid-value.md) - `ElementId.Value` (long); `IntegerValue` is obsolete in 2024-2025 and gone from 2026
 - [transaction-owned-by-bridge](lessons/transaction-owned-by-bridge.md) - never start a `Transaction` in a snippet; nest a `SubTransaction` if needed
 - [runtime-matrix-2024-2027](lessons/runtime-matrix-2024-2027.md) - target framework, `global.json` and manifest folder per Revit release
+
+## Writing lessons
+
+Keep a lesson body at or under 2300 UTF-8 bytes (the loader warns above that): a failed `check_code` inlines at most 2400 bytes of a lesson, and the margin covers a translation and the truncation line.

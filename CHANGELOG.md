@@ -106,7 +106,9 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   library and without a model; items have the `get_guidance` item shape. On
   compile errors: up to two `fix` lessons with their bodies, chosen by the
   diagnostic ids, their symbols and the API names in the code (comments and
-  string literals skipped); each body is at most 2400 UTF-8 bytes, and a cut
+  string literals skipped); an error code pairs only with the diagnostics'
+  own symbols, never with a name from the code, so the lesson about the
+  reported error comes first; each body is at most 2400 UTF-8 bytes, and a cut
   one has `truncated: true` and ends with the line
   `[truncated: get_guidance(mode="read", ids=["<id>"])]`. When the code
   compiles: up to five `write` lessons as pointers (`summary`, no body). The
@@ -116,6 +118,16 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   The reply keys and `hints` are unchanged. Package API:
   `check_code(client, code, parameters, library=...)`,
   `revit_bridge.guidance.pointers` and `revit_bridge.guidance.code_symbols`.
+- Guidance selection order: lessons with an error hit (`why` has an
+  `error:` entry) come before the others, each group still in category
+  order, `order`, id; `get_guidance` results change only when `errors` are
+  passed. `recommend` and `pointers` take an optional `error_symbols` (package
+  API only, not a `get_guidance` parameter): when given, an error code pairs
+  only with them; otherwise with `symbols`, as before.
+- Guidance writing rule: a lesson body should stay at or under 2300 UTF-8
+  bytes (noted in `revit-core/SKILL.md`); the loader lists larger bodies in
+  `Library.warnings` without rejecting them. Four seed lessons (2314-2376
+  bytes) are over it today.
 - The server rendering and the `revit-bridge` skill read the lesson bodies
   in `check_code`'s `guidance` before changing code (`get_guidance(mode="read")`
   for a `truncated` one, `stage="fix"` for more) and treat the pointers of a

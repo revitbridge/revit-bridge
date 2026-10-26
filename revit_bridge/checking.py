@@ -20,8 +20,11 @@
    - compile errors (``compiled: false`` with an ``error`` diagnostic):
      ``recommend(stage="fix", inline=True)`` with ``errors`` = the
      diagnostics' ids, ``symbols`` = their ``symbol`` values plus
-     ``code_symbols(code)``, ``revit_version`` = the environment's version
-     in the lesson format (``2026``, ``2026.5``) when known. At most
+     ``code_symbols(code)``, ``error_symbols`` = the diagnostics' own
+     symbols only (an error code never pairs with a name scanned from the
+     code, so lessons about the reported error come first),
+     ``revit_version`` = the environment's version in the lesson format
+     (``2026``, ``2026.5``) when known. At most
      ``fix_inline_items`` (2) lessons with ``body``, each at most
      ``fix_inline_bytes`` (2400) UTF-8 bytes; a cut body has
      ``truncated: true`` and ends with the line
@@ -256,8 +259,9 @@ def guidance_for(library: Library, code: str, diagnostics: list[dict], compiled:
     if not _has_errors(diagnostics):
         return []
     errors = _distinct(d.get("id") for d in diagnostics)
-    symbols = _distinct([d.get("symbol") for d in diagnostics] + scanned)
-    return recommend(library, "fix", errors=errors, symbols=symbols, revit_version=version, inline=True)["items"]
+    own = _distinct(d.get("symbol") for d in diagnostics)
+    return recommend(library, "fix", errors=errors, symbols=_distinct(own + scanned), error_symbols=own,
+                     revit_version=version, inline=True)["items"]
 
 
 def _load(library) -> tuple[Library | None, str | None]:

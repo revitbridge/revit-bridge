@@ -296,9 +296,9 @@ def test_check_code_on_a_new_addin_compiles_without_running(revit_env):
         "text": "Revit 2026.5: 'Wall' has no 'LocationCurve'. If an API lookup tool (search_revit_api) is "
                 "connected, query 'Wall LocationCurve' before changing the code.",
     }]
-    # the code names ElementId and Wall: the fix lessons in category order (core first), bodies inline
+    # the code names ElementId and Wall: the lesson about the reported error first, bodies inline
     assert [g["id"] for g in out["guidance"]] == [
-        "revit-core/elementid-value", "revit-geometry/wall-length-from-location"]
+        "revit-geometry/wall-length-from-location", "revit-core/elementid-value"]
     assert all(g["body"] and g["applicability"] == "verified" for g in out["guidance"])
     assert out["warnings"] == []
     assert out["environment"]["source"] == "capabilities" and out["environment"]["revit"] == CAPS["revit"]
@@ -479,12 +479,28 @@ def test_an_error_without_any_lesson_symbol_gets_no_guidance(seed_library):
 
 def test_more_than_two_fix_lessons_inline_only_the_first_two(seed_library):
     symbols = ["LocationCurve"] + code_symbols(BUSY_CODE)
-    every = recommend(seed_library, "fix", errors=["CS1061"], symbols=symbols)["items"]
-    assert len(every) >= 3
+    every = recommend(seed_library, "fix", errors=["CS1061"], symbols=symbols, error_symbols=["LocationCurve"])
+    assert len(every["items"]) >= 3
     out = _checked(new_addin(), BUSY_CODE, seed_library)
     assert set(out) == REPLY_KEYS                                   # no "omitted": the reply keys are fixed
-    assert [g["id"] for g in out["guidance"]] == [x["id"] for x in every[:2]]
+    assert [g["id"] for g in out["guidance"]] == [x["id"] for x in every["items"][:2]]
+
+
+def test_the_lesson_about_the_reported_error_is_not_crowded_out(seed_library):
+    """CS1061 on LocationCurve in code that also uses the collector, units and ElementId: the
+    error pairs only with the diagnostic's own symbol, and error hits sort first."""
+    out = _checked(new_addin(), BUSY_CODE, seed_library)
+    assert [g["id"] for g in out["guidance"]] == [WALL, "revit-core/internal-units-feet"]
+    assert out["guidance"][0]["why"] == [
+        "stage:fix", "symbol:Wall", "symbol:LocationCurve", "error:CS1061+symbol:LocationCurve"]
+    whys = [w for g in out["guidance"] for w in g["why"]]
+    assert "error:CS1061+symbol:ElementId" not in whys
+    assert [w for w in whys if w.startswith("error:")] == ["error:CS1061+symbol:LocationCurve"]
+    # a diagnostic without a symbol pairs with nothing: plain symbol hits, in category order
+    bare = dict(CS1061, symbol=None)
+    out = _checked(new_addin(failed_check(bare)), BUSY_CODE, seed_library)
     assert [g["id"] for g in out["guidance"]] == ["revit-core/internal-units-feet", "revit-core/elementid-value"]
+    assert not any(w.startswith("error:") for g in out["guidance"] for w in g["why"])
 
 
 def test_long_bodies_are_cut_to_2400_bytes_with_the_read_line(tmp_path):
@@ -492,7 +508,7 @@ def test_long_bodies_are_cut_to_2400_bytes_with_the_read_line(tmp_path):
     wide_body = "## Scenario\n\n" + chr(0x5899) * 1200 + "\n"                    # 3 UTF-8 bytes each
     library = load_guidance(make_root(tmp_path, {
         "revit-geometry/lessons/long.md": lesson("revit-geometry/long", body=long_body, order="1",
-                                                 triggers="\n  symbols: [Wall]\n  errors: [CS1061]"),
+                                                 triggers="\n  symbols: [Wall, LocationCurve]\n  errors: [CS1061]"),
         "revit-geometry/lessons/wide.md": lesson("revit-geometry/wide", body=wide_body, order="2"),
     }))
     out = _checked(new_addin(), WALL_CODE, library)
@@ -502,7 +518,7 @@ def test_long_bodies_are_cut_to_2400_bytes_with_the_read_line(tmp_path):
         assert item["bytes"] == len(item["body"].encode("utf-8")) <= 2400
         assert item["body"].rstrip("\n").splitlines()[-1] == f'[truncated: get_guidance(mode="read", ids=["{item["id"]}"])]'
     assert out["guidance"][0]["body"].startswith(long_body[:100])
-    assert "error:CS1061+symbol:Wall" in out["guidance"][0]["why"]
+    assert "error:CS1061+symbol:LocationCurve" in out["guidance"][0]["why"]
 
 
 def test_a_clean_compile_points_at_write_lessons_without_bodies(seed_library):

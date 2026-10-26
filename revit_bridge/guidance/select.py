@@ -10,9 +10,13 @@ same reply, byte for byte once serialized.
        category at ``orient``), ``skill_category:<id>``, ``category:<OST_*>``,
        ``symbol:<name>`` (a trigger symbol found as a whole word, case
        sensitive, in one of the given symbols), ``error:<CSxxxx>+symbol:<a,b>``
-       (an error code counts only when a symbol hits too) and
+       (an error code counts only when a symbol hits too: one of
+       ``error_symbols`` when they are given - ``check_code`` passes the
+       diagnostics' own symbols - otherwise one of ``symbols``) and
        ``exception:<name>`` (short names compare by their last segment).
-    3. Order: ``guidance.yaml`` category order, the lesson's ``order``, its id.
+    3. Order: lessons with an ``error:`` hit first, then the rest; inside
+       each group ``guidance.yaml`` category order, the lesson's ``order``,
+       its id.
     4. A lesson whose ``revit`` range excludes ``revit_version`` goes to
        ``omitted`` (``version``); one whose hash is in ``seen_hashes`` goes to
        ``omitted`` (``seen``) and uses no budget. The rest are taken in order
@@ -72,9 +76,14 @@ def _exception_matches(trigger: str, given: str) -> bool:
     return trigger.rsplit(".", 1)[-1] == given.rsplit(".", 1)[-1]
 
 
+def _matched(lesson: Lesson, given: list[str]) -> list[str]:
+    """The lesson's trigger symbols found as whole words in ``given``, in trigger order."""
+    return [s for s in lesson.triggers.symbols if any(_word(s).search(text) for text in given)]
+
+
 def _hits(lesson: Lesson, stage: str, always: tuple[str, ...], skill_categories: list[str],
           revit_categories: list[str], symbols: list[str], errors: list[str],
-          exceptions: list[str]) -> list[str]:
+          exceptions: list[str], error_symbols: list[str] | None) -> list[str]:
     hits = []
     if stage == "orient" and lesson.category in always:
         hits.append(f"always:{lesson.category}")
@@ -83,12 +92,13 @@ def _hits(lesson: Lesson, stage: str, always: tuple[str, ...], skill_categories:
     for category in lesson.triggers.categories:
         if category in revit_categories:
             hits.append(f"category:{category}")
-    matched = [s for s in lesson.triggers.symbols if any(_word(s).search(given) for given in symbols)]
+    matched = _matched(lesson, symbols)
     hits.extend(f"symbol:{s}" for s in matched)
-    if matched:
+    paired = matched if error_symbols is None else _matched(lesson, error_symbols)
+    if paired:
         for code in lesson.triggers.errors:
             if code in errors:
-                hits.append(f"error:{code}+symbol:{','.join(matched)}")
+                hits.append(f"error:{code}+symbol:{','.join(paired)}")
     for name in lesson.triggers.exceptions:
         if any(_exception_matches(name, given) for given in exceptions):
             hits.append(f"exception:{name}")
@@ -174,32 +184,46 @@ def _version(revit_version: str | None, warnings: list[str]):
     return version
 
 
-def _signals(skill_categories, revit_categories, symbols, errors, exceptions, warnings: list[str]) -> tuple:
-    """The recommend inputs cleaned up: (skill, revit categories, symbols, error codes, exceptions)."""
+def _signals(skill_categories, revit_categories, symbols, errors, exceptions, error_symbols,
+             warnings: list[str]) -> tuple:
+    """The recommend inputs cleaned up: (skill, revit categories, symbols, error codes,
+    exceptions, error symbols - None when not given, so errors pair with ``symbols``)."""
     skill = _strings(skill_categories)
     for name in skill:
         if name not in CATEGORIES:
             warnings.append(f"skill_categories: {name!r} is not a guidance category")
     codes = [code.upper() for code in _strings(errors)]
-    return skill, _strings(revit_categories), _strings(symbols), codes, _strings(exceptions)
+    paired = None if error_symbols is None else _strings(error_symbols)
+    return skill, _strings(revit_categories), _strings(symbols), codes, _strings(exceptions), paired
 
 
-def _matches(library: Library, stage: str, signals: tuple):
-    """``(lesson, hits)`` for every lesson of ``stage`` that something hits, in library order."""
+def _is_error_hit(hits: list[str]) -> bool:
+    return any(hit.startswith("error:") for hit in hits)
+
+
+def _matches(library: Library, stage: str, signals: tuple) -> list[tuple[Lesson, list[str]]]:
+    """``(lesson, hits)`` for every lesson of ``stage`` that something hits: lessons with an
+    error hit first, each group in library order (category order, ``order``, id)."""
+    found = []
     for lesson in library.lessons:
         if stage not in lesson.stage:
             continue
         hits = _hits(lesson, stage, library.config.always, *signals)
         if hits:
-            yield lesson, hits
+            found.append((lesson, hits))
+    return sorted(found, key=lambda pair: not _is_error_hit(pair[1]))      # stable: keeps library order
 
 
 def recommend(library: Library, stage: str | None, *, skill_categories: Iterable[str] | None = None,
               revit_categories: Iterable[str] | None = None, symbols: Iterable[str] | None = None,
               errors: Iterable[str] | None = None, exceptions: Iterable[str] | None = None,
               revit_version: str | None = None, seen_hashes: Iterable[str] | None = None,
-              inline: bool = False) -> dict:
-    """The lessons for one moment of a task, chosen, ordered and budgeted (see the module doc)."""
+              inline: bool = False, error_symbols: Iterable[str] | None = None) -> dict:
+    """The lessons for one moment of a task, chosen, ordered and budgeted (see the module doc).
+
+    ``error_symbols`` (package only, not a ``get_guidance`` parameter): the symbols an error
+    code pairs with; None pairs it with ``symbols``.
+    """
     if not stage:
         return _reply("recommend", stage, library,
                       error=f'stage_required: mode="recommend" needs stage ({", ".join(STAGES)})')
@@ -207,7 +231,7 @@ def recommend(library: Library, stage: str | None, *, skill_categories: Iterable
         return _reply("recommend", stage, library,
                       error=f"invalid_stage: {stage!r} is not one of {', '.join(STAGES)}")
     warnings: list[str] = []
-    signals = _signals(skill_categories, revit_categories, symbols, errors, exceptions, warnings)
+    signals = _signals(skill_categories, revit_categories, symbols, errors, exceptions, error_symbols, warnings)
     seen = set(_strings(seen_hashes))
     version = _version(revit_version, warnings)
 
@@ -243,13 +267,13 @@ def summary(library: Library, lesson: Lesson) -> str:
 def pointers(library: Library, stage: str, *, skill_categories: Iterable[str] | None = None,
              revit_categories: Iterable[str] | None = None, symbols: Iterable[str] | None = None,
              errors: Iterable[str] | None = None, exceptions: Iterable[str] | None = None,
-             revit_version: str | None = None) -> list[dict]:
+             revit_version: str | None = None, error_symbols: Iterable[str] | None = None) -> list[dict]:
     """The lessons ``recommend`` would choose, as pointers: each the ``index`` item (``summary``,
     no ``body``) with ``why``, at most ``budget.items``. Body sizes do not count; a lesson whose
     range excludes ``revit_version`` is left out. ``get_guidance(mode="read")`` reads one."""
     if stage not in STAGES:
         raise ValueError(f"invalid_stage: {stage!r} is not one of {', '.join(STAGES)}")
-    signals = _signals(skill_categories, revit_categories, symbols, errors, exceptions, [])
+    signals = _signals(skill_categories, revit_categories, symbols, errors, exceptions, error_symbols, [])
     version = _version(revit_version, [])
     items: list[dict] = []
     for lesson, hits in _matches(library, stage, signals):
