@@ -16,6 +16,13 @@ document, what came back and what the validator concluded::
 Parameters are recorded as given (packs carry no secrets); code only as its
 hash and first 200 characters. ``scope`` (0.3) is the device the execution
 ran on, or ``"local"``; lines written before it existed read as ``"local"``.
+
+A read-back check (``verify_execution``) is a line of its own with
+``action`` and ``tool`` both ``"verify_execution"``, the report in
+``validation``, and two more fields after the spec-9 ones: ``evidence_id``
+(the execution it checked) and ``verification_id`` (the plan it used).
+Those ``OPTIONAL_FIELDS`` are written only when a record carries them, so
+every other line keeps exactly ``RECORD_FIELDS``.
 """
 from __future__ import annotations
 
@@ -33,6 +40,7 @@ RECORD_FIELDS = (
     "token_prefix", "confirmed_by", "channel", "params", "code_sha256", "code_head", "document",
     "success", "error", "result_summary", "validation", "duration_ms", "preconditions_failed", "warnings",
 )
+OPTIONAL_FIELDS = ("evidence_id", "verification_id")      # verify_execution lines only
 CODE_HEAD_CHARS = 200
 TOKEN_PREFIX_CHARS = 6
 LOCAL_SCOPE = "local"
@@ -85,6 +93,7 @@ class Ledger:
         """Complete and write one record; returns its id."""
         now = datetime.now(timezone.utc)
         full = {field: record.get(field) for field in RECORD_FIELDS}
+        full.update({field: record[field] for field in OPTIONAL_FIELDS if field in record})
         full["id"] = record.get("id") or new_id(now)
         full["ts"] = record.get("ts") or now.isoformat(timespec="seconds").replace("+00:00", "Z")
         for field in ("preconditions_failed", "warnings"):

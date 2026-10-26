@@ -3,7 +3,14 @@ from __future__ import annotations
 
 import json
 
-from revit_bridge.evidence.ledger import RECORD_FIELDS, Ledger, code_fields, new_id, summarize_result
+from revit_bridge.evidence.ledger import (
+    OPTIONAL_FIELDS,
+    RECORD_FIELDS,
+    Ledger,
+    code_fields,
+    new_id,
+    summarize_result,
+)
 
 
 def test_append_writes_every_field_and_get_finds_it(tmp_path):
@@ -97,3 +104,17 @@ def test_scope_is_written_filtered_and_defaulted(tmp_path):
         (tmp_path / "evidence" / "2026-08.jsonl").read_text(encoding="utf-8"))
     assert [r["id"] for r in ledger.recent(10, scope="local")] == [local, "ev_20260819T120000_aaaaaa"]
     assert ledger.recent(10, scope="dev_aaaaaaaaaaaa")[-1]["id"] == dev_a
+
+
+def test_optional_fields_are_written_only_when_a_record_carries_them(tmp_path):
+    """S3c: a verify_execution line adds evidence_id and verification_id; no other line changes shape."""
+    ledger = Ledger(tmp_path / "evidence")
+    plain = ledger.append({"action": "execute_code", "id": "ev_20261026T090000_000001"})
+    check = ledger.append({"action": "verify_execution", "tool": "verify_execution", "id": "ev_20261026T090100_000002",
+                           "evidence_id": plain, "verification_id": "v_0123456789abcdef", "other": 1})
+    assert OPTIONAL_FIELDS == ("evidence_id", "verification_id")
+    assert list(ledger.get(plain)) == list(RECORD_FIELDS)
+    line = ledger.get(check)
+    assert list(line) == list(RECORD_FIELDS) + list(OPTIONAL_FIELDS) and "other" not in line
+    assert line["evidence_id"] == plain and line["verification_id"] == "v_0123456789abcdef"
+    assert [r["id"] for r in ledger.recent(10, tool="verify_execution")] == [check]

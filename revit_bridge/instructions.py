@@ -16,8 +16,21 @@ and run check_code on its execute_code snippet before the card, writing "not
 pre-compiled locally" on the card when the check could not run. check_code's
 ``guidance`` carries the fix lessons on errors (read them first; a
 ``truncated`` one through get_guidance(mode="read"); more through stage
-"fix") and pointers once it compiles. A host such as the web demo has
-neither tool.
+"fix") and pointers once it compiles. For execute_code the server rendering
+also has the model plan a read-back check (plan_verification, one line under
+the card, or "will not be verified") and run it after the execution
+(verify_execution), and report one of three outcomes: executed and verified,
+executed but verification failed, executed and not verified. A host such as
+the web demo has none of these tools.
+
+Step 3 carries the clarification rules of both renderings (P10): known facts
+are not asked again, a question's ``kind`` says whether the model is checked
+first (``model_fact``), ``blocks`` names the steps to hold while the rest goes
+on, an answer is recorded as ``source: answer``, and a changed request voids
+what it touched until reconcile runs again.
+
+Section headings are followed directly by their text (no blank line): the
+budget counts every line, and a blank one under a heading says nothing.
 
 The snippet contract in Notes is not written here: it is rendered at import
 from its one source, the ``## Contract`` section of the framework lesson
@@ -59,6 +72,7 @@ for _warning in SNIPPET_CONTRACT_WARNINGS:
     warnings.warn(_warning, RuntimeWarning, stacklevel=1)
 SNIPPET_CONTRACT_NOTE = _CONTRACT.note() if _CONTRACT is not None else FALLBACK_NOTE
 SNIPPET_CONTRACT_SUMMARY = _CONTRACT.summary if _CONTRACT is not None else FALLBACK_SUMMARY
+SNIPPET_CONTRACT_USINGS = _CONTRACT.usings() if _CONTRACT is not None else None    # check_code's CS0246 hint
 
 _INTRO = """\
 You are connected to a running Autodesk Revit through revit-bridge 0.3. The server
@@ -73,7 +87,6 @@ _INTRO_CLOSING = {
 
 _FLOW_TITLE = """\
 ## Flow (always, in this order)
-
 """
 
 # Task start, before step 1: only the server rendering has get_guidance.
@@ -83,12 +96,13 @@ _FLOW_START = {
 }
 
 _FLOW_HEAD = """\
-1. get_project_snapshot - what exists: document, units, levels, grids, family
-   types, selection. Note `fingerprint`.
+1. get_project_snapshot - document, units, levels, grids, types, selection, `fingerprint`.
 2. query(kind, args) for any other read: levels, grids, family_types, elements,
    selection, view_elements, units, counts. No token. Never write C# for a read.
 3. list_tools, then missing_params(tool, known) - the questions still open, with
    the real options (levels, types). Ask the designer all of them in one round.
+   Never re-ask what is known; `model_fact`: query first; pause only what `blocks` lists.
+   An answer is source answer; a changed request voids what it touched: reconcile again.
 4. reconcile(spec, snapshot) - a draft TaskSpec against the model: values that do
    not exist, ambiguous names, units and range words to confirm, stale snapshot.
 """
@@ -110,9 +124,16 @@ _FLOW_CHECK = {
 """,
 }
 
-_FLOW_CARD = """\
+# Step 5: the server rendering adds the read-back plan under the card (execute_code).
+_FLOW_CARD = {
+    "server": """\
+5. Show the spec card; wait for an explicit yes. execute_code: under the card, one line
+   from plan_verification(template, params), or "will not be verified" if none fits.
+""",
+    "host": """\
 5. Show the spec card; wait for an explicit yes.
-"""
+""",
+}
 
 _FLOW_TAIL = {
     "server": """\
@@ -122,6 +143,8 @@ _FLOW_TAIL = {
 8. Read the reply: `success` only if Revit succeeded AND the pack's validator passed
    (validation_failed: the model did not change as claimed). Quote `validation.checks`,
    error, evidence_id; validate(evidence_id) re-checks, evidence(limit, tool) lists runs.
+   After execute_code: verify_execution(evidence_id, verification_id); report exactly one
+   of: executed and verified / executed, verification failed / executed, not verified.
 """,
     "host": """\
 6. propose_spec(spec) -> {accepted, errors, reconcile}. Errors name the rule:
@@ -141,7 +164,6 @@ _FLOW_TAIL = {
 
 _TASKSPEC = """\
 ## TaskSpec
-
 {task, action: {kind: run_tool|execute_code, tool|code}, parameters: [{name, value,
 unit?, source, evidence}], interpretations: [{param?, text, confirmed}],
 snapshot_fingerprint, language}. Sources: designer (evidence = their words), tool
@@ -153,7 +175,6 @@ word such as "on F2", is an interpretation the designer must confirm.
 
 _NEVER_HEAD = """\
 ## Never
-
 - Guess a level, type, element id or coordinate: query, then ask.
 - Set a value "for now", "as usual" or "probably": it is a question.
 - Claim success on an error or on a failed validation; do not soften errors.
@@ -166,7 +187,6 @@ _NEVER_TAIL = {
 
 _NOTES_HEAD = """\
 ## Notes
-
 - Revit internal units are feet; packs take millimetres. Read-only tools also run
   in a transaction on the add-in: they fail on a read-only document.
 """
@@ -183,7 +203,7 @@ _NOTES_TAIL = {
 def _render(kind: str) -> str:
     return "\n".join([
         _INTRO.format(closing=_INTRO_CLOSING[kind]),
-        _FLOW_TITLE + _FLOW_START[kind] + _FLOW_HEAD + _FLOW_CHECK[kind] + _FLOW_CARD + _FLOW_TAIL[kind],
+        _FLOW_TITLE + _FLOW_START[kind] + _FLOW_HEAD + _FLOW_CHECK[kind] + _FLOW_CARD[kind] + _FLOW_TAIL[kind],
         _TASKSPEC,
         _NEVER_HEAD + _NEVER_TAIL[kind],
         _NOTES_HEAD + SNIPPET_CONTRACT_NOTE + _NOTES_TAIL[kind],

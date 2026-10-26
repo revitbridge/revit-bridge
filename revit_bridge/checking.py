@@ -60,6 +60,8 @@ import json
 import re
 
 from revit_bridge.guidance import GuidanceError, Library, code_symbols, parse_version, pointers, recommend
+from revit_bridge.guidance.contract import CONTRACT_ID
+from revit_bridge.instructions import SNIPPET_CONTRACT_USINGS
 from revit_bridge.revit import sandbox
 from revit_bridge.revit.capabilities import (
     CHECK_CODE_METHOD,
@@ -76,7 +78,9 @@ from revit_bridge.revit.environment import get_environment, version_label
 SCHEMA_VERSION = 1
 HINT_IDS = ("CS1061", "CS0117", "CS0246", "CS0103", "CS1501", "CS1503", "CS7036")
 API_LOOKUP_TOOL = "search_revit_api"
-SNIPPET_USINGS = "System, System.Linq, System.Collections.Generic, Autodesk.Revit.DB, Autodesk.Revit.UI"
+# The usings the CS0246 hint names come from the snippet contract lesson, its one source;
+# should it not load, the hint points at the lesson instead.
+SNIPPET_USINGS = SNIPPET_CONTRACT_USINGS or f"see the {CONTRACT_ID} lesson"
 GUIDANCE_UNAVAILABLE = "guidance_unavailable"
 
 _QUOTED = re.compile(r"'([^']+)'")

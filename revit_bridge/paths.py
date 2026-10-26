@@ -13,6 +13,8 @@ data root that every host shares.
     evidence_dir()              <data_root>/evidence
                                 (REVIT_BRIDGE_EVIDENCE_DIR overrides)
     auth_dir()                  <data_root>/auth (pairing codes, device tokens)
+    verifications_dir()         <data_root>/verifications (plan_verification, one
+                                JSON file per planned read-back check)
     builtin_capabilities_dir()  packs shipped in the wheel, or <repo>/capabilities
     skills_dir()                skills shipped in the wheel, or <repo>/plugin/skills
     guidance_dir()              guidance content shipped in the wheel, or <repo>/plugin/guidance
@@ -81,6 +83,11 @@ def evidence_dir(env: Mapping[str, str] | None = None) -> Path:
 def auth_dir(env: Mapping[str, str] | None = None) -> Path:
     """Where ``devices.json`` (pairing codes and device tokens, hashed) is written."""
     return data_root(env) / "auth"
+
+
+def verifications_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Where ``plan_verification`` keeps its plans (one JSON file each), next to the ledger."""
+    return data_root(env) / "verifications"
 
 
 def builtin_capabilities_dir() -> Path:

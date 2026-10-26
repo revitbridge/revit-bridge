@@ -402,6 +402,34 @@ def test_missing_params_and_reconcile_tools(isolated_store, monkeypatch):
     assert out == {"error": "snapshot_failed", "message": "KeyError: 'Levels'"}
 
 
+def test_the_question_tools_carry_kind_and_blocks(isolated_store, monkeypatch):
+    """S3c D18 acceptance: known None is still asked, a known 0 is not; kind and blocks in every question."""
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")           # no Revit: no options, and the why says so
+    monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "1")
+    assert WALL["start_x"] == 0
+    questions = _call("missing_params", tool="create_wall", known={**WALL, "level_name": None}, language="en")
+    assert [q["param"] for q in questions] == ["level_name"]                 # start_x = 0 is an answer
+    [q] = questions
+    assert list(q) == ["id", "param", "text", "why", "options", "allow_other", "kind", "blocks"]
+    assert q["kind"] == "user_intent" and q["blocks"] == ["spec", "execute"] and q["options"] == []
+    assert q["why"] == "Required by create_wall; its source must be tool:levels. Revit returned no candidates."
+
+    snapshot = {
+        "taken_at": "2026-09-20T00:00:00Z", "duration_ms": 1,
+        "document": {"title": "P", "revit_version": "2026", "is_workshared": False},
+        "units": {"length": "mm", "raw": ""}, "active_view": None,
+        "levels": [{"id": 1, "name": "L1", "elevation_mm": 0.0}], "grids": {"count": 0, "names": []},
+        "family_types": [], "selection": [], "selection_count": 0, "links": [], "phases": [],
+        "warnings": [], "fingerprint": "f" * 16,
+    }
+    blank = _call("missing_params", tool="create_wall", known={**WALL, "end_x": ""}, snapshot=snapshot)
+    assert [q["param"] for q in blank] == ["end_x"]
+    out = _call("reconcile", spec=spec_for("create_wall", **{**WALL, "level_name": "L7"}), snapshot=snapshot)
+    assert [(q["param"], q["kind"], q["blocks"]) for q in out["questions"]] == [
+        ("level_name", "model_fact", ["spec", "execute"])]
+    assert out["questions"][0]["options"] == [{"label": "L1 (0.0mm)", "value": "L1", "source": "tool:levels"}]
+
+
 def test_hook_denies_calls_without_a_token():
     import importlib.util
     import pathlib

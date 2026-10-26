@@ -117,6 +117,100 @@ def test_the_skill_reads_check_code_guidance_before_changing_the_code():
     assert check < lessons < bodies < truncated < fix < pointers < text.index("6. **Confirm**")
 
 
+# -- P9: read-back verification of execute_code (server rendering and skill) --------------
+
+def test_the_server_plans_and_verifies_execute_code_the_host_does_not():
+    srv, host = server_instructions(), host_instructions()
+    plan = srv.index("plan_verification(template, params)")
+    assert srv.index("5. Show the spec card") < plan < srv.index("6. confirm_spec(spec)")
+    assert 'or "will not be verified" if none fits.' in srv
+    verify = srv.index("verify_execution(evidence_id, verification_id)")
+    assert srv.index("7. run_tool(name, params, token)") < verify < srv.index("## TaskSpec")
+    flat = " ".join(srv.split())
+    assert ("report exactly one of: executed and verified / executed, verification failed / executed, "
+            "not verified.") in flat
+    for name in ("plan_verification", "verify_execution", "will not be verified"):
+        assert name not in host, name
+    host_lines = lines(host)
+    step5 = host_lines.index("5. Show the spec card; wait for an explicit yes.")
+    assert host_lines[step5 + 1].startswith("6. propose_spec")
+    for text in (srv, host):
+        rendered = lines(text)
+        assert len(rendered) <= 60
+        for i, line in enumerate(rendered):
+            if line.startswith("## "):
+                assert rendered[i + 1].strip(), line                  # no blank line under a heading
+
+
+def test_the_skill_plans_and_reports_the_verification():
+    import pathlib
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    plan = text.index("`plan_verification(template, params)`")
+    assert text.index("6. **Confirm**") < plan < text.index("Then show the spec card")
+    assert text.index("Then show the spec card") < text.index("Then `confirm_spec(spec)`")
+    for template in ("`created_ids`", "`count_delta`", "`param_equals`"):
+        assert plan < text.index(template, plan) < text.index("7. **Execute**"), template
+    assert "`Verification: none - will not be verified`" in text
+    verify = text.index("`verify_execution(evidence_id, verification_id)`")
+    assert text.index("8. **Verify and report**") < verify < text.index("## Parameter source protocol")
+    report = text[verify:text.index("## Parameter source protocol")]
+    for outcome in ("**executed and verified**", "**executed but verification failed**",
+                    "**executed, not verified**"):
+        assert outcome in report, outcome
+    assert "never call an execution verified unless `verify_execution` returned `verified: true`" in text
+    assert 'is there a verification line under the card, or "will not be verified"?' in text
+
+
+# -- P10: asking the designer (both renderings and both skills) ---------------------------
+
+def test_both_renderings_carry_the_clarification_rules_in_step_3():
+    rules = ("Never re-ask what is known; `model_fact`: query first; pause only what `blocks` lists.",
+             "An answer is source answer; a changed request voids what it touched: reconcile again.")
+    for text in (server_instructions(), host_instructions()):
+        rendered = lines(text)
+        step3 = next(i for i, line in enumerate(rendered) if line.startswith("3. list_tools"))
+        assert rendered[step3 + 1].endswith("Ask the designer all of them in one round.")
+        assert [line.strip() for line in rendered[step3 + 2:step3 + 4]] == list(rules)
+        assert rendered[step3 + 4].startswith("4. reconcile(")
+        assert len(rendered) <= 60
+
+
+def test_the_skill_asks_by_kind_and_pauses_only_what_blocks():
+    import pathlib
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    questions = text[text.index("## Questions"):text.index("## The TaskSpec")]
+    for phrase in ("`kind`, `blocks`", "`user_intent` - only the designer can: ask",
+                   "`model_fact` - a value you or the designer gave is not in the model",
+                   "`technical` is reserved: the bridge never asks one", "pause only those",
+                   "Never ask again what the designer already said or what the spec already holds",
+                   "`source: answer` with the question id as `evidence`",
+                   "silence, a timeout or your own guess is not an answer",
+                   "every value, interpretation and answer the change touches is void",
+                   "`reconcile` again", "never offer names you made up"):
+        assert phrase in questions, phrase
+    assert "Do not run a step an open question `blocks`" in text[text.index("4. **Ask**"):text.index("5. **Reconcile**")]
+
+
+def test_the_addin_skill_settles_five_things_before_building():
+    import pathlib
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-addin-dev" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    start = text.index("Before building, these five must be settled")
+    assert text.index("## Continue the user's project") < start < text.index("## Use the bridge where it helps")
+    block = text[start:text.index("## Use the bridge where it helps")]
+    items = ["1. **Output rules**", "2. **Scope**", "3. **Target Revit version**", "4. **Install location**",
+             "5. **Cancel and empty selection**"]
+    assert [block.index(item) for item in items] == sorted(block.index(item) for item in items)
+    assert "ask about it - all open ones in one round - before you build" in block
+    assert "a project that compiles has not settled them" in block
+    assert "runtime input" in block
+
+
 # -- P2: the snippet contract has one source -----------------------------------------
 
 def _contract():
@@ -148,10 +242,26 @@ def test_no_python_source_restates_the_contract():
     contract = _contract()
     phrases = [line.strip() for line in contract.lines] + [contract.summary, "already inside a transaction",
                                                              "IO, Process, Assembly, DllImport", "(no JSON library)"]
-    for path in (package / "instructions.py", package / "mcp_server.py"):
+    for path in (package / "instructions.py", package / "mcp_server.py", package / "checking.py"):
         text = path.read_text(encoding="utf-8")
         for phrase in phrases:
             assert phrase not in text, (path.name, phrase)
+
+
+def test_the_cs0246_hint_names_the_usings_of_the_contract():
+    """S3c: checking.SNIPPET_USINGS is rendered from the lesson; the hint text is byte for byte as before."""
+    from revit_bridge import checking
+    from revit_bridge.guidance.contract import SnippetContract
+
+    usings = "System, System.Linq, System.Collections.Generic, Autodesk.Revit.DB, Autodesk.Revit.UI"
+    assert _contract().usings() == usings == checking.SNIPPET_USINGS
+    hint = checking.hint_for({"id": "CS0246", "message": "The type or namespace name 'Foo' could not be found"},
+                             "Revit 2026.5")
+    assert hint["text"].startswith(f"Revit 2026.5: type or namespace 'Foo' is not found with the snippet's usings "
+                                   f"({usings}) and references (base library, RevitAPI, RevitAPIUI).")
+    assert SnippetContract(summary="s", lines=("no list here",), path="p").usings() is None
+    wrapped = SnippetContract(summary="s", lines=("a body; usings A,", "  B.C, D; references", "x"), path="p")
+    assert wrapped.usings() == "A, B.C, D"
 
 
 def test_the_tool_descriptions_carry_the_contract_summary():

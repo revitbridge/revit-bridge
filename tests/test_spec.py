@@ -17,7 +17,7 @@ from revit_bridge.spec.models import (
     canonical_json,
     projection_hash,
 )
-from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
+from revit_bridge.spec.rules import Question, missing_params, reconcile, validate_spec
 
 
 # -- helpers -----------------------------------------------------------------------------
@@ -421,3 +421,122 @@ def test_reconcile_without_a_pack_or_with_unconfirmed_interpretations(pack):
 
     code = TaskSpec(task="c", action=Action(kind="execute_code", code="return 1;"), parameters=[], snapshot_fingerprint="abc")
     assert reconcile(code, snapshot(), None).ready is True
+
+
+# -- P10: question shape v1 (kind, blocks) and the Q2 / Q3 rules ---------------------------
+
+OLD_KEYS = ["id", "param", "text", "why", "options", "allow_other"]
+
+
+def test_a_question_keeps_its_old_keys_and_adds_kind_and_blocks(pack):
+    old = Question(id="q_x", param="x", text="t", why="w")                  # an existing caller
+    assert old.kind == "user_intent" and old.blocks == ["spec", "execute"]
+    dumped = old.model_dump()
+    assert list(dumped) == OLD_KEYS + ["kind", "blocks"]
+    assert {k: dumped[k] for k in OLD_KEYS} == {"id": "q_x", "param": "x", "text": "t", "why": "w",
+                                                "options": [], "allow_other": True}
+    assert Question(id="q", param="p", text="t", why="w").blocks is not old.blocks      # no shared default
+    with pytest.raises(ValueError):
+        Question(id="q", param="p", text="t", why="w", kind="guess")
+    with pytest.raises(ValueError):
+        Question(id="q", param="p", text="t", why="w", blocks=["deploy"])
+    # the dump of a missing_params question: old keys with the values they always had, then the new ones
+    q = missing_params(pack, {"x": 100}, snapshot())[0].model_dump()
+    assert list(q) == OLD_KEYS + ["kind", "blocks"]
+    assert q["id"] == "q_level_name" and q["options"][0]["value"] == "L1"
+    assert q["kind"] == "user_intent" and q["blocks"] == ["spec", "execute"] and q["allow_other"] is True
+
+
+def test_every_missing_params_question_is_user_intent_and_blocks_spec_and_execute(pack):
+    for snap in (snapshot(), None):
+        questions = missing_params(pack, {}, snap, language="en")
+        assert [q.param for q in questions] == ["level_name", "type_name", "x"]
+        assert {q.kind for q in questions} == {"user_intent"}
+        assert all(q.blocks == ["spec", "execute"] for q in questions)
+
+
+def test_q3_none_and_blank_are_not_answers_zero_and_false_are(pack):
+    answered = {"level_name": "L1", "type_name": "Generic - 200mm", "x": 100}
+    assert missing_params(pack, answered, snapshot()) == []
+    for blank in (None, "", "   "):
+        questions = missing_params(pack, {**answered, "level_name": blank}, snapshot())
+        assert [q.param for q in questions] == ["level_name"], repr(blank)
+        assert questions[0].options[0]["value"] == "L1"
+    for value in (0, 0.0, False, "0"):
+        assert missing_params(pack, {**answered, "x": value}, snapshot()) == [], repr(value)
+    # an optional parameter stays unasked whatever its known value
+    assert missing_params(pack, {**answered, "h": None}, snapshot()) == []
+    # reconcile asks for a bound parameter whose value is None or blank, once
+    result = reconcile(good_spec(type_name=binding("type_name", "", Source.answer, "q_type_name")), snapshot(), pack)
+    assert [q.param for q in result.questions] == ["type_name"] and result.questions[0].kind == "user_intent"
+    assert result.ready is False
+
+
+def test_q2_no_candidates_from_revit_means_no_options_and_a_why_that_says_so(pack):
+    from revit_bridge.spec.rules import _t
+
+    questions = missing_params(pack, {}, None, language="en")             # Revit could not be asked
+    assert [q.options for q in questions] == [[], [], []]
+    assert questions[0].why == "Required by probe; its source must be tool:levels. Revit returned no candidates."
+    assert questions[1].why.endswith(" Revit returned no candidates.")
+    assert questions[2].why == "Required by probe; its source must be designer."   # not from Revit: unchanged
+    zh = missing_params(pack, {}, None)
+    assert zh[0].why == _t("zh", "why", tool="probe", source="tool:levels") + _t("zh", "no_candidates")
+    assert zh[0].why.endswith(_t("zh", "no_candidates")) and len(_t("zh", "no_candidates")) > len("Revit ")
+    # a snapshot that answered for levels but not for the wall types
+    questions = missing_params(pack, {"x": 1}, snapshot(family_types=[]), language="en")
+    assert [len(q.options) for q in questions] == [2, 0]
+    assert not questions[0].why.endswith("candidates.") and questions[1].why.endswith("no candidates.")
+    assert questions[1].text == "Please provide type_name (string)."                # "ask", never "choose"
+
+
+def test_reconcile_turns_ambiguous_values_into_user_intent_and_missing_ones_into_model_fact(pack):
+    # not_found: the model was said to hold "L3"; it holds L1 and L2
+    result = reconcile(good_spec(level_name=binding("level_name", "L3", Source.answer, "q")), snapshot(), pack)
+    assert [(c.param, c.kind) for c in result.conflicts] == [("level_name", "not_found")]
+    [q] = result.questions
+    assert (q.id, q.param, q.kind, q.blocks) == ("q_level_name", "level_name", "model_fact", ["spec", "execute"])
+    assert [o["value"] for o in q.options] == ["L1", "L2"] and q.options[0]["source"] == "tool:levels"
+    assert q.why == result.conflicts[0].message and result.ready is False
+
+    # ambiguous: two levels fold to the same name - the designer chooses between exactly those
+    snap = snapshot(levels=[LevelInfo(id=1, name="L1", elevation_mm=0.0), LevelInfo(id=2, name="l 1", elevation_mm=100.0),
+                            LevelInfo(id=3, name="L2", elevation_mm=4000.0)])
+    result = reconcile(good_spec(level_name=binding("level_name", "l1", Source.answer, "q"), language="en"), snap, pack)
+    [q] = result.questions
+    assert q.kind == "user_intent" and [o["value"] for o in q.options] == ["L1", "l 1"]
+    assert q.text == "Which level_name (Target level)?" and q.why == result.conflicts[0].message
+
+    # a did-you-mean not_found lists the hint first
+    result = reconcile(good_spec(level_name=binding("level_name", " l2", Source.answer, "q")), snapshot(), pack)
+    assert result.questions[0].kind == "model_fact" and [o["value"] for o in result.questions[0].options] == ["L2", "L1"]
+
+    # a truncated type list is an ambiguous conflict: the designer's to resolve, with the listed names only
+    trunc = snapshot(family_types=[TypeSummary(category="OST_Walls", count=80, names=[f"Type {i:02d}" for i in range(50)])])
+    result = reconcile(good_spec(type_name=binding("type_name", "Type 77", Source.answer, "q")), trunc, pack)
+    [q] = result.questions
+    assert q.kind == "user_intent" and len(q.options) == 50 and "Type 77" not in [o["value"] for o in q.options]
+
+
+def test_reconcile_asks_nothing_for_other_conflicts_and_never_a_technical_question(pack):
+    stale = reconcile(good_spec(), snapshot(fingerprint="other"), pack)
+    unit = reconcile(good_spec(x=binding("x", 1200, Source.designer, "1200")), snapshot(), pack)
+    broken = reconcile(good_spec(), snapshot(levels=[], warnings=["levels: no view"]), pack)
+    no_pack = reconcile(run_tool_spec("nope"), snapshot(), None)
+    for result in (stale, unit, broken, no_pack):
+        assert result.conflicts and result.questions == [] and result.ready is False
+    # a conflict and a missing parameter in one draft: the conflict's question first, each parameter once
+    result = reconcile(good_spec(level_name=binding("level_name", "L9", Source.answer, "q"), type_name=None),
+                       snapshot(), pack)
+    assert [(q.param, q.kind) for q in result.questions] == [("level_name", "model_fact"), ("type_name", "user_intent")]
+    everything = [q.kind for r in (result, stale, unit, broken, no_pack) for q in r.questions]
+    everything += [q.kind for q in missing_params(pack, {}, None)]
+    assert "technical" not in everything
+
+
+def test_reconcile_dump_keeps_its_shape(pack):
+    result = reconcile(good_spec(level_name=binding("level_name", "L3", Source.answer, "q")), snapshot(), pack)
+    dumped = result.model_dump()
+    assert list(dumped) == ["conflicts", "questions", "interpretations_required", "ready"]
+    assert list(dumped["questions"][0]) == OLD_KEYS + ["kind", "blocks"]
+    json.dumps(dumped)                                                       # plain JSON, as the tool sends it

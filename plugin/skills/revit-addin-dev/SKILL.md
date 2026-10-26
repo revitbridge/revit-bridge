@@ -15,6 +15,16 @@ Infer these details from the repository before asking. If the target year cannot
 
 Turn the request into a concrete command behavior: inputs, selection/scope, changes or output, cancellation, and a useful acceptance check. Keep unresolved model-specific choices as runtime inputs or lookups; sample element IDs and family names are not portable configuration.
 
+Before building, these five must be settled - from the request, the project, or the user:
+
+1. **Output rules** - what the command creates, changes or reports, and in what form.
+2. **Scope** - which elements, views or documents it acts on (selection, active view, whole model).
+3. **Target Revit version** - the release and update, which fixes the .NET target.
+4. **Install location** - where the DLL and its `.addin` manifest go (per user or per machine, which Revit year).
+5. **Cancel and empty selection** - what the command does when the user cancels or nothing is selected.
+
+If any of the five is still open, ask about it - all open ones in one round - before you build; a project that compiles has not settled them. A choice that should vary per run can be designed as a runtime input instead; say which ones you made runtime inputs.
+
 ## Use the bridge where it helps
 
 | Development need | Next step |

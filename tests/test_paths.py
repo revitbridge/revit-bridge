@@ -25,11 +25,13 @@ def test_environment_overrides():
     assert paths.data_root(env) == Path("/tmp/rb")
     assert paths.user_capabilities_dir(env) == Path("/tmp/rb/capabilities")
     assert paths.evidence_dir(env) == Path("/tmp/rb/evidence")
+    assert paths.verifications_dir(env) == Path("/tmp/rb/verifications")
 
     env["REVIT_BRIDGE_CAPABILITIES_DIR"] = "/caps"
     env["REVIT_BRIDGE_EVIDENCE_DIR"] = "/ev"
     assert paths.user_capabilities_dir(env) == Path("/caps")
     assert paths.evidence_dir(env) == Path("/ev")
+    assert paths.verifications_dir(env) == Path("/tmp/rb/verifications")      # always under the data root
 
 
 def test_conftest_isolates_the_process_environment(isolated_data_dir):
