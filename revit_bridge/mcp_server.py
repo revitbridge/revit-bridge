@@ -209,10 +209,14 @@ async def query(kind: str, args: dict | None = None) -> str:
 async def missing_params(tool: str, known: dict | str | None = None,
                          snapshot: dict | str | None = None, language: str = "zh") -> str:
     """The questions still open for a capability pack: one per required parameter
-    not in `known` ({name: value}), with the real options (levels, family types)
+    not in `known` ({name: value}; a value of null or "" is not an answer, 0 and
+    false are), with the real options (levels, family types)
     from `snapshot` - pass the one from get_project_snapshot, or omit it and the
     server takes one; when Revit cannot be reached the questions come without
-    options. Returns a JSON list of {id, param, text, why, options, allow_other}."""
+    options and `why` says so - never invent options. Returns a JSON list of
+    {id, param, text, why, options, allow_other, kind, blocks}: kind
+    "user_intent" (the designer's to answer), blocks = the steps it holds up
+    (["spec", "execute"]: go on with work that does not depend on it)."""
     pack = _tool_store.load(tool)
     if pack is None:
         return _dumps({"error": "unknown_tool", "tool": tool})
@@ -243,7 +247,10 @@ async def reconcile(spec: dict | str, snapshot: dict | str | None = None) -> str
     (levels, family types), missing parameters as questions, readings the
     designer must confirm (units, range words), a stale snapshot. Pass the
     snapshot from get_project_snapshot, or omit it and the server takes one.
-    Returns {conflicts, questions, interpretations_required, ready}."""
+    Returns {conflicts, questions, interpretations_required, ready}. A value
+    that matches several names is also a question of kind "user_intent"; one
+    that does not exist is kind "model_fact": check the model (query) before
+    asking the designer."""
     try:
         draft = TaskSpec.model_validate(_parse_json_arg(spec, "spec"))
     except (ValidationError, json.JSONDecodeError, TypeError) as e:

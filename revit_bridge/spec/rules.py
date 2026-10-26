@@ -6,6 +6,23 @@ Nothing here talks to Revit or to disk. ``validate_spec`` is what
 unbound required parameters of a pack into questions the designer can answer;
 ``reconcile`` compares a draft spec with a ``ProjectSnapshot`` and says what
 still stands between the draft and a confirmable spec.
+
+Question shape v1 (P10, D18): ``id, param, text, why, options, allow_other``
+plus ``kind`` and ``blocks``. ``kind`` says who can answer:
+``user_intent`` (the designer: every ``missing_params`` question and every
+``ambiguous`` value ``reconcile`` finds), ``model_fact`` (a ``not_found``
+value: the model was claimed to hold something it does not - check the
+model before asking) or ``technical`` (reserved: the bridge never asks one;
+a failed lookup or check is not a question for the designer). ``blocks``
+lists the steps an open question holds up (``spec``, ``execute``,
+``build``); a required parameter holds ``["spec", "execute"]``. The bridge
+keeps no record of what is still waiting for an answer: an answer goes into
+the TaskSpec as ``source: answer`` with the question id as evidence.
+
+A known value of None or a blank string is no answer: its question is still
+asked; 0, false and 0.0 are answers. A parameter whose choices come from
+Revit gets its question even when Revit returned no candidates - with no
+options and a ``why`` that says so, never with made-up ones.
 """
 from __future__ import annotations
 
@@ -35,6 +52,11 @@ class SpecError(BaseModel):
     message: str
 
 
+QuestionKind = Literal["user_intent", "model_fact", "technical"]
+BlockedStep = Literal["spec", "execute", "build"]
+REQUIRED_BLOCKS: tuple[str, ...] = ("spec", "execute")
+
+
 class Question(BaseModel):
     id: str                          # f"q_{param}"
     param: str
@@ -42,6 +64,8 @@ class Question(BaseModel):
     why: str
     options: list[dict] = Field(default_factory=list)   # [{label, value, source}], source "tool:<kind>"
     allow_other: bool = True
+    kind: QuestionKind = "user_intent"                  # who can answer it (see module doc)
+    blocks: list[BlockedStep] = Field(default_factory=lambda: list(REQUIRED_BLOCKS))  # steps it holds up
 
 
 class Conflict(BaseModel):
@@ -76,6 +100,7 @@ _T = {
                      "请用 query(\"family_types\", {{\"categories\": [\"{category}\"]}}) 核对",
         "stale": "规格依据的快照 {claimed} 与当前快照 {current} 不符，请重新对账",
         "tool_missing": "工具 {tool} 不存在",
+        "no_candidates": "Revit \u672a\u8fd4\u56de\u5019\u9009\u3002",
     },
     "en": {
         "ask": "Please provide {param} ({description}).",
@@ -92,6 +117,7 @@ _T = {
                      "query(\"family_types\", {{\"categories\": [\"{category}\"]}})",
         "stale": "the spec was reconciled against snapshot {claimed}, the current one is {current}; reconcile again",
         "tool_missing": "tool {tool} does not exist",
+        "no_candidates": " Revit returned no candidates.",
     },
 }
 
@@ -113,6 +139,11 @@ def _is_tool_sourced(pdef: dict) -> bool:
 
 def _is_numeric(pdef: dict) -> bool:
     return str(pdef.get("type", "string")).lower() in NUMERIC_TYPES
+
+
+def _unanswered(value: Any) -> bool:
+    """None or a blank string: a key without an answer. 0, False and 0.0 are answers."""
+    return value is None or (isinstance(value, str) and not value.strip())
 
 
 def _confirmed_for(spec: TaskSpec, param: str | None) -> bool:
@@ -215,25 +246,67 @@ def _options_for(pdef: dict, snapshot: ProjectSnapshot | None) -> list[dict]:
     return []
 
 
+def _ask_text(pdef: dict, options: list[dict], language: str) -> str:
+    description = str(pdef.get("description") or pdef.get("type", "string"))
+    return _t(language, "choose" if options else "ask", param=pdef["name"], description=description)
+
+
+def _why(why: str, pdef: dict, options: list[dict], language: str) -> str:
+    """``why``, plus "Revit returned no candidates" for a Revit-sourced parameter without options."""
+    return why + _t(language, "no_candidates") if not options and _is_tool_sourced(pdef) else why
+
+
 def missing_params(pack: SolidifiedTool, known: dict[str, Any],
                    snapshot: ProjectSnapshot | None, language: str = "zh") -> list[Question]:
-    """One question per required pack parameter that ``known`` does not bind."""
+    """One question per required pack parameter that ``known`` does not answer (absent, None
+    or blank); each ``kind: "user_intent"``, ``blocks: ["spec", "execute"]``."""
     questions: list[Question] = []
     for pdef in pack.parameters:
         name = pdef["name"]
-        if name in known or not pdef.get("required", "default" not in pdef):
+        if not pdef.get("required", "default" not in pdef):
+            continue
+        if name in known and not _unanswered(known[name]):
             continue
         options = _options_for(pdef, snapshot)
-        description = str(pdef.get("description") or pdef.get("type", "string"))
         source = str(pdef.get("choices_from") and f"tool:{pdef['choices_from']}" or pdef.get("source", "designer"))
         questions.append(Question(
             id=f"q_{name}",
             param=name,
-            text=_t(language, "choose" if options else "ask", param=name, description=description),
-            why=_t(language, "why", tool=pack.name, source=source),
+            text=_ask_text(pdef, options, language),
+            why=_why(_t(language, "why", tool=pack.name, source=source), pdef, options, language),
             options=options,
+            kind="user_intent",
+            blocks=list(REQUIRED_BLOCKS),
         ))
     return questions
+
+
+# A value reconcile cannot find becomes a question too: an ambiguous one is the
+# designer's to choose, one that is not there at all is first a fact to check.
+_CONFLICT_KINDS: dict[str, QuestionKind] = {"ambiguous": "user_intent", "not_found": "model_fact"}
+
+
+def conflict_question(conflict: Conflict, pdef: dict, snapshot: ProjectSnapshot | None,
+                      language: str = "zh") -> Question | None:
+    """The question for an ``ambiguous`` or ``not_found`` value of a pack parameter, or None.
+
+    Options are the conflict's candidates as the snapshot lists them, in the
+    conflict's order; ``why`` is the conflict's message.
+    """
+    kind = _CONFLICT_KINDS.get(conflict.kind)
+    if kind is None:
+        return None
+    by_value = {o["value"]: o for o in _options_for(pdef, snapshot)}
+    options = [by_value[v] for v in conflict.available if v in by_value]
+    return Question(
+        id=f"q_{conflict.param}",
+        param=conflict.param,
+        text=_ask_text(pdef, options, language),
+        why=_why(conflict.message, pdef, options, language),
+        options=options,
+        kind=kind,
+        blocks=list(REQUIRED_BLOCKS),
+    )
 
 
 # -- 5.2 reconciliation ---------------------------------------------------------------------
@@ -392,7 +465,16 @@ def reconcile(draft: TaskSpec, snapshot: ProjectSnapshot,
                            tool=pack.name if pack else "", unit=pdef["unit"])))
 
     if pack is not None:
-        questions = missing_params(pack, {b.name: b.value for b in draft.parameters}, snapshot, lang)
+        # A value that does not match is a question as well; one with no answer at all
+        # is left to missing_params, so no parameter is asked twice.
+        answered = {b.name for b in draft.parameters if not _unanswered(b.value)}
+        for conflict in conflicts:
+            pdef = params.get(conflict.param)
+            if pdef is not None and conflict.param in answered:
+                question = conflict_question(conflict, pdef, snapshot, lang)
+                if question is not None and all(q.id != question.id for q in questions):
+                    questions.append(question)
+        questions.extend(missing_params(pack, {b.name: b.value for b in draft.parameters}, snapshot, lang))
 
     required.extend(it for it in implied_interpretations(draft, pack) if not it.confirmed)
     required.extend(it for it in range_interpretations(draft, snapshot) if not it.confirmed)
