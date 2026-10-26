@@ -260,6 +260,10 @@ the data directory gains `verifications/`. Other replies only gain keys.
   to say when the connected Revit is not the data set's release. README:
   "Pair with revit-api-docs" (both servers in one config, the 335 MB first
   download, Jev). The plugin's `.mcp.json` still starts only `revit-bridge`.
+- Plugin 0.4.0 (`plugin/.claude-plugin/plugin.json` and the marketplace
+  entry, which still said 0.2.0): an installed plugin updates to the new
+  `revit-core` and `revit-addin-dev` skills and the reworded `revit-bridge`
+  skill.
 
 ### Fixed
 
