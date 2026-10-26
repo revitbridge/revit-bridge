@@ -111,6 +111,30 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   byte, from `plugin/guidance/revit-core/` by `guidance index` (and ships in
   the wheel under `revit_bridge/skills/revit-core`); no other category is
   exported.
+- `plan_verification(template, params)` and `verify_execution(evidence_id,
+  verification_id)` MCP tools (read-only, no token; they run only the
+  bridge's own read-only probes): a read-back check for `execute_code` from
+  one of three templates - `created_ids` (`{category}`: the ids the code
+  returns exist in that category), `count_delta` (`{category, expected}`:
+  the instance count moves by exactly `expected`; the baseline is counted
+  when the plan is made) and `param_equals` (`{category, checks: [{param,
+  expected, unit, tolerance}]}`: parameter values on the returned ids). A
+  plan records the open document and is good for 30 minutes and one check
+  (`<data dir>/verifications/`, one JSON file each); a bad template is
+  `{"error": "invalid_template", "problems": [...]}` and writes nothing.
+  `verify_execution` returns `{verified, template, checks, before, after,
+  evidence_id, verification_id, verification_evidence_id, error}`; it
+  refuses without consuming the plan on `unknown_evidence`, `not_executed`,
+  `unknown_verification`, `verification_used`, `verification_expired`,
+  `document_changed` and `revit_unreachable`. `execute_code`, the TaskSpec
+  and the confirmation token are unchanged. Package API:
+  `revit_bridge.verification` (`plan`, `verify`, `VerificationStore`),
+  `paths.verifications_dir()`.
+- Evidence ledger: a check is a line of its own with `action` and `tool`
+  `"verify_execution"`, the report in `validation`, and two fields only such
+  lines have, `evidence_id` (the execution) and `verification_id` (the
+  plan); `evidence(tool="verify_execution")` lists them. Every other line
+  keeps exactly the spec-9 fields.
 
 ### Changed
 
@@ -180,6 +204,17 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   2300-byte writing rule (2282, 2295, 2281 and 2290 bytes) with the same API
   facts; all thirteen have a `summary`, and their category indexes are
   generated from it.
+- Instructions (server rendering) and the `revit-bridge` skill: for
+  `execute_code`, `plan_verification` before the confirmation, shown as one
+  line under the card ("will not be verified" when no template fits), and
+  `verify_execution` after the execution; the report is exactly one of
+  executed and verified / executed but verification failed / executed, not
+  verified. `run_tool` keeps its pack's validator. To stay within 60 lines,
+  a section heading is no longer followed by a blank line and step 1 is one
+  line, in both renderings.
+- `param_equals` validator: an opt-in `tolerances` keyword (used only by
+  `verify_execution`); every capability pack compares and reports as
+  before.
 
 ## [0.3.0] - 2026-09-22
 

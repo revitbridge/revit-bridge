@@ -117,6 +117,52 @@ def test_the_skill_reads_check_code_guidance_before_changing_the_code():
     assert check < lessons < bodies < truncated < fix < pointers < text.index("6. **Confirm**")
 
 
+# -- P9: read-back verification of execute_code (server rendering and skill) --------------
+
+def test_the_server_plans_and_verifies_execute_code_the_host_does_not():
+    srv, host = server_instructions(), host_instructions()
+    plan = srv.index("plan_verification(template, params)")
+    assert srv.index("5. Show the spec card") < plan < srv.index("6. confirm_spec(spec)")
+    assert 'or "will not be verified" if none fits.' in srv
+    verify = srv.index("verify_execution(evidence_id, verification_id)")
+    assert srv.index("7. run_tool(name, params, token)") < verify < srv.index("## TaskSpec")
+    flat = " ".join(srv.split())
+    assert ("report exactly one of: executed and verified / executed, verification failed / executed, "
+            "not verified.") in flat
+    for name in ("plan_verification", "verify_execution", "will not be verified"):
+        assert name not in host, name
+    host_lines = lines(host)
+    step5 = host_lines.index("5. Show the spec card; wait for an explicit yes.")
+    assert host_lines[step5 + 1].startswith("6. propose_spec")
+    for text in (srv, host):
+        rendered = lines(text)
+        assert len(rendered) <= 60
+        for i, line in enumerate(rendered):
+            if line.startswith("## "):
+                assert rendered[i + 1].strip(), line                  # no blank line under a heading
+
+
+def test_the_skill_plans_and_reports_the_verification():
+    import pathlib
+
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
+    text = skill.read_text(encoding="utf-8")
+    plan = text.index("`plan_verification(template, params)`")
+    assert text.index("6. **Confirm**") < plan < text.index("Then show the spec card")
+    assert text.index("Then show the spec card") < text.index("Then `confirm_spec(spec)`")
+    for template in ("`created_ids`", "`count_delta`", "`param_equals`"):
+        assert plan < text.index(template, plan) < text.index("7. **Execute**"), template
+    assert "`Verification: none - will not be verified`" in text
+    verify = text.index("`verify_execution(evidence_id, verification_id)`")
+    assert text.index("8. **Verify and report**") < verify < text.index("## Parameter source protocol")
+    report = text[verify:text.index("## Parameter source protocol")]
+    for outcome in ("**executed and verified**", "**executed but verification failed**",
+                    "**executed, not verified**"):
+        assert outcome in report, outcome
+    assert "never call an execution verified unless `verify_execution` returned `verified: true`" in text
+    assert 'is there a verification line under the card, or "will not be verified"?' in text
+
+
 # -- P2: the snippet contract has one source -----------------------------------------
 
 def _contract():
