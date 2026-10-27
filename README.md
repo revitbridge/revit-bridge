@@ -65,7 +65,14 @@ updates (2027 is .NET 10 only). Select the exact installed release, not just its
 context and prototype checks, then delivers a DLL that runs independently
 of the bridge. Coding and building can proceed without a live connection.
 
-From a checkout, load both skills with `claude --plugin-dir ./plugin`, or
+**Start from a brief** — the `revit-task-brief` skill rewrites a designer's
+one-sentence request ("I pick two crossing pipes and the first one gets jogged
+over the other") into a testable brief before any code: numbered behaviour,
+inputs with units and defaults, cancel and failure rules, the facts that must
+be read from the open project, deliverables, verification and the decisions
+taken. The coding skills then implement the brief.
+
+From a checkout, load the skills with `claude --plugin-dir ./plugin`, or
 copy the complete `plugin/skills/revit-addin-dev` folder into your agent's
 skills directory. Example request: "Use revit-addin-dev to continue my C#
 plugin, inspect the selected walls through revit-bridge where needed, and

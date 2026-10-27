@@ -1,0 +1,4 @@
+interface:
+  display_name: "Revit Task Brief"
+  short_description: "Turn a short Revit request into a testable brief before coding"
+  default_prompt: "Use $revit-task-brief to rewrite my request into a brief with numbered behaviour, inputs with units and defaults, cancel and failure rules, project-derived facts, deliverables, verification and the decisions taken; then implement the brief."
