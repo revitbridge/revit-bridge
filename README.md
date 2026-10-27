@@ -177,19 +177,19 @@ part of CI.
 
 ## Pair with revit-api-docs
 
-[revit-api-docs](https://github.com/revitbridge/revit-api-docs) is an optional
-second server: `search_revit_api` looks API names up in the Revit 2026 API
-reference, and `check_code` hints point at it. The plugin does not start it: add
-it with `claude mcp add revit-api-docs -- uvx revit-api-docs`, or in one config:
+[revit-api-docs](https://github.com/revitbridge/revit-api-docs) is an optional second server: `search_revit_api` looks API names up in the Revit 2026 API reference, and `check_code` hints point at it.
+The plugin does not start it: add it with `claude mcp add revit-api-docs -- uvx revit-api-docs`, or in one config:
 
 ```json
 {"mcpServers": {"revit-bridge": {"command": "uvx", "args": ["revit-bridge"]},
                 "revit-api-docs": {"command": "uvx", "args": ["revit-api-docs"]}}}
 ```
 
-Its first run downloads a 335 MB data set (`uvx revit-api-docs download` fetches
-it ahead of time). Optional Jev reranking (`REVIT_API_DOCS_RERANK_PROVIDER=jev`,
-`TYPESAFE_API_KEY`): see [its README](https://github.com/revitbridge/revit-api-docs#configure).
+Its first run downloads the data set `v1.1-data` (267 MB; `uvx revit-api-docs download` fetches it ahead of time): the Revit 2026 API reference, including constructors such as `new XYZ(x, y, z)` and interface members.
+From revit-api-docs 0.3.0 on, `TYPESAFE_API_KEY` alone turns on Jev reranking; Cohere is optional.
+For multi-step task requests (several steps in one sentence) also set an embedding key, `REVIT_API_DOCS_EMBEDDING_API_KEY` (OpenRouter, model `openai/text-embedding-3-large`), to fuse vector search with keyword search.
+On 223 English test queries the fused nDCG@5 was 0.647 against 0.557 for keyword search alone, both without reranking, and 0.842 with Jev.
+Each query makes one more embedding call (about 0.9 s, negligible cost); every setting is in [its README](https://github.com/revitbridge/revit-api-docs#configure).
 
 ## Configure
 
