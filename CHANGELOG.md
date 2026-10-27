@@ -6,6 +6,17 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `revit-task-brief` skill: rewrites a designer's one-sentence request for an
+  add-in or model change into a testable brief before any code (numbered
+  behaviour, inputs with units and defaults, cancel and failure rules, facts
+  that must come from the open project, deliverables and framework, what the
+  implementer verifies versus what a person checks in Revit, decisions taken).
+  Includes a template and a worked pipe-jog example. Drawn from the detailed
+  prompts of the dsh host evaluation, where they constrained the generated
+  add-ins well.
+
 ## [0.4.2] - 2026-10-26
 
 Documentation for revit-api-docs 0.3.0 / `v1.1-data` and a UTF-8 stderr log. No tool, pack or skill-contract change.
