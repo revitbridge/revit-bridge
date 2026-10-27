@@ -6,6 +6,10 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-26
+
+Documentation for revit-api-docs 0.3.0 / `v1.1-data` and a UTF-8 stderr log. No tool, pack or skill-contract change.
+
 ### Changed
 
 - README ("Pair with revit-api-docs") and the `revit-bridge` skill ("API
@@ -639,7 +643,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/revitbridge/revit-bridge/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/revitbridge/revit-bridge/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/revitbridge/revit-bridge/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/revitbridge/revit-bridge/compare/v0.2.1...v0.3.0
