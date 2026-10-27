@@ -6,6 +6,20 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- README ("Pair with revit-api-docs") and the `revit-bridge` skill ("API
+  lookup") follow revit-api-docs 0.3.0 and its data set `v1.1-data`: a 267 MB
+  download that adds constructor and interface member pages, Jev reranking
+  whenever `TYPESAFE_API_KEY` is set (Cohere optional), and an optional
+  embedding key that fuses vector and keyword search for multi-step requests,
+  with the measured nDCG@5 figures. The skill says how to query constructors
+  (`XYZ(Double, Double, Double) Constructor` or
+  `new Transaction(document, name)`) and interface members
+  (`IExternalEventHandler.Execute`), and how to tell a host still on
+  `v1.0-data` (no constructor pages; its first line also says Revit 2026).
+  Documentation only.
+
 ### Fixed
 
 - `revit-bridge serve` writes its stderr log as UTF-8 (it followed the console
