@@ -60,6 +60,16 @@ Choose the actual project name, target release, and developer's vendor identity.
 
 The starter assets live in [assets/addin](assets/addin). Build the generated project from its directory, so that `global.json` applies, with `dotnet build WallInspector.csproj -c Release -p:RevitApiDir="<matching Revit installation>"`. It generates a local `.addin` beside the DLL, pointing to that DLL, and does not install or launch anything. Replace the sample selection summary with the requested feature, including its appropriate transaction mode.
 
+## Non-negotiables in every command
+
+Hand-tested batches of generated add-ins (36 builds, 2026-10) failed on the same five things in both the bridge and the no-bridge group. Every command you deliver satisfies all five; [Add-in implementation](references/addin-development.md) has the code shapes.
+
+1. **Transactions closed on every path**: one owner, `using` plus explicit `Commit` after all edits succeeded or `RollBack` otherwise, exceptions included; no model change before `Start` or after `Commit`; `FailureHandlingOptions` with a preprocessor so Revit warnings do not block and errors roll back with a message.
+2. **Inserts never overlap**: check every planned door, window or opening against the host's `FindInserts` and against each other before the first placement; refuse or move with a message.
+3. **Rebuilt elements keep their properties**: diameter, system, level, type and connections are copied from the original; split MEP curves in place (`BreakCurve`) rather than delete-and-recreate.
+4. **The UI tells the truth**: inputs are validated with the reason shown; OK acts or explains; Cancel and Escape return `Result.Cancelled`; no silent `catch`; a closing summary.
+5. **Core logic runs in the open model before delivery** when a bridge reaches a Revit; when its confirmation needs a human who is not there, say "not verified in Revit" in the report.
+
 ## Verify and hand over
 
 Build the target configuration and run meaningful tests already present or needed for new nontrivial logic. If an SDK or reference assembly is unavailable, report the missing prerequisite precisely; do not substitute another Revit year's API and claim compatibility.

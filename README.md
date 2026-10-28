@@ -226,3 +226,27 @@ uv run revit-bridge guidance index plugin/guidance --check
 ```
 
 License: MIT. Issues and discussion: <https://github.com/revitbridge/revit-bridge/issues>.
+
+## Use from dsh (DeepSeek Harness)
+
+dsh runs an agent that can talk to revit-bridge and revit-api-docs like any other MCP client, and it iterates on its own: writes, compiles, reads the model, fixes, until the task is done. The flow for a feature developed against the live Revit:
+
+1. Install the add-in in Revit (Releases of `revit-bridge-addin`), open the project you want to work on and click **Add-Ins > Revit MCP Switch**. `uvx revit-bridge check` must print `"status": "connected"` with that document's title.
+2. Register both servers in the dsh profile you use (`~/.dsh/profiles/<profile>/cordis.patch.yml`, a top-level list):
+
+   ```yaml
+   - insert:
+       - id: mcp-revit-bridge
+         name: '@deepseek-ai/dsh-mcp-client'
+         config: { serverName: revit-bridge, transport: stdio, command: uvx, args: [revit-bridge] }
+       - id: mcp-revit-api-docs
+         name: '@deepseek-ai/dsh-mcp-client'
+         config: { serverName: revit-api-docs, transport: stdio, command: uvx, args: [revit-api-docs] }
+   ```
+
+   Keys (`TYPESAFE_API_KEY`, `REVIT_API_DOCS_EMBEDDING_API_KEY`) and a proxy go into each server's `env`; dsh strips `KEY`/`TOKEN` variables from its own environment, so set them there, not globally.
+3. Put the skills where dsh finds them: copy `plugin/skills/revit-task-brief`, `revit-addin-dev`, `revit-core` and `revit-bridge` into `<project>/.agents/skills/`.
+4. Start dsh in the project directory and give it the task in one or two designer sentences, plus the facts it cannot discover: "Revit 2026 with the test model is open on this machine", whether anyone will answer questions, and what the report must contain. With `--profile headless --json` it runs unattended and streams events; interactive mode lets you answer the bridge's confirmation requests, which is what lets the agent prototype in the open model (`check_code`, `confirm_spec`, `execute_code`) before it ports the logic into the add-in.
+5. Read the agent's report against the brief (what was built, what it verified in Revit, what it could not), then install the add-in and test the picks, dialogs and cancel paths yourself.
+
+An unattended run cannot confirm `execute_code`; the agent then verifies by compile checks and model reads only. Keep the project open on a copy of the model: a prototype that hangs inside Revit blocks the bridge until the request ends.
