@@ -11,4 +11,4 @@ Lessons in this category are chosen and ordered by the revit-bridge MCP server's
 
 ## Lessons
 
-None yet.
+- [pipe-rebuild-keeps-diameter](lessons/pipe-rebuild-keeps-diameter.md) - `Pipe.Create` takes no size: a new segment gets the type's default diameter; split with `PlumbingUtils.BreakCurve` and copy `RBS_PIPE_DIAMETER_PARAM`

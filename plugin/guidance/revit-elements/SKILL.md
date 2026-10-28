@@ -12,3 +12,4 @@ Lessons in this category are chosen and ordered by the revit-bridge MCP server's
 ## Lessons
 
 - [floor-ceiling-type-and-level-ids](lessons/floor-ceiling-type-and-level-ids.md) - `Floor.Create(document, loops, floorType.Id, level.Id)`: another kind of id throws `ArgumentException`
+- [wall-inserts-no-overlap](lessons/wall-inserts-no-overlap.md) - check every insert from `wall.FindInserts` for overlap before `NewFamilyInstance`: Revit rejects overlapping doors and windows and the transaction fails

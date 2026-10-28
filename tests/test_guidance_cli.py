@@ -35,9 +35,9 @@ def test_check_the_seed_content(capsys):
     code, out = run(capsys, "check", str(CONTENT))
     assert code == 0
     lines = out.splitlines()
-    assert lines[0] == f"layer framework: loaded, 15 lessons: {CONTENT}"
+    assert lines[0] == f"layer framework: loaded, 17 lessons: {CONTENT}"
     assert lines[1:4] == ["layer company: not set", "layer project: not set", "layer personal: not set"]
-    assert lines[-1] == "result: 0 problems, 0 warnings, 15 lessons"                 # S3b: every seed <= 2300 bytes
+    assert lines[-1] == "result: 0 problems, 0 warnings, 17 lessons"                 # S3b: every seed <= 2300 bytes
     assert not any(line.startswith("problem:") for line in lines)
 
 

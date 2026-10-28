@@ -66,6 +66,30 @@ See the official [command interface](https://help.autodesk.com/cloudhelp/2026/EN
 
 [Autodesk's External Events guide](https://help.autodesk.com/cloudhelp/2026/ENU/Revit-API/files/Revit_API_Developers_Guide/Advanced_Topics/Revit_API_Revit_API_Developers_Guide_Advanced_Topics_External_Events_html.html) documents the modeless UI mechanism.
 
+## Rules from tested builds
+
+Thirty-six generated add-ins were hand-tested in Revit 2026.5 in October 2026 (a pipe jog and a wall-plus-door-plus-window kit, with and without the bridge). About four in ten failed in use although every one compiled, for the same reasons in both groups:
+
+- **Transaction leaks and work outside the transaction.** The command owns one `Transaction` (or a `TransactionGroup` around several); nothing touches the model before `Start()` or after `Commit()`, every path ends in `Commit()` or `RollBack()`, and an exception inside is caught, rolled back and reported. Commit only after every edit succeeded; a pending transaction is not a committed one. Resolve warnings and errors through `FailureHandlingOptions`:
+
+  ```csharp
+  using (var t = new Transaction(doc, "WallKit"))
+  {
+      FailureHandlingOptions fho = t.GetFailureHandlingOptions();
+      fho.SetFailuresPreprocessor(new SilentWarnings());   // IFailuresPreprocessor: DeleteWarning for warnings, ProceedWithRollBack for errors
+      fho.SetClearAfterRollback(true);
+      t.SetFailureHandlingOptions(fho);
+      t.Start();
+      try { /* every edit */ if (t.Commit() != TransactionStatus.Committed) { message = "Revit rejected the change"; return Result.Failed; } }
+      catch (Exception ex) { if (t.HasStarted() && !t.HasEnded()) t.RollBack(); message = ex.Message; return Result.Failed; }
+  }
+  ```
+
+- **Overlapping inserts.** Revit refuses a door or window whose span overlaps another insert on the same wall, and the error fails the transaction. Before the first `NewFamilyInstance`, compute each planned opening's span along the wall's location line and compare it with every id from `wall.FindInserts(true, false, false, false)` and with the other planned openings (type width from `FAMILY_WIDTH_PARAM`); refuse or shift with a message.
+- **Rebuilt elements losing their properties.** `Pipe.Create` and `Duct.Create` take no size: a replaced segment comes back at the type's default diameter unless `RBS_PIPE_DIAMETER_PARAM` (or the duct size parameters) is copied from the original. Prefer `PlumbingUtils.BreakCurve` / `MechanicalUtils.BreakCurve`, which keep type, system, level, size and the far connections, and create only the new middle segments. The same rule for walls, floors and families: copy type, level, phase, Mark and the parameters the user set.
+- **A UI that hides failures.** Validate every dialog input and show why a value is refused; make OK act or explain; map Escape and Cancel to `Result.Cancelled` with no change; never swallow an exception in an empty `catch` - every failure reaches the user with its reason; end a successful run with a short summary (`TaskDialog`).
+- **Delivering without running the logic.** When a bridge reaches a Revit with the test model, run the core logic there (`check_code`, then a prototype through the confirmation protocol) before porting it into the command. When the protocol needs a confirmation nobody present can give, report the step as not verified rather than skipping it silently.
+
 ## Build, install, debug
 
 1. Inspect build targets before running them in an existing repository: Debug builds sometimes deploy automatically. Use a configuration that fits the user's authorized scope.
