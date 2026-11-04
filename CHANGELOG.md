@@ -8,6 +8,20 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- Plugin listing files for Anthropic's directory and skills.sh: `plugin/README.md`
+  (what the plugin runs and where data goes), `plugin/.claude-plugin/icon.png`,
+  `icon` / `documentationUrl` / `supportUrl` in `plugin.json`, and `skills.sh.json`
+  at the repository root so `npx skills add revitbridge/revit-bridge` finds
+  `plugin/skills`.
+
+### Changed
+
+- `plugin/.mcp.json` pins the server to the released package
+  (`uvx revit-bridge==0.4.2`); the directory validator rejects an unpinned
+  launcher. Bump it with every release, next to `version` in `plugin.json`.
+- The confirmation hook runs `uv run --no-project --frozen` (same behaviour;
+  the validator requires `--frozen` or `--locked` on `uv run`).
+
 - Guidance lessons from the dsh hand tests (36 generated add-ins, 2026-10):
   `revit-mep/pipe-rebuild-keeps-diameter` (`Pipe.Create` takes no size;
   split with `PlumbingUtils.BreakCurve`, copy `RBS_PIPE_DIAMETER_PARAM`) and

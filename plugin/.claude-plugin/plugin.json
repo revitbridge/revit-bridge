@@ -7,5 +7,8 @@
   "homepage": "https://github.com/revitbridge/revit-bridge",
   "repository": "https://github.com/revitbridge/revit-bridge",
   "license": "MIT",
-  "keywords": ["revit", "bim", "mcp", "autodesk"]
+  "keywords": ["revit", "bim", "mcp", "autodesk"],
+  "icon": "./.claude-plugin/icon.png",
+  "documentationUrl": "https://github.com/revitbridge/revit-bridge#readme",
+  "supportUrl": "https://github.com/revitbridge/revit-bridge/issues"
 }
