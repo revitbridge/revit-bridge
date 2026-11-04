@@ -8,6 +8,13 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- Guidance lessons from the dsh hand tests (36 generated add-ins, 2026-10):
+  `revit-mep/pipe-rebuild-keeps-diameter` (`Pipe.Create` takes no size;
+  split with `PlumbingUtils.BreakCurve`, copy `RBS_PIPE_DIAMETER_PARAM`) and
+  `revit-elements/wall-inserts-no-overlap` (check `FindInserts` before
+  `NewFamilyInstance`). Both Right snippets pass `check_code` on Revit 2026.5.
+- README section "Use from dsh (DeepSeek Harness)": profile patch, skills
+  folder, attended versus unattended runs.
 - `revit-task-brief` skill: rewrites a designer's one-sentence request for an
   add-in or model change into a testable brief before any code (numbered
   behaviour, inputs with units and defaults, cancel and failure rules, facts
@@ -16,6 +23,14 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   Includes a template and a worked pipe-jog example. Drawn from the detailed
   prompts of the dsh host evaluation, where they constrained the generated
   add-ins well.
+
+### Changed
+
+- `revit-task-brief` and `revit-addin-dev` carry five non-negotiables learned
+  from the hand tests: transactions closed on every path with
+  `FailureHandlingOptions`, inserts never overlap, rebuilt elements keep their
+  properties, a UI that reports every refusal and failure, and core logic run
+  in the open model before delivery (or reported as not verified).
 
 ## [0.4.2] - 2026-10-26
 

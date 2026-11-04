@@ -615,7 +615,8 @@ EXPECTED_LESSONS = {
     "revit-params": {"lookup-parameter-storage-type", "builtin-parameter-first"},
     "revit-geometry": {"wall-length-from-location", "curve-length-property", "line-create-bound"},
     "revit-families": {"activate-symbol-before-placement"},             # batch 5: runtime exceptions (E3)
-    "revit-elements": {"floor-ceiling-type-and-level-ids"},
+    "revit-elements": {"floor-ceiling-type-and-level-ids", "wall-inserts-no-overlap"},
+    "revit-mep": {"pipe-rebuild-keeps-diameter"},                       # batch 10: lessons from the dsh hand tests
 }
 
 

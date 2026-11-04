@@ -34,6 +34,16 @@ Revit release to framework: 2024 `net48`; 2025 and 2026 `net8.0-windows`; 2025.5
 - Keep the brief under about 600 words. Longer briefs get skimmed; shorter ones leave the decisions to chance.
 - Do not invent the environment. State the facts that are known (an open Revit with a test model, the release) and let the implementer discover the rest with its tools; when a fact is required and unknown, write it as a question under Decisions with the default that will be used if nobody answers.
 
+## Rules every brief carries
+
+These come from hand-tested batches of generated add-ins (36 builds, 2026-10): the same five faults caused most functional failures, with or without the bridge. Write them into the brief's steps, rejections and verification; do not leave them to the implementer.
+
+- **Transactions are closed on every path.** One owner (the command) opens one `Transaction` or `TransactionGroup`; every exit commits after all edits succeeded or rolls back, including exceptions (`using` plus an explicit `Commit`/`RollBack`). No model change happens before `Start` or after `Commit`; a pending transaction is never left behind. Set `FailureHandlingOptions` with a preprocessor that resolves warnings and turns errors into a rollback with a message.
+- **Inserts never overlap.** Before the first door or window is placed, every planned opening is compared with every insert already on the host (`FindInserts`) and with the other planned openings; an overlap is refused or moved with a message, never left to Revit's error dialog.
+- **Rebuilt elements keep their properties.** A pipe, duct or wall segment created to replace another copies diameter, system, level, type and connections from the original; for MEP prefer splitting in place (`PlumbingUtils.BreakCurve`) over delete-and-recreate.
+- **The UI tells the truth.** One dialog validates its inputs and says why a value is refused; OK either acts or explains; Cancel and Escape return `Result.Cancelled` with no change; no failure is swallowed by a silent `catch` - every failure reaches the user as a message with the reason; the command ends with a summary.
+- **The core logic is run in the open model before it is delivered.** When the bridge reaches a Revit, the brief's verification section names the prototype to run there. When the bridge's confirmation protocol needs a human and nobody is present, the report says "not verified in Revit: no confirmation available" instead of skipping the step silently.
+
 ## How to use it
 
 1. Read the request. List the nouns (elements, types, rooms, numbers) and the verbs (pick, create, modify, flip, report).
