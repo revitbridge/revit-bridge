@@ -6,6 +6,17 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-07
+
+Skills that install anywhere and a much larger `revit-addin-dev`. No tool, pack,
+TaskSpec or gate change; a 0.4 host keeps working unchanged.
+
+Upgrade: `uvx --refresh revit-bridge`. New command `revit-bridge skills list|install`
+copies the four skills into any agent's skills directory. `revit-addin-dev` gains
+the release, coding-rule and in-Revit test references with four read-only helper
+scripts; `revit-task-brief` is new since 0.4.2. The server instructions now say
+revit-bridge 0.5; the `revit-bridge` skill still requires 0.4 or newer.
+
 ### Added
 
 - `revit-bridge skills list|install`: lists the bundled agent skills and
@@ -14,7 +25,6 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   them or by name, refusing to overwrite an existing folder unless
   `--force`. README section "Install the skills in another project" with
   one line per host.
-
 - Guidance lessons from the dsh hand tests (36 generated add-ins, 2026-10):
   `revit-mep/pipe-rebuild-keeps-diameter` (`Pipe.Create` takes no size;
   split with `PlumbingUtils.BreakCurve`, copy `RBS_PIPE_DIAMETER_PARAM`) and
@@ -708,7 +718,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/revitbridge/revit-bridge/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/revitbridge/revit-bridge/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/revitbridge/revit-bridge/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/revitbridge/revit-bridge/compare/v0.3.0...v0.4.0
