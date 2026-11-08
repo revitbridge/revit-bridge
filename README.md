@@ -64,6 +64,9 @@ project for Revit 2024, 2025, 2026, or 2027, including the 2025.5/2026.5 .NET 10
 updates (2027 is .NET 10 only). Select the exact installed release, not just its year. It uses bridge tools for relevant model
 context and prototype checks, then delivers a DLL that runs independently
 of the bridge. Coding and building can proceed without a live connection.
+Its references also cover the release stage: multi-year build matrix,
+obfuscation, installer and registration, acceptance in a real Revit, and the
+journal patterns for "installed but not in Revit".
 
 **Start from a brief** — the `revit-task-brief` skill rewrites a designer's
 one-sentence request ("I pick two crossing pipes and the first one gets jogged
