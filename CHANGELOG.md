@@ -8,6 +8,13 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- `revit-bridge skills list|install`: lists the bundled agent skills and
+  copies complete skill folders into any skills directory
+  (`--to .claude/skills`, `~/.claude/skills`, `.agents/skills`), all of
+  them or by name, refusing to overwrite an existing folder unless
+  `--force`. README section "Install the skills in another project" with
+  one line per host.
+
 - Guidance lessons from the dsh hand tests (36 generated add-ins, 2026-10):
   `revit-mep/pipe-rebuild-keeps-diameter` (`Pipe.Create` takes no size;
   split with `PlumbingUtils.BreakCurve`, copy `RBS_PIPE_DIAMETER_PARAM`) and
