@@ -9,6 +9,9 @@ Usage:
                             validate the guidance layers, rebuild the generated
                             index, or show what get_guidance would recommend
                             (see revit_bridge.guidance_cli)
+    revit-bridge skills list|install
+                            list the bundled agent skills or copy them into a
+                            skills directory (see revit_bridge.skills_cli)
     python -m revit_bridge.mcp_server
 
 Tools:
@@ -46,7 +49,7 @@ from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
 from revit_bridge import __version__
-from revit_bridge import checking, guidance_cli
+from revit_bridge import checking, guidance_cli, skills_cli
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
@@ -605,10 +608,14 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check", help="ping the Revit add-in and print the connection status, "
                                  "its capability and environment")
     guidance_cli.add_parser(sub)
+    skills_cli.add_parser(sub)
     args = parser.parse_args(argv)
 
     if args.command == "guidance":
         return guidance_cli.run(args)
+
+    if args.command == "skills":
+        return skills_cli.run(args)
 
     if args.command == "check":
         status = asyncio.run(check_connection(environment=True))

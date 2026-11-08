@@ -17,11 +17,30 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 ### Changed
 
 - `plugin/.mcp.json` pins the server to the released package
-  (`uvx revit-bridge==0.4.2`); the directory validator rejects an unpinned
+  (`uvx revit-bridge==0.5.0`); the directory validator rejects an unpinned
   launcher. Bump it with every release, next to `version` in `plugin.json`.
 - The confirmation hook runs `uv run --no-project --frozen` (same behaviour;
   the validator requires `--frozen` or `--locked` on `uv run`).
 
+## [0.5.0] - 2026-11-07
+
+Skills that install anywhere and a much larger `revit-addin-dev`. No tool, pack,
+TaskSpec or gate change; a 0.4 host keeps working unchanged.
+
+Upgrade: `uvx --refresh revit-bridge`. New command `revit-bridge skills list|install`
+copies the four skills into any agent's skills directory. `revit-addin-dev` gains
+the release, coding-rule and in-Revit test references with four read-only helper
+scripts; `revit-task-brief` is new since 0.4.2. The server instructions now say
+revit-bridge 0.5; the `revit-bridge` skill still requires 0.4 or newer.
+
+### Added
+
+- `revit-bridge skills list|install`: lists the bundled agent skills and
+  copies complete skill folders into any skills directory
+  (`--to .claude/skills`, `~/.claude/skills`, `.agents/skills`), all of
+  them or by name, refusing to overwrite an existing folder unless
+  `--force`. README section "Install the skills in another project" with
+  one line per host.
 - Guidance lessons from the dsh hand tests (36 generated add-ins, 2026-10):
   `revit-mep/pipe-rebuild-keeps-diameter` (`Pipe.Create` takes no size;
   split with `PlumbingUtils.BreakCurve`, copy `RBS_PIPE_DIAMETER_PARAM`) and
@@ -38,8 +57,40 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   prompts of the dsh host evaluation, where they constrained the generated
   add-ins well.
 
+- `revit-addin-dev` references `release-and-field-test.md` and `diagnostics.md`:
+  lessons from the first release of a ten-year add-in (2026-11): names
+  resolved from strings at run time, one DLL per Revit release and
+  out-of-process helpers for mixed-mode libraries, what a passing build matrix
+  is, obfuscation settings for XAML/JSON add-ins and how to verify them,
+  classic manifest versus bundle and the `Duplicate addins` trap, the
+  "installed but not in Revit" order of checks, acceptance on a real machine
+  (saved copy, four-cell table, shared-machine rules), out-of-process helper
+  diagnosis, review-record rules, and journal grep patterns.
+- `revit-addin-dev` reference `coding-rules.md`: twelve groups of C# and
+  Revit API rules, each written after a branch review found the defect
+  (six packages, four review rounds, 2026-10 to 2026-11): transactions that
+  roll back clean and leave no types behind, decisions by identity not text,
+  one dialog per error and `Cancelled` on Escape, "nothing" is not zero,
+  per-item tolerance and explicit units for external data, rectangles by
+  edges not diagonals, no string reflection on own types, version branches
+  and dependencies, sign-in clients (only 401/403 revoke), out-of-process
+  helper contracts, commits that pass review, and a hand-over checklist.
+- `revit-addin-dev` reference `in-revit-autotest.md` and four read-only helper
+  scripts (`revit_ps.ps1`, `window_list.ps1`, `journal_tail.py`,
+  `addin_snapshot.py`): scripted test sessions in a real Revit on a shared
+  machine (list running Revits first, snapshot the install, install only the
+  year under test, end only the pid you launched, restore and verify),
+  base-versus-branch comparison with masking and id mapping, hang diagnosis
+  (the dialog Revit waits on, decoded journal, RevitWorker state, three known
+  dialogs and their causes), probes, pitfalls, timings and the hand-over.
+
 ### Changed
 
+- `revit-addin-dev` SKILL.md gains a "Release and test on a real machine"
+  section, a pointer to the coding rules in "Implement in the correct
+  runtime", and a release-triggering description; `addin-development.md`
+  adds `Parameter.Set` returning `false`, `AsDouble()` on unset parameters
+  and identifying failures by `FailureDefinitionId`.
 - `revit-task-brief` and `revit-addin-dev` carry five non-negotiables learned
   from the hand tests: transactions closed on every path with
   `FailureHandlingOptions`, inserts never overlap, rebuilt elements keep their
@@ -683,7 +734,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/revitbridge/revit-bridge/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/revitbridge/revit-bridge/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/revitbridge/revit-bridge/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/revitbridge/revit-bridge/compare/v0.3.0...v0.4.0

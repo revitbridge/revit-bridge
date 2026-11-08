@@ -1,6 +1,6 @@
 ---
 name: revit-addin-dev
-description: Create, continue, debug, or migrate standalone Autodesk Revit C# add-ins, using revit-bridge for relevant model context and prototype verification. Use for IExternalCommand, ribbon commands, ExternalEvent, .csproj, .addin manifests, and turning a bridge snippet into a compiled plugin. 开发、接续、调试独立 Revit C# 插件，借助 revit-bridge 获取上下文和验证功能。For direct model edits without a plugin deliverable, use the revit-bridge operating skill instead.
+description: Create, continue, debug, release or migrate standalone Autodesk Revit C# add-ins, using revit-bridge for relevant model context and prototype verification. Use for IExternalCommand, ribbon commands, ExternalEvent, .csproj, .addin manifests, turning a bridge snippet into a compiled plugin, multi-year release builds, obfuscation, installers, acceptance in a real Revit, and reading Revit journals when an add-in does not show up or loads an old DLL. 开发、接续、调试、发布独立 Revit C# 插件，借助 revit-bridge 获取上下文和验证功能；多年份编译、混淆、安装包、真机验收、读 journal 排查"插件没出来 / 还是旧版"。For direct model edits without a plugin deliverable, use the revit-bridge operating skill instead.
 ---
 
 # Revit Add-in Development
@@ -48,6 +48,8 @@ The two execution contexts differ:
 
 Reuse the useful algorithm, not the bridge wrapper. Keep pure calculations separate where that enables meaningful tests. Avoid introducing a service container, framework, or new package merely to wrap one command.
 
+While writing, follow [Coding rules from reviewed branches](references/coding-rules.md): failure paths inside a transaction roll back clean and leave no types behind; decisions by `BuiltInCategory` and `FailureDefinitionId`, never by text; one dialog per error and `Result.Cancelled` on Escape; `HasValue` and `Set` return values checked; external data read per item with explicit units; rectangles recognised by edges, not diagonals; no new string reflection on own types; one behaviour change per commit with the verification named in its body. Its closing checklist is the hand-over check for a branch.
+
 ## Start a new add-in
 
 The bundled generator creates a minimal read-only external command, a project, and a manifest. It requires Python 3.11+ and refuses an existing destination. Resolve its path relative to this skill directory, independent of the user's working directory:
@@ -70,10 +72,23 @@ Hand-tested batches of generated add-ins (36 builds, 2026-10) failed on the same
 4. **The UI tells the truth**: inputs are validated with the reason shown; OK acts or explains; Cancel and Escape return `Result.Cancelled`; no silent `catch`; a closing summary.
 5. **Core logic runs in the open model before delivery** when a bridge reaches a Revit; when its confirmation needs a human who is not there, say "not verified in Revit" in the report.
 
+## Release and test on a real machine
+
+Read [Release build, installer and acceptance](references/release-and-field-test.md) when the deliverable is an installable release rather than a single build: several Revit years, obfuscation, an installer, a shared test machine, or a review record. [Diagnostics](references/diagnostics.md) holds the commands and journal patterns. The rules that bite first:
+
+- **Names resolved from strings at run time** (`FullClassName`, XAML bindings, JSON property names) are invisible to the compiler. After any rename, including obfuscation, load the build in a real Revit once.
+- **One DLL per Revit release**, and each year's `.addin` points at its own DLL. A C++/CLI mixed-mode library cannot load into Revit 2025+; keep it in an out-of-process helper for every year.
+- **A build matrix passes** when every supported year has 0 errors, warnings compared per file and code against the base branch show nothing new, and every commit on the branch builds.
+- **Register one way**, classic `.addin` or autoloader bundle. The same AddInId in both is a duplicate, and Revit keeps the stale one. "Installed but not in Revit": was Revit restarted, is it registered twice, which DLL does the journal say it loaded, and only then `AddInLoadFailureMessage`.
+- **Acceptance opens a saved copy of a project**, never a fresh one created through the API (2025/2026 hang). Every shipped command runs once, failure paths run once, and Undo is checked. A step that did not run is "not tested", never "passed".
+- **On a shared machine** nobody else's Revit is touched, inputs are copied before use, temporary manifests are removed, and screenshots are cropped to the Revit window.
+
+For a scripted session that starts Revit, drives the add-in and compares a branch with its base, follow [Automated test sessions in a real Revit](references/in-revit-autotest.md): list running Revits first (`scripts/revit_ps.ps1 -RequireNone`), snapshot the installed add-in (`scripts/addin_snapshot.py snapshot`), install only the year under test, end only the pid you launched, restore and `verify`. When Revit hangs, `scripts/window_list.ps1` names the dialog and `scripts/journal_tail.py` shows what it was doing.
+
 ## Verify and hand over
 
 Build the target configuration and run meaningful tests already present or needed for new nontrivial logic. If an SDK or reference assembly is unavailable, report the missing prerequisite precisely; do not substitute another Revit year's API and claim compatibility.
 
 Distinguish source generated, build passed, bridge prototype checked, compiled add-in loaded, and feature verified. A bridge experiment cannot verify the compiled plugin's manifest, ribbon, dependency loading, or ExternalEvent lifecycle. When Revit testing is available and authorized, verify the compiled command on the intended scope, including cancellation and rollback for a modifying feature.
 
-Deliver the source changes, build command and artifact paths, and any remaining Revit checks. Installation should target this add-in only; preserve unrelated manifests. Follow existing authorization for deployment, and do not terminate Revit to release a locked DLL without permission.
+Deliver the source changes, build command and artifact paths, and any remaining Revit checks. Installation should target this add-in only; preserve unrelated manifests. Follow existing authorization for deployment, and do not terminate Revit to release a locked DLL without permission. For a release under review, write the record as [Release build, installer and acceptance](references/release-and-field-test.md) describes: the "before" column is the base branch's real behaviour, four cells per button with evidence, no rewording of reviewed commits, no drawings or binaries as evidence.

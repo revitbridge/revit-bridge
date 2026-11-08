@@ -64,6 +64,9 @@ project for Revit 2024, 2025, 2026, or 2027, including the 2025.5/2026.5 .NET 10
 updates (2027 is .NET 10 only). Select the exact installed release, not just its year. It uses bridge tools for relevant model
 context and prototype checks, then delivers a DLL that runs independently
 of the bridge. Coding and building can proceed without a live connection.
+Its references also cover the release stage: multi-year build matrix,
+obfuscation, installer and registration, acceptance in a real Revit, and the
+journal patterns for "installed but not in Revit".
 
 **Start from a brief** — the `revit-task-brief` skill rewrites a designer's
 one-sentence request ("I pick two crossing pipes and the first one gets jogged
@@ -72,9 +75,38 @@ inputs with units and defaults, cancel and failure rules, the facts that must
 be read from the open project, deliverables, verification and the decisions
 taken. The coding skills then implement the brief.
 
-From a checkout, load the skills with `claude --plugin-dir ./plugin`, or
-copy the complete `plugin/skills/revit-addin-dev` folder into your agent's
-skills directory. Example request: "Use revit-addin-dev to continue my C#
+### Install the skills in another project
+
+The four skills (`revit-addin-dev`, `revit-task-brief`, `revit-core`,
+`revit-bridge`) are self-contained folders: a `SKILL.md` plus `references/`,
+`scripts/` and `assets/`. Any agent that reads skill folders can use them,
+with or without the MCP server. `revit-addin-dev` and `revit-task-brief` need no
+Revit connection at all; `revit-bridge` and `revit-core` describe the bridge
+tools and are most useful with the server configured.
+
+| Where you work | Install |
+| --- | --- |
+| Claude Code, everything (skills + MCP server + confirmation hook) | `/plugin marketplace add revitbridge/revit-bridge` then `/plugin install revit-bridge@revit-bridge` |
+| Claude Code, one project (skills only) | `uvx revit-bridge skills install --to .claude/skills` in the project |
+| Claude Code, every project of this user (skills only) | `uvx revit-bridge skills install --to ~/.claude/skills` |
+| Codex, dsh and other agents reading `.agents/skills` | `uvx revit-bridge skills install --to .agents/skills` |
+| One skill only | add its name: `uvx revit-bridge skills install revit-addin-dev --to .claude/skills` |
+| Without `uv` | `pip install revit-bridge` then `revit-bridge skills install --to <dir>`; or copy the folder from `plugin/skills/` of a checkout, or `npx skills add revitbridge/revit-bridge` |
+| From a checkout, without copying | `claude --plugin-dir ./plugin` |
+
+`revit-bridge skills list` prints the names and descriptions. `install`
+copies whole folders, leaves other skills in the directory alone, and refuses
+to overwrite an existing folder of the same name unless `--force` is given,
+so local edits survive an accidental re-install. To upgrade, run it again
+with `--force` after `uvx` has fetched the new release (`uvx
+revit-bridge@latest skills install ...`).
+
+The scripts inside `revit-addin-dev` need Python 3.11+ (`new_addin.py`,
+`journal_tail.py`, `addin_snapshot.py`) and Windows PowerShell 5.1+
+(`revit_ps.ps1`, `window_list.ps1`); nothing else is installed and none of
+them starts, installs or closes a Revit.
+
+Example request once installed: "Use revit-addin-dev to continue my C#
 plugin, inspect the selected walls through revit-bridge where needed, and
 build an independent command." The bundled `scripts/new_addin.py --help`
 describes the starter generator; it does not install or launch the add-in.
