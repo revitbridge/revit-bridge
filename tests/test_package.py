@@ -76,7 +76,10 @@ def test_the_plugin_starts_only_revit_bridge_and_the_readme_shows_the_pair():
     import re
 
     plugin = json.loads((ROOT / "plugin" / ".mcp.json").read_text(encoding="utf-8"))
-    assert plugin == {"mcpServers": {"revit-bridge": {"command": "uvx", "args": ["revit-bridge"]}}}
+    # The plugin pins the released package (Anthropic's directory rejects an unpinned launcher);
+    # the pin must move with the plugin version at every release.
+    manifest = json.loads((ROOT / "plugin" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert plugin == {"mcpServers": {"revit-bridge": {"command": "uvx", "args": ["revit-bridge==" + manifest["version"]]}}}
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     section = readme[readme.index("## Pair with revit-api-docs"):readme.index("## Configure")]
     assert len(section.strip().splitlines()) <= 15
