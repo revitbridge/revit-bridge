@@ -60,6 +60,9 @@ See the official [command interface](https://help.autodesk.com/cloudhelp/2026/EN
 
 - Use `UnitUtils` with the target version's unit API; preserve the user's units. Length, area, volume, and angle require their own conversions.
 - Identify built-in parameters by `BuiltInParameter`, shared parameters by GUID where available. Check `StorageType`, `IsReadOnly`, and type/instance ownership before setting a value; formatted text is not the stored numeric value.
+- `Parameter.Set` returns `false` instead of throwing when the value does not fit the storage type; check the result. `AsDouble()` on an unset numeric parameter returns 0, so test `HasValue` before reading it.
+- Identify Revit failures by `FailureDefinitionId` (for example `BuiltInFailures.JoinElementsFailures.CannotJoinElementsError`), not by message text: several definitions share one text and the one raised differs between releases.
+- External data, sign-in clients, out-of-process helpers, geometry recognition and version branches have their own rules in [coding-rules.md](coding-rules.md), each written after a review found the defect.
 - Type changes can affect unselected instances. Resolve the intended impact before implementing a workaround such as duplicating a type.
 - Prefer bounded collectors by category/class, selection, or view. Re-resolve elements in the intended document; linked-model geometry also needs link context and transforms.
 - For modeless WPF, create an `ExternalEvent` in a valid API context and raise requests to an `IExternalEventHandler`. Keep pending request state explicit and revalidate document/targets in the handler. Dispose/unsubscribe when the UI lifetime ends. Use background work only for data detached from Revit API objects.
