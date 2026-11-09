@@ -1,0 +1,4 @@
+interface:
+  display_name: "Revit Add-in Tester"
+  short_description: "Run a compiled Revit add-in in a real Revit and compare base with branch"
+  default_prompt: "Use $revit-addin-test to run my compiled Revit add-in in a real Revit session, without disturbing anyone else on this machine, and report what was tested."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Revit Add-in Release"
+  short_description: "Multi-year release build, installer, acceptance and the review record"
+  default_prompt: "Use $revit-addin-release to prepare the release of my Revit add-in: build matrix, obfuscation, installer, acceptance on a real machine and the review record."
