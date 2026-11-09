@@ -10,7 +10,7 @@ Helper scripts live in this skill's `scripts/` directory (`SK` below):
 | `window_list.ps1 -ProcessId <pid>` | Visible top-level windows (class and title) of one process: finds the modal dialog a stuck Revit waits on. |
 | `journal_tail.py <year> [--lines N] [--all] [--file F]` | Decodes the newest journal of that year (UTF-16, UTF-8 or GBK) and prints the dialog, transaction, ExternalEvent, background-work and error lines, plus whether each RevitWorker log says it is accepting requests. |
 | `addin_snapshot.py snapshot <install dir> <backup dir>` / `verify <install dir> <backup dir> [--ignore <glob> ...]` | Copies the installed add-in folder with SHA-256 hashes before the first install; after the tests, reports changed, added and missing files and exits non-zero unless the set is restored. |
-| `collect_logs.ps1 -Name <Name>` (with `collect_logs.bat`) | On a user's machine: zips the add-in's manifests, bundles and DLL versions, the recent journals and the add-in's own logs to the Desktop, read-only. See [user-machine-support.md](user-machine-support.md). |
+| `collect_logs.ps1 -Name <Name>` (with `collect_logs.bat`; in the `revit-addin-release` skill's `scripts/`) | On a user's machine: zips the add-in's manifests, bundles and DLL versions, the recent journals and the add-in's own logs to the Desktop, read-only. See the `revit-addin-release` skill, `references/user-machine-support.md`. |
 
 ## 1. Shared-machine rules
 

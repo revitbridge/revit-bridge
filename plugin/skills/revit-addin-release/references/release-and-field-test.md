@@ -1,29 +1,16 @@
 # Release build, installer and acceptance on a real machine
 
-Every rule here comes from a concrete failure or decision during the first release of a multi-year Revit add-in (ten Revit releases, obfuscated, installer, shared test machine, 2026-11). Jump to the stage you are in: change code, build matrix, obfuscate, install, accept in Revit, diagnose, write the record. Command and log patterns are in [diagnostics.md](diagnostics.md).
+Every rule here comes from a concrete failure or decision during the first release of a multi-year Revit add-in (ten Revit releases, obfuscated, installer, shared test machine, 2026-11). Jump to the stage you are in: change code, build matrix, obfuscate, install, accept in Revit, diagnose, write the record. Command and log patterns are in [diagnostics.md](diagnostics.md) (dependency set, installer, pre-push scan, a user's machine) and in the `revit-addin-test` skill, `references/diagnostics.md` (processes, journals, registration, helper).
 
 ## Three things to settle before the first build
 
 1. **Revit 2025 and later run on .NET (8, then 10).** A .NET Framework C++/CLI mixed-mode assembly (many legacy CAD and geometry SDKs) cannot load into that process, and no version bump fixes it. Keep such a library in a small **out-of-process** helper (a `net48` x64 console executable started by the add-in, results passed as a file or pipe) and use that path for every Revit year, so the behaviour is identical across years.
-2. **One DLL per Revit release.** 2016 and 2018 are `net462`, 2019 and 2020 `net472`, 2021 to 2024 `net48`, 2025 and 2026 `net8.0-windows`, 2025.5/2026.5/2027 `net10.0-windows` (see [addin-development.md](addin-development.md)). The installer carries one directory per year, and each year's `.addin` `Assembly` points at **that year's** DLL. Do not share one DLL across runtimes.
+2. **One DLL per Revit release.** 2016 and 2018 are `net462`, 2019 and 2020 `net472`, 2021 to 2024 `net48`, 2025 and 2026 `net8.0-windows`, 2025.5/2026.5/2027 `net10.0-windows` (see the `revit-addin-dev` skill, `references/addin-development.md`). The installer carries one directory per year, and each year's `.addin` `Assembly` points at **that year's** DLL. Do not share one DLL across runtimes.
 3. **Some names are resolved from strings at run time.** `FullClassName` in the `.addin`, `{Binding PropertyName}` and `{x:Type local:Class}` in XAML, JSON POCO property names, spreadsheet column names. The compiler does not check them, so a rename (including one done by an obfuscator) fails silently in Revit. Any change that touches such a name **must** be loaded once in a real Revit.
 
 ## Build matrix: what "passes" means
 
-Use the build tool the project already uses. Some mixed resx/WPF projects build only under Visual Studio's `MSBuild.exe` (`dotnet build` reports MSB3822/MSB3823 on image resources); do not switch tools to make an error go away.
-
-```
-MSBuild.exe <Project>.csproj -restore -t:Rebuild -p:Configuration=Release<year> -p:BaseOutputPath=<outside the workspace>\ -nologo -v:m -clp:Summary
-```
-
-A matrix passes only when all of these hold:
-
-- **Every supported year builds with 0 errors.** Years the product does not support are listed as such, not skipped silently.
-- **Warnings are compared per `file + code` against the base branch and none is new.** An equal or lower total is not evidence: deleting old code lowers the total and hides new warnings.
-- **Every commit on the branch builds** for one representative configuration. A commit that does not build means the history was rewritten badly.
-- Compare the two sides at the **same verbosity**; `-v:normal` prints resolution warnings (MSB3245) that `-v:m` does not.
-- Record the commit and tree hash of every dependency repository or reference package before and after the build.
-- Output goes to a drive with space; a system drive at 99 % breaks restore in confusing ways.
+What counts as a passing build matrix is defined in the revit-addin-test skill (SKILL.md, 'What passes').
 
 ## Obfuscation before release
 
@@ -40,7 +27,7 @@ If the project obfuscates (Obfuscar or similar), configure it for this add-in, n
 
 Two registration mechanisms exist, and an add-in uses **one**:
 
-- Classic manifest: `%ProgramData%\Autodesk\Revit\Addins\<year>\<Name>.addin` (per machine, administrator install) or `%APPDATA%\Autodesk\Revit\Addins\<year>\` (per user), `Assembly` as the absolute path of that year's DLL. Revit 2027 refuses the `ProgramData` folder; see [addin-development.md](addin-development.md).
+- Classic manifest: `%ProgramData%\Autodesk\Revit\Addins\<year>\<Name>.addin` (per machine, administrator install) or `%APPDATA%\Autodesk\Revit\Addins\<year>\` (per user), `Assembly` as the absolute path of that year's DLL. Revit 2027 refuses the `ProgramData` folder; see the `revit-addin-dev` skill, `references/addin-development.md`.
 - Autoloader bundle: `ApplicationPlugins\<Name>.bundle\PackageContents.xml`.
 
 The same `AddInId` registered both ways is a **duplicate**: Revit logs `Duplicate addins` and loads the classic one, which is usually the stale development copy. The installer removes other manifests of this add-in in the same folder (back them up first) and stale bundles of every user profile. Under an elevated installer `{userappdata}` is the administrator's profile; to clean every user, enumerate `%SystemDrive%\Users\*`.
@@ -87,7 +74,7 @@ Minimum: one `net48` year (2024) and one .NET year (2025 or 2026) each get the f
 - Delete temporary `.addin` files when done. At the end compare every file under the user and machine `Addins\*` folders with the state you found; they must match.
 - Crop screenshots to the Revit window. A full-screen capture on a shared machine has captured another user's open credentials once; the image was destroyed.
 - Do not change proxies, network, firewall or other tools' processes. Build output and evidence stay on the data drive.
-- A scripted session (start Revit, drive the add-in, compare base and branch, restore the install) follows [in-revit-autotest.md](in-revit-autotest.md) and uses the helper scripts in this skill's `scripts/` directory.
+- A scripted session (start Revit, drive the add-in, compare base and branch, restore the install) follows the `revit-addin-test` skill, `references/in-revit-autotest.md`, and uses the helper scripts in that skill's `scripts/` directory.
 
 ## Out-of-process helper failures
 
@@ -111,7 +98,7 @@ Four rounds of rework on one batch were almost entirely record problems. Rules:
 - The commit message's "Verification" section says where (which line, which evidence) it was verified, not "builds". No notes about the editing process.
 - Never reword or rebase commits already under review; append a commit, and put corrections to earlier messages in an "errata" section.
 - Evidence is text, JSON, CSV or PNG, cropped to the Revit window. No DWG, RVT, RFA, PCP, DLL or EXE, also not inside a zip. Obfuscation mappings stay out of the repository.
-- Before pushing, list the changed file types, open every new zip, and grep the diff for passwords, `ftp://user:pass@` and `-----BEGIN`. Local backup refs that hold drawings are never pushed. See [diagnostics.md](diagnostics.md) §7.
+- Before pushing, list the changed file types, open every new zip, and grep the diff for passwords, `ftp://user:pass@` and `-----BEGIN`. Local backup refs that hold drawings are never pushed. See [diagnostics.md](diagnostics.md) §3.
 
 ## Comparing a new command with the old one
 

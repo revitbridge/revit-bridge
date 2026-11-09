@@ -1,6 +1,6 @@
 # Revit Bridge plugin
 
-Build, change and query a running Autodesk Revit model from Claude: four skills, one local MCP server and one confirmation hook. The model takes a snapshot first, traces every parameter to a source, shows a spec card, and executes only with a one-time token the designer confirmed.
+Build, change and query a running Autodesk Revit model from Claude: six skills, one local MCP server and one confirmation hook. The model takes a snapshot first, traces every parameter to a source, shows a spec card, and executes only with a one-time token the designer confirmed.
 
 ## What is inside
 
@@ -8,7 +8,9 @@ Build, change and query a running Autodesk Revit model from Claude: four skills,
 |---|---|
 | `skills/revit-bridge` | The bridge protocol: snapshot, query, reconcile, confirm, execute, verify. Use it when the designer wants something built, changed, queried or reported in the open model. |
 | `skills/revit-task-brief` | Rewrites a short designer request into a testable brief before any code is written. |
-| `skills/revit-addin-dev` | Creates, continues or migrates a standalone Revit C# add-in, using the bridge for context and prototype checks. |
+| `skills/revit-addin-dev` | The coding phase of a standalone Revit C# add-in: creates, continues, debugs or migrates its code; the bridge, when present, adds model context and prototype checks. |
+| `skills/revit-addin-test` | The test phase: runs the compiled add-in in a real Revit without disturbing others on the machine, reads journals, judges the build matrix, compares base and branch. Needs no bridge component. |
+| `skills/revit-addin-release` | The release phase: multi-year release build, obfuscation, installer, acceptance on a real machine, the review record, logs from a user's machine. Needs no bridge component. |
 | `skills/revit-core` | The `execute_code` snippet contract, internal units, ElementId and other version differences, the Revit 2024 to 2027 runtime matrix. |
 | `.mcp.json` | Starts the `revit-bridge` MCP server with `uvx` (the `revit-bridge` package from PyPI, pinned to one version). |
 | `hooks/hooks.json` | A `PreToolUse` hook that denies `execute_code` and `run_tool` unless the call carries a token from `confirm_spec`. It runs `hooks/spec_gate.py` with `uv`. |

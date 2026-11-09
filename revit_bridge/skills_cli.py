@@ -6,12 +6,15 @@
                               assets) into DIR/<name>, e.g. a project's .claude/skills,
                               ~/.claude/skills or .agents/skills. Without NAME or
                               --profile every skill is copied. --profile addin is
-                              revit-addin-dev + revit-task-brief (a plain add-in
-                              repository without the bridge server); --profile bridge is
-                              revit-bridge + revit-core. Names and a profile add up. An
-                              existing DIR/<name> is left alone unless --force replaces
-                              it. Exit 2 on an unknown name, 1 when a destination exists
-                              and --force was not given.
+                              the four add-in phases, revit-task-brief +
+                              revit-addin-dev + revit-addin-test + revit-addin-release
+                              (a plain add-in repository without the bridge server);
+                              --profile bridge is revit-bridge + revit-core. Names and
+                              a profile add up; folders are copied in bundled
+                              (alphabetical) order. An existing DIR/<name> is left
+                              alone unless --force replaces it. Exit 2 on an unknown
+                              name, 1 when a destination exists and --force was not
+                              given.
 
 The skills are self-contained folders; nothing here starts a server or needs Revit.
 """
@@ -27,8 +30,9 @@ from revit_bridge.paths import skills_dir
 
 PROFILES: dict[str, list[str]] = {
     # An add-in repository that does not talk to the bridge server: the two server
-    # skills would only cost context there.
-    "addin": ["revit-addin-dev", "revit-task-brief"],
+    # skills would only cost context there. Listed in phase order (brief, coding,
+    # test, release); install copies in bundled order.
+    "addin": ["revit-task-brief", "revit-addin-dev", "revit-addin-test", "revit-addin-release"],
     # An agent that drives Revit through the server.
     "bridge": ["revit-bridge", "revit-core"],
 }
@@ -58,7 +62,8 @@ def add_parser(sub) -> None:
     install = commands.add_parser("install", help="copy skill folders into a skills directory")
     install.add_argument("names", nargs="*", metavar="NAME", help="skill names (default: all)")
     install.add_argument("--profile", choices=[*PROFILES, "all"],
-                         help="a set of skills: addin = %s (an add-in repository without the server), "
+                         help="a set of skills: addin = %s (the add-in phases brief, coding, test and "
+                              "release, for an add-in repository without the server), "
                               "bridge = %s, all = every skill (the default without NAME)"
                               % (" + ".join(PROFILES["addin"]), " + ".join(PROFILES["bridge"])))
     install.add_argument("--to", required=True, metavar="DIR",

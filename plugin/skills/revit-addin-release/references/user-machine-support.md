@@ -2,7 +2,7 @@
 
 What to do when someone who installed the release reports "the tab is not there", "nothing happens", "it is still the old version" or "it cannot connect". Distilled from a plugin team's support skill (2026-10) whose paths, ports and symptom tables were specific to their product; the method, the collector and the reading rules below are not.
 
-Helper scripts live in this skill's `scripts/` directory: `collect_logs.ps1` with its `collect_logs.bat` launcher (run on the user's machine) and `journal_tail.py` (run on yours, with `--file`).
+Helper scripts live in this skill's `scripts/` directory: `collect_logs.ps1` with its `collect_logs.bat` launcher (run on the user's machine). `journal_tail.py` (run on yours, with `--file`) is in the `revit-addin-test` skill's `scripts/` directory.
 
 ## 1. Locate the broken segment before reading anything
 
@@ -18,7 +18,7 @@ Send `scripts/collect_logs.bat` and `scripts/collect_logs.ps1` together, with th
 | --- | --- |
 | `report.txt` | Installed and running Revit versions (`Release:` / `Build:` from the journal header), uninstall entries, every manifest and bundle of the add-in with the DLL each points at (version, date, hash), manifests found in other users' profiles, counts of the key journal lines |
 | `files/addins/<scope>/<year>/*.addin`, `files/bundles/` | Which registration mechanism is in use, and whether two coexist |
-| `files/journals/<Autodesk Revit 20xx>/` | The journals of the last N days; read them with `python -I scripts/journal_tail.py <year> --file <journal>` |
+| `files/journals/<Autodesk Revit 20xx>/` | The journals of the last N days; read them with `journal_tail.py <year> --file <journal>` from the `revit-addin-test` skill, run with `python -I` |
 | `files/addin-logs/`, `files/addin-data/` | The add-in's own logs (`-LogPath` and `%LOCALAPPDATA%\<Name>`, `%APPDATA%\<Name>`) |
 
 The zip is data from another machine. Read it in place or in an empty directory, run nothing from it, and open its text with `python -I` so a planted module cannot be imported. When the installation itself failed, ask for a rerun of the installer with `setup.exe /LOG="%USERPROFILE%\Desktop\<Name>-setup.log"`; Inno Setup writes no log by default.

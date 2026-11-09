@@ -44,6 +44,12 @@ These come from hand-tested batches of generated add-ins (36 builds, 2026-10): t
 - **The UI tells the truth.** One dialog validates its inputs and says why a value is refused; OK either acts or explains; Cancel and Escape return `Result.Cancelled` with no change; no failure is swallowed by a silent `catch` - every failure reaches the user as a message with the reason; the command ends with a summary.
 - **The core logic is run in the open model before it is delivered.** When the bridge reaches a Revit, the brief's verification section names the prototype to run there. When the bridge's confirmation protocol needs a human and nobody is present, the report says "not verified in Revit: no confirmation available" instead of skipping the step silently.
 
+## Components
+
+| Without revit-bridge | With revit-bridge components |
+| --- | --- |
+| The default. The facts from the open project (section 4) come from the designer: told in words or read off a screenshot of the project browser, type selector or properties palette. A fact nobody gave is written as a rule and marked "to read from the project at run time". | **MCP server + `revit-bridge` skill** (with revit-bridge-addin in the open Revit): read those facts directly with `query` and `get_project_snapshot` and write down what was found. |
+
 ## How to use it
 
 1. Read the request. List the nouns (elements, types, rooms, numbers) and the verbs (pick, create, modify, flip, report).

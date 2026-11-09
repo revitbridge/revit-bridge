@@ -688,7 +688,8 @@ def test_revit_core_is_exported_byte_for_byte_as_a_native_skill():
     assert set(meta) == {"name", "description"} and meta["name"] == "revit-core"
     assert len(meta["description"]) <= 1024
     exported = sorted(p.name for p in (ROOT / "plugin" / "skills").iterdir() if p.is_dir())
-    assert exported == ["revit-addin-dev", "revit-bridge", "revit-core", "revit-task-brief"]      # D9: only revit-core is exported
+    assert exported == ["revit-addin-dev", "revit-addin-release", "revit-addin-test", "revit-bridge", "revit-core",
+                        "revit-task-brief"]      # D9: only revit-core is exported
 
 
 def test_the_gitattributes_keep_generated_content_lf():
