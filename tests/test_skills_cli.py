@@ -9,7 +9,8 @@ import revit_bridge.mcp_server as server
 from revit_bridge import skills_cli
 from revit_bridge.paths import skills_dir
 
-NAMES = ["revit-addin-dev", "revit-bridge", "revit-core", "revit-task-brief"]
+NAMES = ["revit-addin-dev", "revit-addin-release", "revit-addin-test", "revit-bridge", "revit-core",
+         "revit-task-brief"]
 
 
 def run(capsys, *argv: str) -> tuple[int, str]:
@@ -82,11 +83,15 @@ def test_install_needs_a_destination(capsys):
         server.main(["skills", "install"])
 
 
-def test_profile_addin_installs_the_two_add_in_skills(tmp_path, capsys):
+def test_profile_addin_installs_the_four_add_in_phase_skills(tmp_path, capsys):
     target = tmp_path / "skills"
-    code, _ = run(capsys, "install", "--profile", "addin", "--to", str(target))
+    code, out = run(capsys, "install", "--profile", "addin", "--to", str(target))
     assert code == 0
-    assert sorted(p.name for p in target.iterdir()) == ["revit-addin-dev", "revit-task-brief"]
+    assert sorted(p.name for p in target.iterdir()) == ["revit-addin-dev", "revit-addin-release", "revit-addin-test",
+                                                       "revit-task-brief"]
+    assert [line.split(":")[0] for line in out.strip().splitlines()] == sorted(skills_cli.PROFILES["addin"])
+    for name in skills_cli.PROFILES["addin"]:
+        assert tree(target / name) == tree(skills_dir() / name), name
 
 
 def test_profile_bridge_installs_the_two_server_skills(tmp_path, capsys):
@@ -99,7 +104,9 @@ def test_profile_bridge_installs_the_two_server_skills(tmp_path, capsys):
 def test_profile_and_names_add_up_in_bundled_order(tmp_path, capsys):
     code, out = run(capsys, "install", "revit-core", "--profile", "addin", "--to", str(tmp_path / "skills"))
     assert code == 0
-    assert [line.split(":")[0] for line in out.strip().splitlines()] == ["revit-addin-dev", "revit-core", "revit-task-brief"]
+    assert [line.split(":")[0] for line in out.strip().splitlines()] == ["revit-addin-dev", "revit-addin-release",
+                                                                        "revit-addin-test", "revit-core",
+                                                                        "revit-task-brief"]
 
 
 def test_profile_all_equals_the_default(tmp_path, capsys):

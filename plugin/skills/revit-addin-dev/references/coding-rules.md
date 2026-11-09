@@ -1,6 +1,6 @@
 # Coding rules from reviewed add-in branches
 
-Each rule below was written after a review of a real add-in branch found the defect it describes (six feature packages, four review rounds, 2026-10 to 2026-11, Revit 2016 to 2026). Follow them while writing and run the checklist at the end before handing a branch over. Transaction shapes and the five non-negotiables are in [addin-development.md](addin-development.md); release and acceptance in [release-and-field-test.md](release-and-field-test.md).
+Each rule below was written after a review of a real add-in branch found the defect it describes (six feature packages, four review rounds, 2026-10 to 2026-11, Revit 2016 to 2026). Follow them while writing and run the checklist at the end before handing a branch over. Transaction shapes and the five non-negotiables are in [addin-development.md](addin-development.md); release and acceptance in the `revit-addin-release` skill, `references/release-and-field-test.md`.
 
 ## 1. Transactions: every failure path inside a transaction rolls back clean
 

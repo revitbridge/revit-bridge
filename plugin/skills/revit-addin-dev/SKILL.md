@@ -1,6 +1,6 @@
 ---
 name: revit-addin-dev
-description: Create, continue, debug, release or migrate standalone Autodesk Revit C# add-ins, using revit-bridge for relevant model context and prototype verification. Use for IExternalCommand, ribbon commands, ExternalEvent, .csproj, .addin manifests, turning a bridge snippet into a compiled plugin, multi-year release builds, obfuscation, installers, acceptance in a real Revit, and reading Revit journals when an add-in does not show up or loads an old DLL, and collecting logs from a user's machine when they report that it does not respond. 开发、接续、调试、发布独立 Revit C# 插件，借助 revit-bridge 获取上下文和验证功能；多年份编译、混淆、安装包、真机验收、读 journal 排查"插件没出来 / 还是旧版"，用户反馈"没反应"时收集日志定位。For direct model edits without a plugin deliverable, use the revit-bridge operating skill instead.
+description: Create, continue, debug or migrate the code of a standalone Autodesk Revit C# add-in. Use for IExternalCommand, ribbon commands, ExternalEvent and modeless UI, .csproj and .addin manifests, choosing the runtime and target framework for each Revit version, starting a new add-in project, and turning a bridge snippet into a compiled plugin; revit-bridge is optional, for model context and prototype checks. 开发、接续、调试、迁移独立 Revit C# 插件代码：外部命令、功能区、ExternalEvent、csproj、.addin、按 Revit 版本选运行时、把 bridge 片段转成插件。Testing in a real Revit is the revit-addin-test skill; release and acceptance are revit-addin-release. For direct model edits without a plugin deliverable, use the revit-bridge operating skill instead.
 ---
 
 # Revit Add-in Development
@@ -26,6 +26,14 @@ Before building, these five must be settled - from the request, the project, or 
 If any of the five is still open, ask about it - all open ones in one round - before you build; a project that compiles has not settled them. A choice that should vary per run can be designed as a runtime input instead; say which ones you made runtime inputs.
 
 ## Use the bridge where it helps
+
+Without the bridge every step below is still available; the table says what the bridge adds.
+
+| Without revit-bridge | With revit-bridge components |
+| --- | --- |
+| The default. Source, the target release's API references and a local build carry every section of this skill, the starter generator included. Checks that need a running Revit go into the hand-over for the `revit-addin-test` skill. | **MCP server + `revit-bridge` skill**: read the selected elements, parameter identity and loaded types from the open model; compile a snippet with `check_code` and run a confirmed prototype before porting it. **revit-bridge-addin**: the Revit side the server talks to; without it the server reads nothing. **`revit-api-docs`**: look up members and samples of the target release instead of recalling them. |
+
+Choose the next step by the development need:
 
 | Development need | Next step |
 | --- | --- |
@@ -72,25 +80,18 @@ Hand-tested batches of generated add-ins (36 builds, 2026-10) failed on the same
 4. **The UI tells the truth**: inputs are validated with the reason shown; OK acts or explains; Cancel and Escape return `Result.Cancelled`; no silent `catch`; a closing summary.
 5. **Core logic runs in the open model before delivery** when a bridge reaches a Revit; when its confirmation needs a human who is not there, say "not verified in Revit" in the report.
 
-## Release and test on a real machine
-
-Read [Release build, installer and acceptance](references/release-and-field-test.md) when the deliverable is an installable release rather than a single build: several Revit years, obfuscation, an installer, a shared test machine, or a review record. [Diagnostics](references/diagnostics.md) holds the commands and journal patterns. The rules that bite first:
-
-- **Names resolved from strings at run time** (`FullClassName`, XAML bindings, JSON property names) are invisible to the compiler. After any rename, including obfuscation, load the build in a real Revit once.
-- **One DLL per Revit release**, and each year's `.addin` points at its own DLL. A C++/CLI mixed-mode library cannot load into Revit 2025+; keep it in an out-of-process helper for every year.
-- **A build matrix passes** when every supported year has 0 errors, warnings compared per file and code against the base branch show nothing new, and every commit on the branch builds.
-- **Register one way**, classic `.addin` or autoloader bundle. The same AddInId in both is a duplicate, and Revit keeps the stale one. "Installed but not in Revit": was Revit restarted, is it registered twice, which DLL does the journal say it loaded, and only then `AddInLoadFailureMessage`.
-- **Acceptance opens a saved copy of a project**, never a fresh one created through the API (2025/2026 hang). Every shipped command runs once, failure paths run once, and Undo is checked. A step that did not run is "not tested", never "passed".
-- **On a shared machine** nobody else's Revit is touched, inputs are copied before use, temporary manifests are removed, and screenshots are cropped to the Revit window.
-
-For a scripted session that starts Revit, drives the add-in and compares a branch with its base, follow [Automated test sessions in a real Revit](references/in-revit-autotest.md): list running Revits first (`scripts/revit_ps.ps1 -RequireNone`), snapshot the installed add-in (`scripts/addin_snapshot.py snapshot`), install only the year under test, end only the pid you launched, restore and `verify`. When Revit hangs, `scripts/window_list.ps1` names the dialog and `scripts/journal_tail.py` shows what it was doing.
-
-When a user of the shipped add-in reports "no tab", "no response" or "still the old version", follow [Supporting a user's machine](references/user-machine-support.md): locate the broken segment, collect with the read-only `scripts/collect_logs.ps1`, read the returned zip as data from another machine, answer with the quoted lines and one action for the user.
-
 ## Verify and hand over
 
 Build the target configuration and run meaningful tests already present or needed for new nontrivial logic. If an SDK or reference assembly is unavailable, report the missing prerequisite precisely; do not substitute another Revit year's API and claim compatibility.
 
 Distinguish source generated, build passed, bridge prototype checked, compiled add-in loaded, and feature verified. A bridge experiment cannot verify the compiled plugin's manifest, ribbon, dependency loading, or ExternalEvent lifecycle. When Revit testing is available and authorized, verify the compiled command on the intended scope, including cancellation and rollback for a modifying feature.
 
-Deliver the source changes, build command and artifact paths, and any remaining Revit checks. Installation should target this add-in only; preserve unrelated manifests. Follow existing authorization for deployment, and do not terminate Revit to release a locked DLL without permission. For a release under review, write the record as [Release build, installer and acceptance](references/release-and-field-test.md) describes: the "before" column is the base branch's real behaviour, four cells per button with evidence, no rewording of reviewed commits, no drawings or binaries as evidence.
+Deliver the source changes, build command and artifact paths, and any remaining Revit checks. Installation should target this add-in only; preserve unrelated manifests. Follow existing authorization for deployment, and do not terminate Revit to release a locked DLL without permission.
+
+## Next phases
+
+Testing in a real Revit is the `revit-addin-test` skill; release build, obfuscation, installer and acceptance are the `revit-addin-release` skill. Hand over in writing, because the next phase may run in another session or without this skill:
+
+- the build command, each target Revit year with its .NET target, and the artifact paths with SHA-256 hashes;
+- the commands to test, each with its input, expected result, cancel and failure path;
+- what was already checked through the bridge and what was not (a bridge prototype never covers the manifest, ribbon, dependency loading or ExternalEvent lifecycle).

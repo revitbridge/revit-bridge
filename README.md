@@ -58,30 +58,28 @@ whose interface does the confirmation.
 
 From a checkout: `uv sync` then `uv run revit-bridge`.
 
-**Develop a standalone C# add-in** — the `revit-addin-dev` skill in
-`plugin/skills/` continues an existing project or creates a minimal command
-project for Revit 2024, 2025, 2026, or 2027, including the 2025.5/2026.5 .NET 10
-updates (2027 is .NET 10 only). Select the exact installed release, not just its year. It uses bridge tools for relevant model
-context and prototype checks, then delivers a DLL that runs independently
-of the bridge. Coding and building can proceed without a live connection.
-Its references also cover the release stage: multi-year build matrix,
-obfuscation, installer and registration, acceptance in a real Revit, and the
-journal patterns for "installed but not in Revit".
+**Develop a standalone C# add-in, phase by phase** — the skills in
+`plugin/skills/` follow an add-in from the designer's sentence to the release.
+Each phase skill works on its own; the bridge components (MCP server,
+revit-bridge-addin, `revit-api-docs`) only add to a phase, and each phase
+skill's `SKILL.md` has a table saying what they add.
 
-**Start from a brief** — the `revit-task-brief` skill rewrites a designer's
-one-sentence request ("I pick two crossing pipes and the first one gets jogged
-over the other") into a testable brief before any code: numbered behaviour,
-inputs with units and defaults, cancel and failure rules, the facts that must
-be read from the open project, deliverables, verification and the decisions
-taken. The coding skills then implement the brief.
+| Phase | Skill | What it does | Needs a component |
+| --- | --- | --- | --- |
+| Brief | `revit-task-brief` | Rewrites a one-sentence request ("I pick two crossing pipes and the first one gets jogged over the other") into a testable brief: numbered behaviour, inputs with units and defaults, cancel and failure rules, project facts, deliverables, verification, decisions. | No; with the bridge it reads the project facts itself |
+| Coding | `revit-addin-dev` | Continues a project or creates a minimal command project for Revit 2024 to 2027, including the 2025.5/2026.5 .NET 10 updates (select the exact installed release, not just its year), and delivers a DLL that runs without the bridge. | No; the bridge adds model context and prototype checks |
+| Bridging | `revit-bridge` + `revit-core` | Builds, changes and queries the open model through the server: snapshot, reconcile, confirm, execute, verify. | Yes: the MCP server and the revit-bridge-addin |
+| Test | `revit-addin-test` | Runs the compiled add-in in a real Revit without disturbing others on the machine, reads journals, finds why Revit hangs, judges a build matrix, compares base and branch. | No; with the revit-bridge-addin calls go through its protocol |
+| Release | `revit-addin-release` | Multi-year release build, obfuscation, installer, acceptance on a real machine, the review record, logs from a user's machine. | No |
 
 ### Install the skills in another project
 
-The four skills (`revit-addin-dev`, `revit-task-brief`, `revit-core`,
-`revit-bridge`) are self-contained folders: a `SKILL.md` plus `references/`,
-`scripts/` and `assets/`. Any agent that reads skill folders can use them,
-with or without the MCP server. `revit-addin-dev` and `revit-task-brief` need no
-Revit connection at all; `revit-bridge` and `revit-core` describe the bridge
+The six skills (`revit-task-brief`, `revit-addin-dev`, `revit-addin-test`,
+`revit-addin-release`, `revit-bridge`, `revit-core`) are self-contained
+folders: a `SKILL.md` plus `references/`, `scripts/` and `assets/`. Any agent
+that reads skill folders can use them, with or without the MCP server. The
+four add-in phase skills need no bridge connection at all (testing and
+acceptance need a real Revit, not the server); `revit-bridge` and `revit-core` describe the bridge
 tools and are most useful with the server configured; in a repository without
 the server their descriptions only cost context, so install `--profile addin`
 there.
@@ -93,7 +91,7 @@ there.
 | Claude Code, every project of this user (skills only) | `uvx revit-bridge skills install --to ~/.claude/skills` |
 | Codex, dsh and other agents reading `.agents/skills` | `uvx revit-bridge skills install --to .agents/skills` |
 | One skill only | add its name: `uvx revit-bridge skills install revit-addin-dev --to .claude/skills` |
-| An add-in repository that does not use the bridge | `uvx revit-bridge skills install --profile addin --to .claude/skills` (`revit-addin-dev` + `revit-task-brief`; `--profile bridge` is the other pair, `revit-bridge` + `revit-core`) |
+| An add-in repository that does not use the bridge | `uvx revit-bridge skills install --profile addin --to .claude/skills` (`revit-task-brief` + `revit-addin-dev` + `revit-addin-test` + `revit-addin-release`; `--profile bridge` is the other pair, `revit-bridge` + `revit-core`) |
 | Without `uv` | `pip install revit-bridge` then `revit-bridge skills install --to <dir>`; or copy the folder from `plugin/skills/` of a checkout, or `npx skills add revitbridge/revit-bridge` |
 | From a checkout, without copying | `claude --plugin-dir ./plugin` |
 
@@ -104,10 +102,11 @@ so local edits survive an accidental re-install. To upgrade, run it again
 with `--force` after `uvx` has fetched the new release (`uvx
 revit-bridge@latest skills install ...`).
 
-The scripts inside `revit-addin-dev` need Python 3.11+ (`new_addin.py`,
-`journal_tail.py`, `addin_snapshot.py`) and Windows PowerShell 5.1+
-(`revit_ps.ps1`, `window_list.ps1`); nothing else is installed and none of
-them starts, installs or closes a Revit.
+The bundled scripts need Python 3.11+ or Windows PowerShell 5.1+:
+`new_addin.py` in `revit-addin-dev`; `journal_tail.py`, `addin_snapshot.py`,
+`revit_ps.ps1` and `window_list.ps1` in `revit-addin-test`; `collect_logs.ps1`
+with its `collect_logs.bat` launcher in `revit-addin-release`. Nothing else is
+installed and none of them starts, installs or closes a Revit.
 
 Example request once installed: "Use revit-addin-dev to continue my C#
 plugin, inspect the selected walls through revit-bridge where needed, and
@@ -280,7 +279,7 @@ dsh runs an agent that can talk to revit-bridge and revit-api-docs like any othe
    ```
 
    Keys (`TYPESAFE_API_KEY`, `REVIT_API_DOCS_EMBEDDING_API_KEY`) and a proxy go into each server's `env`; dsh strips `KEY`/`TOKEN` variables from its own environment, so set them there, not globally.
-3. Put the skills where dsh finds them: copy `plugin/skills/revit-task-brief`, `revit-addin-dev`, `revit-core` and `revit-bridge` into `<project>/.agents/skills/`.
+3. Put the skills where dsh finds them: copy `plugin/skills/revit-task-brief`, `revit-addin-dev`, `revit-addin-test`, `revit-addin-release`, `revit-core` and `revit-bridge` into `<project>/.agents/skills/`.
 4. Start dsh in the project directory and give it the task in one or two designer sentences, plus the facts it cannot discover: "Revit 2026 with the test model is open on this machine", whether anyone will answer questions, and what the report must contain. With `--profile headless --json` it runs unattended and streams events; interactive mode lets you answer the bridge's confirmation requests, which is what lets the agent prototype in the open model (`check_code`, `confirm_spec`, `execute_code`) before it ports the logic into the add-in.
 5. Read the agent's report against the brief (what was built, what it verified in Revit, what it could not), then install the add-in and test the picks, dialogs and cancel paths yourself.
 

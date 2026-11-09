@@ -22,6 +22,17 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   and the read-only `scripts/collect_logs.ps1` + `collect_logs.bat`, which zip
   an add-in's registrations, DLL versions, recent journals and own logs on a
   user's machine. Generalised from a plugin team's support skill (2026-10).
+- `revit-addin-test` skill, the test phase: a new `SKILL.md` (input and
+  output, components, shared-machine rules, one session, when Revit is stuck,
+  what passes) with `references/in-revit-autotest.md`, sections 1 to 4 of
+  `references/diagnostics.md` and `scripts/revit_ps.ps1`, `window_list.ps1`,
+  `journal_tail.py`, `addin_snapshot.py`, all moved from `revit-addin-dev`; the
+  build-matrix rules moved here from `release-and-field-test.md`.
+- `revit-addin-release` skill, the release phase: a new `SKILL.md` (input and
+  output, components, the release gate, user reports) with
+  `references/release-and-field-test.md`, `references/user-machine-support.md`,
+  sections 5 to 8 of `references/diagnostics.md` and `scripts/collect_logs.ps1`
+  + `collect_logs.bat`, all moved from `revit-addin-dev`.
 
 ### Changed
 
@@ -41,6 +52,17 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   have their causes listed.
 - `revit-task-brief`: a new `AddInId` only for a new project; an existing
   project keeps its identity.
+- `revit-addin-dev` is the coding phase only: its description keeps the coding
+  triggers, and `## Release and test on a real machine` became `## Next phases`,
+  the written hand-over to `revit-addin-test` and `revit-addin-release`. A file
+  in another skill is named with its skill, never linked by a relative path.
+- `--profile addin` installs the four add-in phase skills: `revit-task-brief`,
+  `revit-addin-dev`, `revit-addin-test`, `revit-addin-release`.
+- The four phase skills (`revit-task-brief`, `revit-addin-dev`,
+  `revit-addin-test`, `revit-addin-release`) each have a components table:
+  the path without revit-bridge, the default and complete on its own, and what
+  the MCP server with the `revit-bridge` skill, the revit-bridge-addin or
+  `revit-api-docs` add.
 
 ## [0.5.0] - 2026-11-07
 

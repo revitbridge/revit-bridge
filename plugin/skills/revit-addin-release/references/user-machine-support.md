@@ -2,7 +2,7 @@
 
 What to do when someone who installed the release reports "the tab is not there", "nothing happens", "it is still the old version" or "it cannot connect". Distilled from a plugin team's support skill (2026-10) whose paths, ports and symptom tables were specific to their product; the method, the collector and the reading rules below are not.
 
-Helper scripts live in this skill's `scripts/` directory: `collect_logs.ps1` with its `collect_logs.bat` launcher (run on the user's machine) and `journal_tail.py` (run on yours, with `--file`).
+Helper scripts live in this skill's `scripts/` directory: `collect_logs.ps1` with its `collect_logs.bat` launcher (run on the user's machine). `journal_tail.py` (run on yours, with `--file`) is in the `revit-addin-test` skill's `scripts/` directory.
 
 ## 1. Locate the broken segment before reading anything
 
