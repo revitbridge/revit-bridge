@@ -6,63 +6,81 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-08
+
+The skills now follow an add-in phase by phase, and every phase works with or
+without the bridge. No tool, pack, TaskSpec or gate change; a 0.4 or 0.5 host
+keeps working unchanged.
+
+Upgrade: `uvx --refresh revit-bridge`. In a repository that already holds the
+0.5.0 skills, run `uvx revit-bridge skills install --profile addin --to
+<dir> --force` to replace `revit-addin-dev` and add `revit-addin-test` and
+`revit-addin-release`; the test and release references and scripts moved out
+of `revit-addin-dev` into those two.
+
 ### Added
 
+- `revit-addin-test` skill, the test phase: run the compiled add-in in a real
+  Revit without disturbing anyone else on the machine, one scripted session,
+  base against branch, when Revit is stuck, what a passing build matrix is.
+  Holds `references/in-revit-autotest.md`, the test half of `diagnostics.md`
+  and the read-only `revit_ps.ps1`, `window_list.ps1`, `journal_tail.py`,
+  `addin_snapshot.py`.
+- `revit-addin-release` skill, the release phase: multi-year release build,
+  obfuscation, installer and registration, acceptance on a real machine, the
+  review record with its four-cell table, and support when a user of the
+  shipped add-in reports "no tab", "no response" or "still the old version".
+  Holds `references/release-and-field-test.md`, the new
+  `references/user-machine-support.md` (locate the broken segment, read logs
+  from another machine, answer in three parts, keep a known-issues ledger, what
+  the add-in must log), the release half of `diagnostics.md` and the new
+  read-only collector `scripts/collect_logs.ps1` + `collect_logs.bat`, which
+  zips an add-in's registrations, DLL versions, Revit releases (registry and
+  `Revit.exe` version, so a `.5` shows), recent journals with key-line counts
+  and the add-in's own logs on a user's machine.
+- A components table in each phase skill (`revit-task-brief`,
+  `revit-addin-dev`, `revit-addin-test`, `revit-addin-release`): the path
+  without revit-bridge is the default and complete on its own; the table says
+  what the MCP server with the `revit-bridge` skill, the revit-bridge-addin or
+  `revit-api-docs` add.
+- `revit-bridge skills install --profile addin|bridge|all`: `addin` copies
+  the four phase skills for an add-in repository without the server, `bridge`
+  the two server skills; names and a profile add up.
 - Plugin listing files for Anthropic's directory and skills.sh: `plugin/README.md`
   (what the plugin runs and where data goes), `plugin/.claude-plugin/icon.png`,
   `icon` / `documentationUrl` / `supportUrl` in `plugin.json`, and `skills.sh.json`
   at the repository root so `npx skills add revitbridge/revit-bridge` finds
   `plugin/skills`.
-- `revit-bridge skills install --profile addin|bridge|all`: `addin` copies
-  `revit-addin-dev` + `revit-task-brief` for an add-in repository without the
-  server, `bridge` the two server skills; names and a profile add up.
-- `revit-addin-dev`: `references/user-machine-support.md` (locate the broken
-  segment, collect and read logs from another machine, answer in three parts,
-  keep a known-issues ledger, what the add-in must log so support is possible)
-  and the read-only `scripts/collect_logs.ps1` + `collect_logs.bat`, which zip
-  an add-in's registrations, DLL versions, recent journals and own logs on a
-  user's machine. Generalised from a plugin team's support skill (2026-10).
-- `revit-addin-test` skill, the test phase: a new `SKILL.md` (input and
-  output, components, shared-machine rules, one session, when Revit is stuck,
-  what passes) with `references/in-revit-autotest.md`, sections 1 to 4 of
-  `references/diagnostics.md` and `scripts/revit_ps.ps1`, `window_list.ps1`,
-  `journal_tail.py`, `addin_snapshot.py`, all moved from `revit-addin-dev`; the
-  build-matrix rules moved here from `release-and-field-test.md`.
-- `revit-addin-release` skill, the release phase: a new `SKILL.md` (input and
-  output, components, the release gate, user reports) with
-  `references/release-and-field-test.md`, `references/user-machine-support.md`,
-  sections 5 to 8 of `references/diagnostics.md` and `scripts/collect_logs.ps1`
-  + `collect_logs.bat`, all moved from `revit-addin-dev`.
+- `tests/test_skills_layout.py`: skill names and descriptions, components
+  tables, every relative link resolves inside its own skill, scripts ASCII
+  without BOM.
 
 ### Changed
 
-- `plugin/.mcp.json` pins the server to the released package
-  (`uvx revit-bridge==0.5.0`); the directory validator rejects an unpinned
-  launcher. Bump it with every release, next to `version` in `plugin.json`.
-- The confirmation hook runs `uv run --no-project --frozen` (same behaviour;
-  the validator requires `--frozen` or `--locked` on `uv run`).
-- `revit-addin-dev`, after a tester reviewed 0.5.0 against a real add-in
-  repository: ending your own Revit is `CloseMainWindow()` first and `taskkill`
-  only for a scratch document a minute later; `journal_tail.py` no longer prints
-  Revit's own `Export` registration lines; the acceptance section says how to
-  treat a `.5` (.NET 10) test machine with a `net8.0` build; `addin_snapshot.py`
-  and the autotest reference cover both directories of a machine-level classic
-  install; `RibbonProfile` and `origin/main` are marked as placeholders for the
-  project's own names; "registered is not loaded" and "no journal trace at all"
-  have their causes listed.
+- `revit-addin-dev` is the coding phase only: continue or start a project,
+  runtime per Revit version, the five things settled before building, the
+  code shapes and `coding-rules.md`, and a written hand-over to the test and
+  release phases. Its description keeps the coding triggers. A file in
+  another skill is named with its skill, never linked by a relative path.
+- `revit-addin-dev` after a tester reviewed 0.5.0 against a real add-in
+  repository: `journal_tail.py` no longer prints Revit's own `Export`
+  registration lines; the acceptance section says how to treat a `.5` (.NET 10)
+  test machine with a `net8.0` build; ending your own Revit is
+  `CloseMainWindow()` first and `taskkill` only for a scratch document a minute
+  later; `addin_snapshot.py` and the autotest reference cover both directories
+  of a machine-level classic install; `RibbonProfile` and `origin/main` are
+  marked as placeholders for the project's own names; "registered is not
+  loaded" and "no journal trace at all" have their causes listed.
 - `revit-task-brief`: a new `AddInId` only for a new project; an existing
   project keeps its identity.
-- `revit-addin-dev` is the coding phase only: its description keeps the coding
-  triggers, and `## Release and test on a real machine` became `## Next phases`,
-  the written hand-over to `revit-addin-test` and `revit-addin-release`. A file
-  in another skill is named with its skill, never linked by a relative path.
-- `--profile addin` installs the four add-in phase skills: `revit-task-brief`,
-  `revit-addin-dev`, `revit-addin-test`, `revit-addin-release`.
-- The four phase skills (`revit-task-brief`, `revit-addin-dev`,
-  `revit-addin-test`, `revit-addin-release`) each have a components table:
-  the path without revit-bridge, the default and complete on its own, and what
-  the MCP server with the `revit-bridge` skill, the revit-bridge-addin or
-  `revit-api-docs` add.
+- `plugin/.mcp.json` pins the server to the released package
+  (`uvx revit-bridge==0.6.0`); the directory validator rejects an unpinned
+  launcher. Bump it with every release, next to `version` in `plugin.json`
+  (`tests/test_package.py` asserts they match).
+- The confirmation hook runs `uv run --no-project --frozen` (same behaviour;
+  the validator requires `--frozen` or `--locked` on `uv run`).
+- The server instructions say revit-bridge 0.6; the `revit-bridge` skill still
+  requires 0.4 or newer.
 
 ## [0.5.0] - 2026-11-07
 
@@ -776,7 +794,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/revitbridge/revit-bridge/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/revitbridge/revit-bridge/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/revitbridge/revit-bridge/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/revitbridge/revit-bridge/compare/v0.4.0...v0.4.1
