@@ -82,7 +82,9 @@ The four skills (`revit-addin-dev`, `revit-task-brief`, `revit-core`,
 `scripts/` and `assets/`. Any agent that reads skill folders can use them,
 with or without the MCP server. `revit-addin-dev` and `revit-task-brief` need no
 Revit connection at all; `revit-bridge` and `revit-core` describe the bridge
-tools and are most useful with the server configured.
+tools and are most useful with the server configured; in a repository without
+the server their descriptions only cost context, so install `--profile addin`
+there.
 
 | Where you work | Install |
 | --- | --- |
@@ -91,6 +93,7 @@ tools and are most useful with the server configured.
 | Claude Code, every project of this user (skills only) | `uvx revit-bridge skills install --to ~/.claude/skills` |
 | Codex, dsh and other agents reading `.agents/skills` | `uvx revit-bridge skills install --to .agents/skills` |
 | One skill only | add its name: `uvx revit-bridge skills install revit-addin-dev --to .claude/skills` |
+| An add-in repository that does not use the bridge | `uvx revit-bridge skills install --profile addin --to .claude/skills` (`revit-addin-dev` + `revit-task-brief`; `--profile bridge` is the other pair, `revit-bridge` + `revit-core`) |
 | Without `uv` | `pip install revit-bridge` then `revit-bridge skills install --to <dir>`; or copy the folder from `plugin/skills/` of a checkout, or `npx skills add revitbridge/revit-bridge` |
 | From a checkout, without copying | `claude --plugin-dir ./plugin` |
 

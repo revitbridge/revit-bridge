@@ -1,13 +1,17 @@
 """``revit-bridge skills [list|install]``: the bundled agent skills, from the command line.
 
     list                      the skills shipped with this package: name and description.
-    install [NAME ...] --to DIR [--force]
+    install [NAME ...] [--profile addin|bridge|all] --to DIR [--force]
                               copy complete skill folders (SKILL.md, references, scripts,
                               assets) into DIR/<name>, e.g. a project's .claude/skills,
-                              ~/.claude/skills or .agents/skills. Without NAME every skill
-                              is copied. An existing DIR/<name> is left alone unless
-                              --force replaces it. Exit 2 on an unknown name, 1 when a
-                              destination exists and --force was not given.
+                              ~/.claude/skills or .agents/skills. Without NAME or
+                              --profile every skill is copied. --profile addin is
+                              revit-addin-dev + revit-task-brief (a plain add-in
+                              repository without the bridge server); --profile bridge is
+                              revit-bridge + revit-core. Names and a profile add up. An
+                              existing DIR/<name> is left alone unless --force replaces
+                              it. Exit 2 on an unknown name, 1 when a destination exists
+                              and --force was not given.
 
 The skills are self-contained folders; nothing here starts a server or needs Revit.
 """
@@ -20,6 +24,14 @@ from pathlib import Path
 
 from revit_bridge.guidance.loader import read_skill
 from revit_bridge.paths import skills_dir
+
+PROFILES: dict[str, list[str]] = {
+    # An add-in repository that does not talk to the bridge server: the two server
+    # skills would only cost context there.
+    "addin": ["revit-addin-dev", "revit-task-brief"],
+    # An agent that drives Revit through the server.
+    "bridge": ["revit-bridge", "revit-core"],
+}
 
 
 def available() -> dict[str, Path]:
@@ -45,6 +57,10 @@ def add_parser(sub) -> None:
 
     install = commands.add_parser("install", help="copy skill folders into a skills directory")
     install.add_argument("names", nargs="*", metavar="NAME", help="skill names (default: all)")
+    install.add_argument("--profile", choices=[*PROFILES, "all"],
+                         help="a set of skills: addin = %s (an add-in repository without the server), "
+                              "bridge = %s, all = every skill (the default without NAME)"
+                              % (" + ".join(PROFILES["addin"]), " + ".join(PROFILES["bridge"])))
     install.add_argument("--to", required=True, metavar="DIR",
                          help="destination skills directory, e.g. .claude/skills or .agents/skills")
     install.add_argument("--force", action="store_true", help="replace a skill folder that already exists")
@@ -70,11 +86,15 @@ def run(args: argparse.Namespace) -> int:
             _write(f"{name.ljust(width)}  {describe(folder)}")
         return 0
 
-    names = list(args.names) or list(skills)
+    names = list(args.names)
+    if args.profile:
+        names += PROFILES.get(args.profile, list(skills))
     unknown = [n for n in names if n not in skills]
     if unknown:
         _write(f"unknown skill(s): {', '.join(unknown)}; available: {', '.join(skills)}")
         return 2
+    wanted = set(names) or set(skills)
+    names = [n for n in skills if n in wanted]          # bundled order, no duplicates
     target = Path(args.to).expanduser()
     target.mkdir(parents=True, exist_ok=True)
     code = 0

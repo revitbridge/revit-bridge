@@ -80,3 +80,39 @@ def test_available_matches_the_plugin_skills_directory():
 def test_install_needs_a_destination(capsys):
     with pytest.raises(SystemExit):
         server.main(["skills", "install"])
+
+
+def test_profile_addin_installs_the_two_add_in_skills(tmp_path, capsys):
+    target = tmp_path / "skills"
+    code, _ = run(capsys, "install", "--profile", "addin", "--to", str(target))
+    assert code == 0
+    assert sorted(p.name for p in target.iterdir()) == ["revit-addin-dev", "revit-task-brief"]
+
+
+def test_profile_bridge_installs_the_two_server_skills(tmp_path, capsys):
+    target = tmp_path / "skills"
+    code, _ = run(capsys, "install", "--profile", "bridge", "--to", str(target))
+    assert code == 0
+    assert sorted(p.name for p in target.iterdir()) == ["revit-bridge", "revit-core"]
+
+
+def test_profile_and_names_add_up_in_bundled_order(tmp_path, capsys):
+    code, out = run(capsys, "install", "revit-core", "--profile", "addin", "--to", str(tmp_path / "skills"))
+    assert code == 0
+    assert [line.split(":")[0] for line in out.strip().splitlines()] == ["revit-addin-dev", "revit-core", "revit-task-brief"]
+
+
+def test_profile_all_equals_the_default(tmp_path, capsys):
+    code, _ = run(capsys, "install", "--profile", "all", "--to", str(tmp_path / "skills"))
+    assert code == 0
+    assert sorted(p.name for p in (tmp_path / "skills").iterdir()) == NAMES
+
+
+def test_profiles_partition_the_bundled_skills():
+    groups = list(skills_cli.PROFILES.values())
+    assert sorted(n for g in groups for n in g) == NAMES
+
+
+def test_unknown_profile_is_rejected():
+    with pytest.raises(SystemExit):
+        server.main(["skills", "install", "--profile", "web", "--to", "x"])

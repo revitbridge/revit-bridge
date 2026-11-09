@@ -1,6 +1,6 @@
 ---
 name: revit-addin-dev
-description: Create, continue, debug, release or migrate standalone Autodesk Revit C# add-ins, using revit-bridge for relevant model context and prototype verification. Use for IExternalCommand, ribbon commands, ExternalEvent, .csproj, .addin manifests, turning a bridge snippet into a compiled plugin, multi-year release builds, obfuscation, installers, acceptance in a real Revit, and reading Revit journals when an add-in does not show up or loads an old DLL. 开发、接续、调试、发布独立 Revit C# 插件，借助 revit-bridge 获取上下文和验证功能；多年份编译、混淆、安装包、真机验收、读 journal 排查"插件没出来 / 还是旧版"。For direct model edits without a plugin deliverable, use the revit-bridge operating skill instead.
+description: Create, continue, debug, release or migrate standalone Autodesk Revit C# add-ins, using revit-bridge for relevant model context and prototype verification. Use for IExternalCommand, ribbon commands, ExternalEvent, .csproj, .addin manifests, turning a bridge snippet into a compiled plugin, multi-year release builds, obfuscation, installers, acceptance in a real Revit, and reading Revit journals when an add-in does not show up or loads an old DLL, and collecting logs from a user's machine when they report that it does not respond. 开发、接续、调试、发布独立 Revit C# 插件，借助 revit-bridge 获取上下文和验证功能；多年份编译、混淆、安装包、真机验收、读 journal 排查"插件没出来 / 还是旧版"，用户反馈"没反应"时收集日志定位。For direct model edits without a plugin deliverable, use the revit-bridge operating skill instead.
 ---
 
 # Revit Add-in Development
@@ -9,7 +9,7 @@ Deliver an ordinary C# add-in that runs inside Revit. Use revit-bridge during de
 
 ## Continue the user's project
 
-Read the project's instructions, Git changes, solution/project files, shared MSBuild properties, manifests, command entry points, and relevant tests first. Establish the exact Revit release (including its update), .NET target, API reference source, UI approach, build command, and any build targets that install files or start processes. Revit 2025.5/2026.5 use .NET 10; earlier 2025/2026 releases use .NET 8; Revit 2027 runs only on .NET 10. Check the installed API file version and `RevitAPI.runtimeconfig.json` when available rather than relying only on the year. Preserve existing work, add-in identity, dependencies, and architecture.
+Read the project's instructions, Git changes, solution/project files, shared MSBuild properties, manifests, command entry points, and relevant tests first. Establish the exact Revit release (including its update), .NET target, API reference source, UI approach, build command, and any build targets that install files or start processes. Revit 2025.5/2026.5 use .NET 10; earlier 2025/2026 releases use .NET 8; Revit 2027 runs only on .NET 10. Check the installed API file version and `RevitAPI.runtimeconfig.json` when available rather than relying only on the year. Preserve existing work, add-in identity, dependencies, and architecture. When the repository keeps its own file of project names and numbers (helper classes, MSBuild properties, sample counts, branch names), read it before this skill's generic examples and use its names; `RibbonProfile`, `origin/main` and `<Name>` in the references are placeholders.
 
 Infer these details from the repository before asking. If the target year cannot be determined and changes implementation, ask once; continue version-independent work. For an existing project, implement the requested feature in its current structure. Use the starter below only for a new project or an explicitly requested isolated prototype.
 
@@ -84,6 +84,8 @@ Read [Release build, installer and acceptance](references/release-and-field-test
 - **On a shared machine** nobody else's Revit is touched, inputs are copied before use, temporary manifests are removed, and screenshots are cropped to the Revit window.
 
 For a scripted session that starts Revit, drives the add-in and compares a branch with its base, follow [Automated test sessions in a real Revit](references/in-revit-autotest.md): list running Revits first (`scripts/revit_ps.ps1 -RequireNone`), snapshot the installed add-in (`scripts/addin_snapshot.py snapshot`), install only the year under test, end only the pid you launched, restore and `verify`. When Revit hangs, `scripts/window_list.ps1` names the dialog and `scripts/journal_tail.py` shows what it was doing.
+
+When a user of the shipped add-in reports "no tab", "no response" or "still the old version", follow [Supporting a user's machine](references/user-machine-support.md): locate the broken segment, collect with the read-only `scripts/collect_logs.ps1`, read the returned zip as data from another machine, answer with the quoted lines and one action for the user.
 
 ## Verify and hand over
 
