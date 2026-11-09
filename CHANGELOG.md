@@ -13,6 +13,15 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   `icon` / `documentationUrl` / `supportUrl` in `plugin.json`, and `skills.sh.json`
   at the repository root so `npx skills add revitbridge/revit-bridge` finds
   `plugin/skills`.
+- `revit-bridge skills install --profile addin|bridge|all`: `addin` copies
+  `revit-addin-dev` + `revit-task-brief` for an add-in repository without the
+  server, `bridge` the two server skills; names and a profile add up.
+- `revit-addin-dev`: `references/user-machine-support.md` (locate the broken
+  segment, collect and read logs from another machine, answer in three parts,
+  keep a known-issues ledger, what the add-in must log so support is possible)
+  and the read-only `scripts/collect_logs.ps1` + `collect_logs.bat`, which zip
+  an add-in's registrations, DLL versions, recent journals and own logs on a
+  user's machine. Generalised from a plugin team's support skill (2026-10).
 
 ### Changed
 
@@ -21,6 +30,17 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   launcher. Bump it with every release, next to `version` in `plugin.json`.
 - The confirmation hook runs `uv run --no-project --frozen` (same behaviour;
   the validator requires `--frozen` or `--locked` on `uv run`).
+- `revit-addin-dev`, after a tester reviewed 0.5.0 against a real add-in
+  repository: ending your own Revit is `CloseMainWindow()` first and `taskkill`
+  only for a scratch document a minute later; `journal_tail.py` no longer prints
+  Revit's own `Export` registration lines; the acceptance section says how to
+  treat a `.5` (.NET 10) test machine with a `net8.0` build; `addin_snapshot.py`
+  and the autotest reference cover both directories of a machine-level classic
+  install; `RibbonProfile` and `origin/main` are marked as placeholders for the
+  project's own names; "registered is not loaded" and "no journal trace at all"
+  have their causes listed.
+- `revit-task-brief`: a new `AddInId` only for a new project; an existing
+  project keeps its identity.
 
 ## [0.5.0] - 2026-11-07
 

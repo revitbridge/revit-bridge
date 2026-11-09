@@ -28,7 +28,7 @@ Kind: <standalone IExternalCommand add-in | ribbon command | bridge snippet>. Tr
 <one transaction / transaction group>, closed on every path (commit after all edits succeeded, otherwise roll back, exceptions included); no model change outside it; FailureHandlingOptions with a preprocessor. After rollback <what is true>.
 
 ## Deliverables and environment
-- Files in the current directory: <sources>, <Name>.csproj, <Name>.addin; assembly name, root namespace and add-in name <Name>; new AddInId.
+- Files in the current directory: <sources>, <Name>.csproj, <Name>.addin; assembly name, root namespace and add-in name <Name>; a new AddInId for a new project (an existing project keeps its AddInId).
 - Target: Revit <release> -> <framework>; RevitAPI.dll and RevitAPIUI.dll from <folder>, Private=false.
 - Build: <command>; required result: zero errors. Do not install; <who installs and tests>.
 - Known environment: <an open Revit with ..., reachable tools, ...>.

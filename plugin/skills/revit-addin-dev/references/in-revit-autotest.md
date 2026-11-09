@@ -10,11 +10,12 @@ Helper scripts live in this skill's `scripts/` directory (`SK` below):
 | `window_list.ps1 -ProcessId <pid>` | Visible top-level windows (class and title) of one process: finds the modal dialog a stuck Revit waits on. |
 | `journal_tail.py <year> [--lines N] [--all] [--file F]` | Decodes the newest journal of that year (UTF-16, UTF-8 or GBK) and prints the dialog, transaction, ExternalEvent, background-work and error lines, plus whether each RevitWorker log says it is accepting requests. |
 | `addin_snapshot.py snapshot <install dir> <backup dir>` / `verify <install dir> <backup dir> [--ignore <glob> ...]` | Copies the installed add-in folder with SHA-256 hashes before the first install; after the tests, reports changed, added and missing files and exits non-zero unless the set is restored. |
+| `collect_logs.ps1 -Name <Name>` (with `collect_logs.bat`) | On a user's machine: zips the add-in's manifests, bundles and DLL versions, the recent journals and the add-in's own logs to the Desktop, read-only. See [user-machine-support.md](user-machine-support.md). |
 
 ## 1. Shared-machine rules
 
 1. **Before installing or launching, list the running Revits** (`revit_ps.ps1 -RequireNone`). Any Revit you did not start means: do not install, do not launch. Wait; if it stays, stop and tell the user. Another person's Revit locks that year's DLL, so an install half-succeeds (manifest replaced, DLL not), and every launch you add disturbs them.
-2. **End only the Revit you started**, by the pid your launcher printed, with `taskkill /PID <pid> /T /F` (`/T` also ends its RevitWorker). Never by process name.
+2. **End only the Revit you started**, by the pid your launcher printed, never by process name. Close it the way a user would first: `CloseMainWindow()`, then "No" to the save prompt ([diagnostics.md](diagnostics.md) section 1). Fall back to `taskkill /PID <pid> /T /F` (`/T` also ends its RevitWorker) only when the process is still there a minute later and the open document is your scratch copy, so nothing of value is unsaved; a scripted session that drove the add-in through its protocol is normally in that state.
 3. **When the user says pause**: stop your background tasks and every helper process they spawned (shells, Python, tails: they would start the next round); end your own Revit; restore the installed add-in (section 4); write down where you were; wait for an explicit go.
 4. **Never modify the user's files.** Copy sample models to a scratch directory before opening them, and open the copy; load linked files read-only from their original path; hash originals and links before and after; add-in logs written by the user's own Revit sessions are their data and are not deleted or overwritten on restore.
 5. **Never touch production** during a test: no release upload, no manifest change, no server.
@@ -22,7 +23,7 @@ Helper scripts live in this skill's `scripts/` directory (`SK` below):
 ## 2. Prepare
 
 - **Build** the configuration under test; for a quick per-commit check build one .NET Framework year and one .NET year.
-- **Snapshot the installed add-in once**, before the first install: `python SK/addin_snapshot.py snapshot "<install dir>" <scratch>/pre-install-backup`. For a per-user classic install the directory is `%APPDATA%\Autodesk\Revit\Addins\<year>\<Name>\` (plus the `.addin` beside it); for a bundle, `%APPDATA%\Autodesk\ApplicationPlugins\<Name>.bundle\`.
+- **Snapshot the installed add-in once**, before the first install: `python SK/addin_snapshot.py snapshot "<install dir>" <scratch>/pre-install-backup`. For a per-user classic install the directory is `%APPDATA%\Autodesk\Revit\Addins\<year>\<Name>\` (plus the `.addin` beside it); for a bundle, `%APPDATA%\Autodesk\ApplicationPlugins\<Name>.bundle\`. A machine-level classic install has two directories, the DLL folder (for example `%ProgramData%\<Name>\`) and the manifest folder (`%ProgramData%\Autodesk\Revit\Addins\<year>\`): snapshot each into its own backup directory and verify both.
 - **Install only the year under test** by copying that year's DLL over the installed one. Do not run a whole-bundle installer from a worktree that built one year: it replaces every year the worktree built and deletes the years it did not.
 - **Base-branch baseline**: install the base build the same way, from the main checkout.
 - Before each run, check that the installed DLL's hash equals the build you mean to test, and record it.

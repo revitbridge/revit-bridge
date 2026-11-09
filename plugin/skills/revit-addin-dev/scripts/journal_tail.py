@@ -52,7 +52,7 @@ def read(path):
 lines = read(journal).splitlines()
 print("journal: %s (%d lines)" % (journal, len(lines)))
 KEEP = re.compile(r"TaskDialog|Id : TaskDialog_|Transaction|ExternalEvent|NOBLE|Wait mode|Error|Exception|"
-                  r"Jrn\.Data|Jrn\.Command|DialogBox|Export|Starting External Application|Added pushbutton|"
+                  r"Jrn\.Data|Jrn\.Command|DialogBox|Export with|Document\.Export|Starting External Application|Added pushbutton|"
                   r"Duplicate addins|AddInLoadFailureMessage|won't be loaded", re.I)
 picked = lines if args.all else [l for l in lines if KEEP.search(l)]
 for line in picked[-args.lines:]:

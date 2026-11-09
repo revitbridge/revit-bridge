@@ -9,6 +9,10 @@
       user's own Revit sessions may legitimately change. Exit 0 when nothing outside the
       ignored paths changed and nothing is missing; 1 otherwise.
 
+A machine-level classic install has two directories, the DLL folder (such as
+%ProgramData%\<Name>) and the manifest folder (Addins\<year>): snapshot and verify
+each with its own backup directory.
+
 Read-only apart from writing the backup. Restoring is deliberate and manual: reinstall
 the base build, then run verify.
 """

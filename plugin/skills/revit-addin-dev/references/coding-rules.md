@@ -65,7 +65,7 @@ An obfuscated release keeps public types and members and does not rename propert
 - `new ElementId(int)` and `ElementId.IntegerValue` are gone after 2024; route them through one helper pair. `Document.NewFloor` is gone from 2023.
 - Revit 2025 and later cannot load .NET Framework mixed-mode libraries; such readers run in an out-of-process helper for every year, and the 2025+ configurations carry no reference to them.
 - No new NuGet dependency without a decision. When removing one, grep the whole repository for leftovers and diff the output directory to see which DLLs disappeared.
-- A reduced first release is a compile symbol defined by an MSBuild property (`-p:RibbonProfile=FirstRelease` defines `FIRST_RELEASE`; the ribbon builder picks the layout under `#if`), not deleted commands. The default build keeps every command and there is one code base.
+- A reduced first release is a compile symbol defined by an MSBuild property (for example `-p:RibbonProfile=FirstRelease` defining `FIRST_RELEASE`, the ribbon builder picking the layout under `#if`; use the property and symbol names your project defines), not deleted commands. The default build keeps every command and there is one code base.
 
 ## 9. Sign-in and network clients
 
@@ -73,6 +73,7 @@ An obfuscated release keeps public types and members and does not rename propert
 - A cached token past `exp` but inside the grace period is usable now and refreshed in the background; it does not demand the password again.
 - The server's `message` is shown verbatim; "cannot connect" is reserved for network errors and timeouts.
 - Tokens and passwords never appear in logs, result windows or exception text; the password is cleared as soon as it has been used.
+- The add-in's log opens every session with one line naming its version, the loaded DLL path and the Revit release, and account names appear as digests; a user's log then answers "which version, from where" without a screenshot.
 - No network call on the UI thread; after every `await`, check the `CancellationToken` again.
 - A local queue written by several Revit processes is serialized with a named `Mutex`.
 
@@ -82,6 +83,7 @@ An obfuscated release keeps public types and members and does not rename propert
 - The caller kills the helper and removes temporary files on timeout and on user cancel, and checks cancellation once more after reading the result.
 - The helper resolves dependencies from its own directory only; no PATH changes, no registry.
 - Before handing over, run the helper **as installed in the package**, with the caller's real arguments, on the known samples and confirm the counts are unchanged.
+- A health probe of several local ports connects in parallel with a short connect timeout. On Windows a connect to a local port nobody listens on takes about two seconds to fail; three sequential probes exceeded a caller's three-second limit and marked a healthy machine as down.
 
 ## 11. Commits that pass review
 

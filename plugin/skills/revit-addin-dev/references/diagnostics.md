@@ -1,4 +1,4 @@
-# Diagnostics: processes, journals, installed manifests, pre-push scan
+# Diagnostics: processes, journals, installed manifests, pre-push scan, a user's machine
 
 Commands used on a real test machine. PowerShell blocks run in a PowerShell shell, Bash blocks in Git Bash. Replace `<Name>` with the add-in's name.
 
@@ -48,6 +48,8 @@ grep -o "<Assembly>[^<]*" <file.addin>          # which DLL it points at
 ls "$APPDATA/Autodesk/ApplicationPlugins" /c/ProgramData/Autodesk/ApplicationPlugins | grep -i "<Name>"
 ```
 
+A manifest or bundle on disk says the add-in is registered, not that this session loaded it; the journal (section 2) says what was loaded. A per-user manifest can also sit in another Windows account's profile when an elevated installer wrote it (`/c/Users/*/AppData/Roaming/Autodesk/Revit/Addins/<year>/`).
+
 ## 4. Reproduce an out-of-process helper failure
 
 ```powershell
@@ -76,6 +78,7 @@ head -c6 build/<Name>-setup.iss | xxd | head -1      # exactly one UTF-8 BOM (ef
 ## 7. Pre-push safety scan
 
 ```bash
+# origin/main stands for the base branch your project reviews against (master, develop, ...)
 git diff --name-only --diff-filter=AM origin/main..HEAD | grep -iE "\.(dwg|rvt|rfa|rte|pcp|dll|exe|pdb)$"
 git diff origin/main..HEAD | grep -E "^\+" | grep -iE "password[\"'=: ]|ftp://[^ ]*:[^ ]*@|-----BEGIN (RSA|PRIVATE)"
 # open every new zip and check its name list for the types above
@@ -83,3 +86,7 @@ git for-each-ref refs/backup | wc -l                 # local refs with drawing e
 ```
 
 A `password` hit is a leak only when it is a real credential or a `ftp://user:pass@` URL; field names and test strings (`example.invalid`, `test-only-password`) are not.
+
+## 8. On a user's machine
+
+When a user reports "no tab", "no response" or "still the old version", send them `scripts/collect_logs.bat` and `scripts/collect_logs.ps1` with the add-in name filled in. The zip they return holds the manifests, bundles and DLL versions (section 3), the recent journals (section 2, read with `journal_tail.py <year> --file <copy>`) and the add-in's own logs. Treat it as data from another machine: read it in place, run nothing from it, open its text with `python -I`. The triage order and the reading rules are in [user-machine-support.md](user-machine-support.md).
