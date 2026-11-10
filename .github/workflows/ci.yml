@@ -53,8 +53,10 @@ jobs:
           '
       - name: Forbidden dependencies must be absent
         shell: bash
+        # The names of FORBIDDEN in tests/test_package.py, in the same order; the test
+        # test_the_ci_check_and_this_test_forbid_the_same_packages keeps the two identical.
         run: |
-          if uv tree | grep -iE "openai|anthropic|google-genai|cohere|chromadb|fastapi"; then
+          if uv tree | grep -iE "openai|anthropic|google-genai|google.generativeai|cohere|chromadb|fastapi|langchain"; then
             echo "forbidden dependency found" && exit 1
           fi
       - name: CLI smoke
