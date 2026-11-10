@@ -1,5 +1,5 @@
 """
-Code Sandbox — static security review for generated C# code.
+Code Sandbox - static security review for generated C# code.
 
 Blocks dangerous patterns (file I/O, network, process execution, reflection)
 before sending code to Revit for execution.
@@ -50,7 +50,7 @@ def review(code: str) -> tuple[bool, list[str]]:
     Review generated C# code for dangerous patterns.
 
     Returns:
-        (safe, warnings) — safe=True if no dangerous patterns found.
+        (safe, warnings) - safe=True if no dangerous patterns found.
     """
     warnings: list[str] = []
     for pattern, description in _BLACKLIST:
