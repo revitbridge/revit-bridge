@@ -288,7 +288,7 @@ def _pieces(data: bytes, size: int) -> list[bytes]:
 
 def test_a_multi_megabyte_reply_in_small_chunks_is_read_in_linear_time():
     """B2: the reply is scanned once as it arrives, not decoded and parsed again per chunk."""
-    rows = [{"Id": i, "Name": f"Wall 墙 {i}", "Level": "L1", "Note": "a}b{\"c\"}"} for i in range(40000)]
+    rows = [{"Id": i, "Name": f"Wall \u5899 {i}", "Level": "L1", "Note": "a}b{\"c\"}"} for i in range(40000)]
     replies: dict = {}
 
     def handler(request):
@@ -315,9 +315,9 @@ def test_a_multi_megabyte_reply_in_small_chunks_is_read_in_linear_time():
 
 def test_a_character_split_across_reads_and_a_brace_at_a_read_end_inside_a_string():
     def handler(request):
-        reply = json.dumps(FakeRevit.ok(request["id"], {"text": "中文 a} {b", "n": 1}),
+        reply = json.dumps(FakeRevit.ok(request["id"], {"text": "\u4e2d\u6587 a} {b", "n": 1}),
                            ensure_ascii=False).encode("utf-8")
-        cut_char = reply.index("文".encode("utf-8")) + 1          # inside a 3-byte character
+        cut_char = reply.index("\u6587".encode("utf-8")) + 1          # inside a 3-byte character
         cut_brace = reply.index(b"a}") + 2                             # the read ends on a "}" in a string
         return [reply[:cut_char], 0.05, reply[cut_char:cut_brace], 0.05, reply[cut_brace:]]
 
@@ -330,7 +330,7 @@ def test_a_character_split_across_reads_and_a_brace_at_a_read_end_inside_a_strin
                 await client.disconnect()
 
     resp = asyncio.run(scenario())
-    assert resp.success is True and resp.result == {"text": "中文 a} {b", "n": 1}
+    assert resp.success is True and resp.result == {"text": "\u4e2d\u6587 a} {b", "n": 1}
 
 
 def test_the_deadline_holds_while_a_long_reply_is_still_arriving():
@@ -363,7 +363,7 @@ def test_the_framer_finds_every_object_at_every_split_point():
 
     stale = {"jsonrpc": "2.0", "id": "old", "result": "late"}
     reply = {"jsonrpc": "2.0", "id": "1",
-             "result": {"s": "a\\\"}{[\"中", "t": "\\", "n": [1, {"x": "}"}, []], "u": " "}}
+             "result": {"s": "a\\\"}{[\"\u4e2d", "t": "\\", "n": [1, {"x": "}"}, []], "u": "\u2028"}}
     data = (b"  " + json.dumps(stale).encode("utf-8") + b"\n"
             + json.dumps(reply, ensure_ascii=False).encode("utf-8") + b"  ")
 

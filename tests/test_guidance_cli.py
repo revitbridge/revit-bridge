@@ -230,7 +230,7 @@ def test_index_needs_the_contract_markers(tmp_path, capsys):
 
 def _save_as_gbk(path: Path) -> None:
     """The file as Notepad's "ANSI" on a Chinese Windows saves it, with a Chinese line added."""
-    path.write_bytes((path.read_text(encoding="utf-8") + "\n说明\n").encode("gbk"))
+    path.write_bytes((path.read_text(encoding="utf-8") + "\n\u8bf4\u660e\n").encode("gbk"))
 
 
 def test_a_category_skill_md_that_is_not_utf8_is_a_problem_for_check_and_index(tmp_path, capsys):
@@ -313,7 +313,7 @@ def test_explain_rejects_an_unknown_stage(capsys):
 def test_output_on_a_gbk_pipe_is_utf8_and_never_fails(tmp_path, monkeypatch):
     """A3: the CLI output rule (revit_bridge.cli_output) - UTF-8 on a pipe whatever the code page,
     so a path outside GBK arrives as itself, not as an escape, and nothing fails to encode."""
-    odd = tmp_path / ("layer-ø-" + chr(0x1F600))
+    odd = tmp_path / ("layer-\xf8-" + chr(0x1F600))
     odd.mkdir()
     (odd / "revit-core").mkdir()
     monkeypatch.setenv("REVIT_BRIDGE_GUIDANCE_PROJECT", str(odd))

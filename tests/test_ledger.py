@@ -64,7 +64,7 @@ def test_a_record_holding_a_unicode_line_separator_reads_back_whole(tmp_path):
     """B1: json.dumps(ensure_ascii=False) writes U+2028, U+2029 and U+0085 raw; str.splitlines cut
     the line there and the record was lost right after append."""
     ledger = Ledger(tmp_path / "evidence")
-    message = "first second third\u0085fourth"
+    message = "first\u2028second\u2029third\u0085fourth"
     record_id = ledger.append({"action": "execute_code", "error": message, "id": "ev_20260920T070000_abcdef"})
     assert ledger.get(record_id)["error"] == message
     assert [r["id"] for r in ledger.recent()] == [record_id]
@@ -82,7 +82,7 @@ def test_a_cut_or_garbled_line_costs_only_itself(tmp_path):
         handle.write(b"{not json\n")
     second = ledger.append({"action": "run_tool", "tool": "create_wall", "id": "ev_20260920T070200_cccccc"})
     with path.open("ab") as handle:
-        handle.write('{"id": "ev_20260920T070300_dddddd", "error": "中'.encode("utf-8")[:-1])  # cut
+        handle.write('{"id": "ev_20260920T070300_dddddd", "error": "\u4e2d'.encode("utf-8")[:-1])  # cut
     assert [r["id"] for r in ledger.recent(10)] == [second, first]
     assert ledger.get(second)["id"] == second and ledger.get(first)["tool"] == "create_wall"
     assert ledger.get("ev_20260920T070300_dddddd") is None

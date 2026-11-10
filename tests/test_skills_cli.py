@@ -40,12 +40,12 @@ def test_output_on_a_gbk_pipe_is_utf8(tmp_path, monkeypatch):
     raw = io.BytesIO()
     pipe = io.TextIOWrapper(raw, encoding="gbk", errors="strict", newline="\n")     # a cp936 pipe
     monkeypatch.setattr(sys, "stdout", pipe)
-    target = tmp_path / "skølls"
+    target = tmp_path / "sk\xf8lls"
     assert server.main(["skills", "list"]) == 0
     assert server.main(["skills", "install", "revit-core", "--to", str(target)]) == 0
     pipe.flush()
     text = raw.getvalue().decode("utf-8")
-    assert re.search("[一-鿿]", text)                 # the Chinese half of the descriptions, intact
+    assert re.search("[\u4e00-\u9fff]", text)                 # the Chinese half of the descriptions, intact
     assert f"-> {target / 'revit-core'}" in text
 
 

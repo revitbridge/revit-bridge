@@ -584,7 +584,7 @@ def test_main_check_exit_code_follows_reachable(monkeypatch, capsys):
 
 
 # A document title with a character outside GBK (o with stroke), one inside it, one beyond the BMP.
-ODD_TITLE = "Projøct 项目 \U0001f3d7"
+ODD_TITLE = "Proj\xf8ct \u9879\u76ee \U0001f3d7"
 
 
 class _Stream(io.TextIOWrapper):
