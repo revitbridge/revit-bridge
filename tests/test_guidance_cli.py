@@ -228,6 +228,38 @@ def test_index_needs_the_contract_markers(tmp_path, capsys):
     assert code == 1 and "problem: revit-core/lessons/snippet-contract.md: no ## Contract section" in out
 
 
+def _save_as_gbk(path: Path) -> None:
+    """The file as Notepad's "ANSI" on a Chinese Windows saves it, with a Chinese line added."""
+    path.write_bytes((path.read_text(encoding="utf-8") + "\n说明\n").encode("gbk"))
+
+
+def test_a_category_skill_md_that_is_not_utf8_is_a_problem_for_check_and_index(tmp_path, capsys):
+    """B3: index died with a bare UnicodeDecodeError (no file name) and check said 0 problems."""
+    plugin = copy_plugin(tmp_path)
+    root = plugin / "guidance"
+    _save_as_gbk(root / "revit-views" / "SKILL.md")
+    before = {p: p.read_bytes() for p in plugin.rglob("*") if p.is_file()}
+
+    code, out = run(capsys, "check", str(root))
+    assert code == 1
+    assert "problem: framework: revit-views/SKILL.md: not UTF-8" in out
+    for argv in (("index", str(root)), ("index", str(root), "--check")):
+        code, out = run(capsys, *argv)
+        assert code == 1 and "problem: revit-views/SKILL.md: not UTF-8" in out, out
+        assert out.splitlines()[-1] == "result: 1 problems; nothing written"
+    assert {p: p.read_bytes() for p in plugin.rglob("*") if p.is_file()} == before
+
+
+def test_a_bridge_skill_md_that_is_not_utf8_is_a_problem_for_index(tmp_path, capsys):
+    plugin = copy_plugin(tmp_path)
+    skill = plugin / "skills" / "revit-bridge" / "SKILL.md"
+    _save_as_gbk(skill)
+    before = skill.read_bytes()
+    code, out = run(capsys, "index", str(plugin / "guidance"))
+    assert code == 1 and f"problem: {skill}: not UTF-8" in out, out
+    assert skill.read_bytes() == before
+
+
 # -- explain -------------------------------------------------------------------------
 
 def test_explain_acceptance_fix_wall(capsys):
