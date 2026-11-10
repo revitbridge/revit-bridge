@@ -24,6 +24,33 @@ jobs:
         run: uv run pytest
       - name: Build
         run: uv build
+      - name: Built wheel installs and carries its data
+        shell: bash
+        run: |
+          uv venv build/wheel-check
+          if [ -d build/wheel-check/Scripts ]; then bin=build/wheel-check/Scripts; else bin=build/wheel-check/bin; fi
+          uv pip install --python build/wheel-check dist/*.whl
+          "$bin/revit-bridge" --version
+          "$bin/python" -I -c '
+          import pathlib, subprocess, tomllib
+          import revit_bridge
+          from revit_bridge import paths
+          pkg = pathlib.Path(revit_bridge.__file__).resolve().parent
+          assert "site-packages" in pkg.parts, f"imported from the source tree: {pkg}"
+          assert paths.builtin_capabilities_dir() == pkg / "capabilities" / "builtin", paths.builtin_capabilities_dir()
+          assert paths.skills_dir() == pkg / "skills", paths.skills_dir()
+          assert paths.guidance_dir() == pkg / "guidance_content", paths.guidance_dir()
+          project = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          missing = []
+          for source, target in project["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"].items():
+              out = subprocess.run(["git", "ls-files", "-z", source], capture_output=True, check=True).stdout
+              tracked = [f for f in out.decode("utf-8").split("\0") if f]
+              assert tracked, f"no tracked files under {source}"
+              root = pkg.parent / target
+              missing += [f for f in tracked if not (root / pathlib.PurePosixPath(f).relative_to(source)).is_file()]
+              print(f"{source} -> {target}: {len(tracked)} tracked files checked")
+          assert not missing, f"missing from the installed wheel: {missing}"
+          '
       - name: Forbidden dependencies must be absent
         shell: bash
         run: |

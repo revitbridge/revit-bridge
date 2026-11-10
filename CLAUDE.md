@@ -17,10 +17,15 @@ uvx --from . revit-bridge check   # read the open document's title through the a
 
 ## Layout
 
-- `revit_bridge/mcp_server.py` — MCP tools (thin wrappers), `main()` (`serve` | `check`).
+- `revit_bridge/mcp_server.py` — MCP tools (thin wrappers), `main()` (`serve` | `check` | `guidance` | `skills`).
+- `revit_bridge/guidance_cli.py` — `revit-bridge guidance check|index|explain` (validate the guidance layers,
+  rebuild the generated parts, show what `get_guidance` would recommend); `skills_cli.py` — `revit-bridge
+  skills list|install` (copy bundled skill folders into a directory, `--profile addin|bridge|all`).
 - `revit_bridge/execution.py` — the execution flow as a package API (`run_pack`, `run_code`, `revalidate`,
   `ExecutionResult`), shared by the MCP server and the web host; `instructions.py` — the model instructions
   (`server_instructions()` / `host_instructions()` from one text).
+- `revit_bridge/checking.py` — `check_code`: compile C# in Revit without running it (local `sandbox.review`
+  first, then the add-in's `check_code_in_revit`); the reply adds `hints` and `guidance` lessons.
 - `revit_bridge/revit/` — TCP JSON-RPC client, connection pool, settings from `REVIT_BRIDGE_*`, sandbox,
   `probe.py` (`check_connection`, `PING_PROBE`).
 - `revit_bridge/snapshot/` — query atoms, model queries (`query.py`, incl. the `query` tool kinds),
@@ -33,17 +38,28 @@ uvx --from . revit-bridge check   # read the open document's title through the a
 - `revit_bridge/spec/` — `models.py` (TaskSpec), `rules.py` (validation, missing params, reconcile), `gate.py`
   (confirmation tokens). `validators/` — post-execution assertions; `evidence/` — the JSONL ledger;
   `auth/` — `devices.py` (pairing codes, device tokens and browser keys, hashed; `DeviceStore` in
-  `<data dir>/auth/devices.json`), `tokens.py` (the 0.1 slot helpers, deprecated, removed in 0.4).
+  `<data dir>/auth/devices.json`), `tokens.py` (the 0.1 slot helpers, deprecated, still shipped).
+- `revit_bridge/guidance/` — lessons for writing Revit code, chosen without a model: `model.py` (format v1
+  vocabulary, data classes, version ranges), `loader.py` (validate one root, merge the four layers),
+  `select.py` (`recommend`, `pointers`, `index`, `read`: the `get_guidance` replies), `scan.py` (API names
+  in C#, exception types in an error text), `contract.py` (the snippet contract from
+  `revit-core/snippet-contract`), `indexer.py` (what `revit-bridge guidance index` writes).
+- `revit_bridge/verification/` — read-back checks for ad-hoc code: `flow.py` (`plan` / `verify`, behind
+  `plan_verification` / `verify_execution`), `templates.py` (`created_ids`, `count_delta`, `param_equals`
+  mapped onto the built-in validators), `store.py` (plans in `<data dir>/verifications/`).
 - `tests/` — pytest; `tests/fake_revit.py` fakes the add-in.
 - `plugin/` — Claude Code plugin: `skills/revit-bridge/SKILL.md` (+ `references/`), `.mcp.json`,
-  `hooks/hooks.json` + `hooks/spec_gate.py`. `.claude-plugin/marketplace.json` at the repo root
+  `hooks/hooks.json` + `hooks/spec_gate.py`, `guidance/` (the guidance library, format v1: `guidance.yaml`
+  and one directory per category, a `SKILL.md` plus any `lessons/<slug>.md`; in the wheel as
+  `revit_bridge/guidance_content`; `skills/revit-core/` is its export, written by `revit-bridge guidance
+  index`). `.claude-plugin/marketplace.json` at the repo root
   publishes it. Validate with `claude plugin validate .` and `claude plugin validate ./plugin --strict`;
   try locally with `claude --plugin-dir ./plugin`.
 
 ## Hard constraints
 
 - No LLM SDK (openai, anthropic, google-genai, cohere, ...), no chromadb, no FastAPI.
-  Runtime dependencies are exactly `mcp`, `pydantic>=2`, `pyyaml`, `websockets`.
+  Runtime dependencies are exactly `mcp`, `pydantic>=2`, `pyyaml`.
   `tests/test_package.py` enforces this.
 - Configuration comes only from `REVIT_BRIDGE_*` environment variables. No config files.
 - No `sys.path` manipulation, no imports from other repositories.
