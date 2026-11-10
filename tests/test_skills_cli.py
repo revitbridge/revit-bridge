@@ -1,6 +1,9 @@
 """`revit-bridge skills list|install`: the bundled skills are listed and copied whole."""
 from __future__ import annotations
 
+import io
+import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,6 +33,20 @@ def test_list_names_every_bundled_skill_with_its_description(capsys):
     assert [line.split()[0] for line in lines] == NAMES
     assert all(len(line.split(None, 1)) == 2 for line in lines)          # a description on every line
     assert "Revit" in out
+
+
+def test_output_on_a_gbk_pipe_is_utf8(tmp_path, monkeypatch):
+    """A3: the CLI output rule (revit_bridge.cli_output), the same as check and guidance follow."""
+    raw = io.BytesIO()
+    pipe = io.TextIOWrapper(raw, encoding="gbk", errors="strict", newline="\n")     # a cp936 pipe
+    monkeypatch.setattr(sys, "stdout", pipe)
+    target = tmp_path / "skølls"
+    assert server.main(["skills", "list"]) == 0
+    assert server.main(["skills", "install", "revit-core", "--to", str(target)]) == 0
+    pipe.flush()
+    text = raw.getvalue().decode("utf-8")
+    assert re.search("[一-鿿]", text)                 # the Chinese half of the descriptions, intact
+    assert f"-> {target / 'revit-core'}" in text
 
 
 def test_install_copies_every_skill_byte_for_byte(tmp_path, capsys):

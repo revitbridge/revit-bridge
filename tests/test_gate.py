@@ -7,7 +7,9 @@ too because they share the fake add-in fixtures.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import sys
 
 import pytest
 
@@ -579,6 +581,59 @@ def test_main_check_exit_code_follows_reachable(monkeypatch, capsys):
     finally:
         stop.set()
         thread.join(5)
+
+
+# A document title with a character outside GBK (o with stroke), one inside it, one beyond the BMP.
+ODD_TITLE = "Projøct 项目 \U0001f3d7"
+
+
+class _Stream(io.TextIOWrapper):
+    """A stdout in the GBK code page: a pipe, or an interactive console when ``tty``."""
+
+    tty = False
+
+    def isatty(self):
+        return self.tty
+
+
+def _gbk_stdout(monkeypatch, tty: bool = False) -> tuple[_Stream, io.BytesIO]:
+    raw = io.BytesIO()
+    stream = _Stream(raw, encoding="gbk", errors="strict", newline="\n")
+    stream.tty = tty
+    monkeypatch.setattr(sys, "stdout", stream)
+    return stream, raw
+
+
+def _status_with(title: str) -> dict:
+    return {"host": "127.0.0.1", "port": 18080, "token": "not set", "timeout": 60.0, "document": title,
+            "document_error": None, "reachable": True, "error": None, "status": "connected"}
+
+
+def test_main_check_on_a_gbk_pipe_prints_json_every_reader_parses(monkeypatch):
+    """A3: the title used to raise UnicodeEncodeError (nothing printed, exit 1 although Revit answered).
+    On a pipe the JSON is ASCII: the same text in every code page, the title exact after parsing."""
+    async def answered(**_):
+        return _status_with(ODD_TITLE)
+
+    monkeypatch.setattr(server, "check_connection", answered)
+    stream, raw = _gbk_stdout(monkeypatch)
+    assert server.main(["check"]) == 0
+    stream.flush()
+    data = raw.getvalue()
+    assert data and max(data) < 0x80
+    assert json.loads(data.decode("gbk")) == json.loads(data.decode("utf-8")) == _status_with(ODD_TITLE)
+
+
+def test_main_check_on_a_console_stays_readable(monkeypatch):
+    async def answered(**_):
+        return _status_with(ODD_TITLE)
+
+    monkeypatch.setattr(server, "check_connection", answered)
+    stream, raw = _gbk_stdout(monkeypatch, tty=True)
+    assert server.main(["check"]) == 0
+    stream.flush()
+    text = raw.getvalue().decode("utf-8")
+    assert f'"document": "{ODD_TITLE}"' in text and json.loads(text)["document"] == ODD_TITLE
 
 
 def test_main_check_exit_code(monkeypatch, capsys):

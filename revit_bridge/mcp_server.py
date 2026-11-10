@@ -49,7 +49,7 @@ from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
 from revit_bridge import __version__
-from revit_bridge import checking, guidance_cli, skills_cli
+from revit_bridge import checking, cli_output, guidance_cli, skills_cli
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
@@ -618,8 +618,9 @@ def main(argv: list[str] | None = None) -> int:
         return skills_cli.run(args)
 
     if args.command == "check":
+        cli_output.configure()                       # the CLI output rule, see revit_bridge.cli_output
         status = asyncio.run(check_connection(environment=True))
-        print(json.dumps(status, indent=2, ensure_ascii=False))
+        cli_output.write_json(status)
         return 0 if status["reachable"] else 1
 
     # The log goes to stderr in whatever code page the console has (GBK on a

@@ -278,15 +278,17 @@ def test_explain_rejects_an_unknown_stage(capsys):
     assert info.value.code == 2
 
 
-def test_output_is_safe_on_a_gbk_console(tmp_path, monkeypatch):
-    odd = tmp_path / ("layer-" + chr(0x1F600))
+def test_output_on_a_gbk_pipe_is_utf8_and_never_fails(tmp_path, monkeypatch):
+    """A3: the CLI output rule (revit_bridge.cli_output) - UTF-8 on a pipe whatever the code page,
+    so a path outside GBK arrives as itself, not as an escape, and nothing fails to encode."""
+    odd = tmp_path / ("layer-ø-" + chr(0x1F600))
     odd.mkdir()
     (odd / "revit-core").mkdir()
     monkeypatch.setenv("REVIT_BRIDGE_GUIDANCE_PROJECT", str(odd))
     raw = io.BytesIO()
-    console = io.TextIOWrapper(raw, encoding="gbk", errors="strict", newline="\n")
-    monkeypatch.setattr(sys, "stdout", console)
+    pipe = io.TextIOWrapper(raw, encoding="gbk", errors="strict", newline="\n")     # a cp936 pipe
+    monkeypatch.setattr(sys, "stdout", pipe)
     assert server.main(["guidance", "check"]) == 0
-    console.flush()
-    text = raw.getvalue().decode("gbk")
-    assert "layer project: loaded, 0 lessons: " in text and "\\U0001f600" in text
+    pipe.flush()
+    text = raw.getvalue().decode("utf-8")
+    assert f"layer project: loaded, 0 lessons: {odd}" in text

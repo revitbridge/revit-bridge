@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import sys
 from pathlib import Path
 
+from revit_bridge import cli_output
 from revit_bridge.guidance.loader import read_skill
 from revit_bridge.paths import skills_dir
 
@@ -72,18 +72,14 @@ def add_parser(sub) -> None:
 
 
 def _write(text: str) -> None:
-    out = sys.stdout
-    try:
-        out.write(text + "\n")
-    except UnicodeEncodeError:
-        out.write(text.encode("ascii", "backslashreplace").decode("ascii") + "\n")
+    cli_output.write(text)
 
 
 def run(args: argparse.Namespace) -> int:
-    # Hosts and pipes read UTF-8; a GBK console would otherwise garble the Chinese
-    # half of a description.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    # The CLI output rule (revit_bridge.cli_output): hosts and pipes read UTF-8; the
+    # locale code page (GBK on a Chinese Windows) would garble the Chinese half of a
+    # description.
+    cli_output.configure()
     skills = available()
     if args.skills_command == "list":
         width = max(len(n) for n in skills) if skills else 0
