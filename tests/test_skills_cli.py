@@ -119,6 +119,17 @@ def test_a_forced_install_that_fails_midway_keeps_the_old_copy(tmp_path, capsys,
     assert sorted(p.name for p in target.iterdir()) == ["revit-addin-dev"]
 
 
+def test_an_interrupted_swap_puts_the_old_copy_back_and_still_needs_force(tmp_path, capsys):
+    target = tmp_path / "skills"
+    previous = target / ".revit-core.previous"                   # the process died between the renames
+    previous.mkdir(parents=True)
+    (previous / "SKILL.md").write_text("edited locally", encoding="utf-8")
+    code, out = run(capsys, "install", "revit-core", "--to", str(target))
+    assert code == 1 and "--force" in out
+    assert (target / "revit-core" / "SKILL.md").read_text(encoding="utf-8") == "edited locally"
+    assert not previous.exists()
+
+
 def test_a_destination_that_is_a_file_is_a_clear_error(tmp_path, capsys):
     target = tmp_path / "skills"
     target.write_text("not a directory", encoding="utf-8")

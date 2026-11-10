@@ -111,6 +111,14 @@ def run(args: argparse.Namespace) -> int:
     code = 0
     for name in names:
         dest = target / name
+        previous = _previous(dest)
+        if previous.exists() and not dest.exists():      # a swap that was interrupted: the old copy goes back
+            try:
+                previous.rename(dest)
+            except OSError as error:
+                _write(f"{name}: not installed; the previous copy {previous} could not be put back: {error}")
+                code = 1
+                continue
         if dest.exists() and not args.force:
             _write(f"{name}: {dest} exists; use --force to replace it")
             code = 1
@@ -142,9 +150,7 @@ def _install(source: Path, dest: Path) -> bool:
     ``dest`` as it was - the old copy, or nothing - and raises. On success the old copy is
     removed as before; returns False when it could not be (it stays as ``_previous(dest)``)."""
     staging, previous = _staging(dest), _previous(dest)
-    if previous.exists() and not dest.exists():
-        previous.rename(dest)                            # an interrupted swap: the old copy goes back first
-    for leftover in (staging, previous):
+    for leftover in (staging, previous):                 # left by an earlier run that failed
         if leftover.exists():
             shutil.rmtree(leftover)
     try:
