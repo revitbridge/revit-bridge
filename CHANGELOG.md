@@ -6,6 +6,10 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-09
+
+Fixes for a server that outlives Revit, for Chinese-language Windows, and for the files the package keeps on disk. No tool, pack format, TaskSpec or wire-format change. The `websockets` dependency is gone (nothing imported it). Hosts: `DeviceStore` update methods now raise `OSError` when `devices.json` cannot be read, instead of treating it as empty.
+
 ### Removed
 
 - The `websockets` runtime dependency: nothing in the package imports it (the
