@@ -290,7 +290,7 @@ def test_a_connection_that_never_opens_consumes_nothing(host, monkeypatch, exc):
     assert result.evidence_id is None and result.warnings == []
     assert host["gate"].peek(token).used_at is None
     assert host["ledger"].recent() == [] and client.sends == 0
-    assert host["store"].load("create_wall").failure_count == 1
+    assert host["store"].load("create_wall").failure_count == 0      # nothing reached Revit (A2)
 
     token = code_token(host["gate"], "return 1;")
     result = asyncio.run(run_code(gate=host["gate"], ledger=host["ledger"], client=client, code="return 1;",
@@ -298,6 +298,80 @@ def test_a_connection_that_never_opens_consumes_nothing(host, monkeypatch, exc):
     assert result.success is False and result.error == str(exc)
     assert result.evidence_id is None and host["gate"].peek(token).used_at is None
     assert host["ledger"].recent() == [] and client.sends == 0
+
+
+# -- A2: a pack's failure_count counts only evidence about the pack -------------------------------
+
+def test_a_revit_that_cannot_be_reached_never_locks_the_pack(host):
+    """Two attempts while Revit was not reachable: the pack stays healthy and runs on the third."""
+    for _ in range(2):
+        token = wall_token(host["gate"])
+        refused = _NeverConnects(delay=0, exc=ConnectionRefusedError(10061, "connection refused"))
+        out = asyncio.run(run_pack(client=refused, name="create_wall", params=dict(WALL), token=token,
+                                   host="web", **host))
+        assert out.success is False and out.evidence_id is None and refused.sends == 0
+    assert host["store"].load("create_wall").failure_count == 0
+    assert host["store"].health_check("create_wall")["recommendation"] == "use_tool"
+    token = wall_token(host["gate"])
+    ran = with_fake(counting_handler(1, 2), lambda c, f: run_pack(
+        client=c, name="create_wall", params=dict(WALL), token=token, host="web", **host))
+    assert ran.success is True and ran.refusal is None
+
+
+def test_a_failure_reply_from_revit_still_counts_and_a_success_still_resets(host):
+    counting = counting_handler(1, 2)
+
+    def fails(request):
+        if request["method"] == "send_code_to_revit" and "Wall.Create" in request["params"]["code"]:
+            return FakeRevit.thrown(request["id"], "ArgumentException", "the wall is too short")
+        return counting(request)
+
+    failed = with_fake(fails, lambda c, f: run_pack(
+        client=c, name="create_wall", params=dict(WALL), token=wall_token(host["gate"]), host="web", **host))
+    assert failed.success is False and "ArgumentException" in failed.error
+    assert host["store"].load("create_wall").failure_count == 1
+    ran = with_fake(counting_handler(1, 2), lambda c, f: run_pack(
+        client=c, name="create_wall", params=dict(WALL), token=wall_token(host["gate"]), host="web", **host))
+    assert ran.success is True
+    tool = host["store"].load("create_wall")
+    assert tool.failure_count == 0 and tool.execution_count == 1
+
+
+def test_a_lost_connection_or_no_reply_after_the_token_is_recorded_but_not_counted(host):
+    """Revit may or may not have run it: the ledger line stays exactly as it was; the pack's health
+    does not move, because no reply said anything about the pack."""
+    counting = counting_handler(1, 2)
+
+    def dies(request):
+        if request["method"] == "send_code_to_revit" and "Wall.Create" in request["params"]["code"]:
+            return FakeRevit.DROP
+        return counting(request)
+
+    def silent(request):
+        if request["method"] == "send_code_to_revit" and "Wall.Create" in request["params"]["code"]:
+            return []                                               # no reply within the timeout
+        return counting(request)
+
+    died = with_fake(dies, lambda c, f: run_pack(
+        client=c, name="create_wall", params=dict(WALL), token=wall_token(host["gate"]), host="web", **host))
+    assert died.success is False and "closed connection" in died.error
+    assert host["ledger"].get(died.evidence_id)["error"] == died.error
+
+    async def go():
+        async with FakeRevit(silent) as fake:
+            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=0.5)
+            try:
+                return await run_pack(client=client, name="create_wall", params=dict(WALL),
+                                      token=wall_token(host["gate"]), host="web", **host)
+            finally:
+                await client.disconnect()
+
+    silent_run = asyncio.run(go())
+    assert silent_run.success is False and silent_run.error == "Timeout after 0.5s"
+    record = host["ledger"].get(silent_run.evidence_id)
+    assert record["success"] is False and record["error"] == "Timeout after 0.5s"
+    assert host["store"].load("create_wall").failure_count == 0
+    assert host["store"].health_check("create_wall")["recommendation"] == "use_tool"
 
 
 def test_revit_client_ensure_connected_opens_the_socket_once():

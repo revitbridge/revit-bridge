@@ -850,7 +850,7 @@ def test_an_execution_that_dies_mid_request_is_still_recorded(isolated_store, re
                 assert record["tool"] == "create_wall" and record["token_prefix"] == token[:6]
                 assert record["result_summary"] == {"ids": []}
                 assert server._gate.peek(token).used_at                      # consumed: not retried by accident
-                assert isolated_store.load("create_wall").failure_count == 1
+                assert isolated_store.load("create_wall").failure_count == 0  # no reply: not the pack's (A2)
             finally:
                 await RevitClientPool.disconnect()
 

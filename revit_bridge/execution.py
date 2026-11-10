@@ -4,7 +4,7 @@
 
     verify token -> health -> render -> sandbox -> snapshot + preconditions ->
     validator.before -> consume token -> send_code -> validator.after ->
-    record_usage -> evidence ledger
+    record_usage (only when Revit replied) -> evidence ledger
 
 ``revalidate`` re-runs a recorded execution's assertion against the model as
 it is now. All dependencies (store, gate, ledger, client) are passed in, so
@@ -321,6 +321,16 @@ def _declined(resp) -> bool:
     return getattr(resp, "error_code", None) == DECLINED_ON_DEVICE
 
 
+def _replied(resp) -> bool:
+    """True when Revit answered ``send_code``: a success, a failed run or a JSON-RPC error.
+
+    Both clients (the TCP client and the web relay) return a reply's text in ``raw``
+    and a request that got no reply within its timeout as ``success=False`` with
+    ``raw`` empty (``check_connection`` reads ``raw`` the same way).
+    """
+    return bool(getattr(resp, "success", False) or getattr(resp, "raw", ""))
+
+
 def failure_hint(error: str | None, hint: str | None = None) -> str | None:
     """``hint`` for a failed run (E3): when ``error`` names .NET exception types,
     ``EXCEPTION_HINT`` with them (``hint``, if any, after it); otherwise ``hint`` as is.
@@ -345,6 +355,15 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     ``success`` means Revit succeeded AND the pack's validator (if any)
     passed; a failed assertion is ``success: false`` with
     ``error: "validation_failed"`` and the result attached.
+
+    The pack's usage counters (``record_usage``: its ``failure_count`` decides
+    the health check) move only on evidence about the pack: a reply from Revit
+    - success, a failed run, an error - and the validator's verdict. The state
+    of the connection is not such evidence: nothing is counted when the
+    connection could not be opened or the probes failed on it (nothing reached
+    Revit), when ``send_code`` raised (refused, reset, closed by the add-in,
+    a bad setting: no reply), or when no reply came back within the timeout.
+    The last two still leave their ledger line.
     """
     if not isinstance(params, dict):
         return _refused({"success": False, "error": "params must be a JSON object"}, name)
@@ -394,7 +413,6 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
         await ensure_connected(client)
         failed, document = await preconditions(client, pack, warnings)
     except Exception as e:                     # noqa: BLE001 - nothing reached Revit: nothing to record
-        store.record_usage(name, success=False)
         error = str(e) or type(e).__name__
         return ExecutionResult(success=False, tool=name, error=error, warnings=warnings, hint=failure_hint(error))
 
@@ -427,8 +445,8 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     try:
         resp = await client.send_code(code)
     except Exception as e:
-        # Revit may or may not have run it: exactly the case that needs a ledger line
-        store.record_usage(name, success=False)
+        # Revit may or may not have run it: exactly the case that needs a ledger line.
+        # No reply came back, so nothing is known about the pack: its usage is not touched.
         evidence_id = _record(
             ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
             code=None, document=document, resp=None, validation=None, success=False, error=str(e),
@@ -445,7 +463,8 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
             validation = _validation_error(validator.kind, e, before)
     success = bool(resp.success) and (validation is None or validation.passed)
     error = resp.error if not resp.success else ("validation_failed" if validation and not validation.passed else None)
-    store.record_usage(name, success=success)
+    if _replied(resp):
+        store.record_usage(name, success=success)
     duration_ms = int((time.monotonic() - started) * 1000)
     evidence_id = _record(
         ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
