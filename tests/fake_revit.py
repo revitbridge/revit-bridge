@@ -10,13 +10,22 @@ import asyncio
 import json
 
 
+class _Closing:
+    """Responses to send before the server closes the connection (``FakeRevit.closing``)."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+
 class FakeRevit:
     """Async TCP server; ``handler(request: dict) -> dict | list[dict]``.
 
     The handler returns the JSON-RPC response object. Returning a list sends
-    several responses back-to-back (used to simulate stale replies). When
-    ``token`` is set the server rejects requests that do not carry it, like
-    the add-in does.
+    several responses back-to-back (used to simulate stale replies); an item
+    that is ``bytes`` is written as is (a reply cut in pieces), a float item
+    pauses that many seconds first (so the pieces arrive as separate reads).
+    When ``token`` is set the server rejects requests that do not carry it,
+    like the add-in does. ``connections`` counts the connections accepted.
     """
 
     DROP = object()   # a handler returns this to close the connection without answering
@@ -25,8 +34,14 @@ class FakeRevit:
         self.handler = handler or self.default_handler
         self.token = token
         self.requests: list[dict] = []
+        self.connections = 0
         self._server: asyncio.AbstractServer | None = None
         self.port: int = 0
+
+    @staticmethod
+    def closing(*responses) -> _Closing:
+        """A handler result: send ``responses``, then close the connection (an add-in that went away)."""
+        return _Closing(responses)
 
     async def __aenter__(self):
         self._server = await asyncio.start_server(self._serve, "127.0.0.1", 0)
@@ -38,6 +53,7 @@ class FakeRevit:
         await self._server.wait_closed()
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        self.connections += 1
         try:
             while True:
                 data = await reader.read(8192)
@@ -45,6 +61,7 @@ class FakeRevit:
                     break
                 request = json.loads(data.decode("utf-8"))
                 self.requests.append(request)
+                close = False
                 if self.token and request.get("token") != self.token:
                     responses = [self.error(request.get("id"), -32600,
                                             "Unauthorized: invalid or missing token")]
@@ -52,10 +69,17 @@ class FakeRevit:
                     result = self.handler(request)
                     if result is self.DROP:
                         break   # like an add-in that died mid-request
+                    if isinstance(result, _Closing):
+                        result, close = result.responses, True
                     responses = result if isinstance(result, list) else [result]
                 for resp in responses:
-                    writer.write(json.dumps(resp).encode("utf-8"))
+                    if isinstance(resp, float):
+                        await asyncio.sleep(resp)
+                        continue
+                    writer.write(resp if isinstance(resp, bytes) else json.dumps(resp).encode("utf-8"))
                     await writer.drain()
+                if close:
+                    break
         except (ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:

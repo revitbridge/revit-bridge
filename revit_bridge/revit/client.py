@@ -99,6 +99,7 @@ class RevitClient:
     # -- connection lifecycle --------------------------------------------------
 
     async def connect(self) -> None:
+        self._drop()                     # a connection the add-in closed is not leaked
         try:
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port),
@@ -126,9 +127,19 @@ class RevitClient:
             self._writer = None
             self._reader = None
 
+    def _drop(self) -> None:
+        """Forget the connection at once (no await, so it also runs while a cancellation unwinds)."""
+        writer, self._reader, self._writer = self._writer, None, None
+        if writer is not None:
+            writer.close()
+
     @property
     def connected(self) -> bool:
-        return self._writer is not None and not self._writer.is_closing()
+        """An open connection the add-in has not closed. A socket the add-in closed while the
+        client was idle (Revit restarted) stays "not closing" on the client side; its reader
+        at end of file is what tells."""
+        return (self._writer is not None and not self._writer.is_closing()
+                and self._reader is not None and not self._reader.at_eof())
 
     # -- send command ----------------------------------------------------------
 
@@ -156,6 +167,14 @@ class RevitClient:
         request id - stale responses from previous commands (e.g. a late
         health-check reply) are discarded automatically. ``timeout`` (seconds)
         replaces the client's timeout for this one request.
+
+        An exchange that does not complete - the add-in closed the connection,
+        it was reset, no reply within ``timeout``, or the caller cancelled the
+        call (``asyncio.wait_for`` around it) - leaves the stream in an unknown
+        state: a reply may still be on its way, or be half read. The connection
+        is dropped before the error is raised or the timeout reply returned, so
+        the next call opens a new one and starts on a message boundary. The
+        request itself is never sent again: Revit may have run it.
         """
         timeout = self.timeout if timeout is None else timeout
         async with self._lock:
@@ -164,55 +183,66 @@ class RevitClient:
 
             request_id = self._make_id()
             payload = self._build_payload(method, params, request_id)
-
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self._writer.write(data)
-            await self._writer.drain()
+            try:
+                resp = await self._exchange(data, request_id, timeout)
+            except BaseException:
+                self._drop()
+                raise
+            if resp is None:
+                self._drop()
+                return RevitResponse(success=False, error=f"Timeout after {timeout}s")
+            return resp
 
-            # Read response - accumulate until one complete JSON object arrived.
-            # Add-in sends raw UTF-8 JSON with no delimiter, reads up to 8192 bytes.
-            # Several objects may share one chunk (e.g. a late reply followed by
-            # ours); the leftover bytes stay in `buf` for the next iteration.
-            # Loop to skip stale responses whose id doesn't match request_id.
-            deadline = time.monotonic() + timeout
-            buf = b""
-            while True:
-                try:
-                    while True:
-                        resp, buf = _pop_json_object(buf)
-                        if resp is not None:
-                            break
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            return RevitResponse(success=False, error=f"Timeout after {timeout}s")
-                        chunk = await asyncio.wait_for(
-                            self._reader.read(8192),
-                            timeout=remaining,
-                        )
-                        if not chunk:
-                            raise ConnectionError("Revit add-in closed connection")
-                        buf += chunk
-                except asyncio.TimeoutError:
-                    return RevitResponse(success=False, error=f"Timeout after {timeout}s")
+    async def _exchange(self, data: bytes, request_id: str, timeout: float) -> RevitResponse | None:
+        """Write one request and read until the reply with ``request_id``; None on timeout."""
+        self._writer.write(data)
+        await self._writer.drain()
 
-                # Validate response id matches our request
-                resp_id = resp.get("id")
-                if resp_id != request_id:
-                    _log.warning(
-                        f"[send_command] Discarding stale response: "
-                        f"expected id={request_id}, got id={resp_id}"
+        # Read response - accumulate until one complete JSON object arrived.
+        # Add-in sends raw UTF-8 JSON with no delimiter, reads up to 8192 bytes.
+        # Several objects may share one chunk (e.g. a late reply followed by
+        # ours); the leftover bytes stay in `buf` for the next iteration.
+        # Loop to skip stale responses whose id doesn't match request_id.
+        deadline = time.monotonic() + timeout
+        buf = b""
+        while True:
+            try:
+                while True:
+                    resp, buf = _pop_json_object(buf)
+                    if resp is not None:
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    chunk = await asyncio.wait_for(
+                        self._reader.read(8192),
+                        timeout=remaining,
                     )
-                    continue  # discard and read the next response
+                    if not chunk:
+                        raise ConnectionError("Revit add-in closed connection")
+                    buf += chunk
+            except asyncio.TimeoutError:
+                return None
 
-                # Parse JSON-RPC response
-                if "error" in resp and resp["error"]:
-                    err = resp["error"]
-                    msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                    code = err.get("code") if isinstance(err, dict) else None
-                    return RevitResponse(success=False, error=msg, raw=json.dumps(resp),
-                                         error_code=code if isinstance(code, int) else None)
+            # Validate response id matches our request
+            resp_id = resp.get("id")
+            if resp_id != request_id:
+                _log.warning(
+                    f"[send_command] Discarding stale response: "
+                    f"expected id={request_id}, got id={resp_id}"
+                )
+                continue  # discard and read the next response
 
-                return RevitResponse(success=True, result=resp.get("result"), raw=json.dumps(resp))
+            # Parse JSON-RPC response
+            if "error" in resp and resp["error"]:
+                err = resp["error"]
+                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                code = err.get("code") if isinstance(err, dict) else None
+                return RevitResponse(success=False, error=msg, raw=json.dumps(resp),
+                                     error_code=code if isinstance(code, int) else None)
+
+            return RevitResponse(success=True, result=resp.get("result"), raw=json.dumps(resp))
 
     # -- high-level: send code -------------------------------------------------
 
