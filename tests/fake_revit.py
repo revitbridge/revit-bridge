@@ -34,7 +34,8 @@ class FakeRevit:
         self.handler = handler or self.default_handler
         self.token = token
         self.requests: list[dict] = []
-        self.connections = 0
+        self.connections = 0          # accepted so far
+        self.open_connections = 0     # accepted and not closed by either side yet
         self._server: asyncio.AbstractServer | None = None
         self.port: int = 0
 
@@ -54,6 +55,7 @@ class FakeRevit:
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         self.connections += 1
+        self.open_connections += 1
         try:
             while True:
                 data = await reader.read(8192)
@@ -83,6 +85,7 @@ class FakeRevit:
         except (ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:
+            self.open_connections -= 1
             writer.close()
 
     # -- response helpers ------------------------------------------------------

@@ -125,7 +125,7 @@ class _Framer:
 def _parse_frame(frame: bytes):
     try:
         return json.loads(frame.decode("utf-8", errors="replace"))
-    except ValueError:
+    except (ValueError, RecursionError):        # RecursionError: nested deeper than json can parse
         _log.warning("[send_command] Dropping an unparseable frame of %d bytes", len(frame))
         return None
 
@@ -153,7 +153,18 @@ class RevitClient:
 
     # -- connection lifecycle --------------------------------------------------
 
+    # Opening a connection takes the same lock as an exchange: a reconnect never replaces the
+    # connection under a request in flight, and concurrent ensure_connected calls open one
+    # connection, not one each. asyncio.Lock is not re-entrant, hence the *_locked variant
+    # for callers that already hold it. disconnect() takes no lock: shutting down does not
+    # wait for an exchange, which then fails on its closed connection.
+
     async def connect(self) -> None:
+        """Open a new connection, closing an open one first (after any exchange in flight)."""
+        async with self._lock:
+            await self._connect_locked()
+
+    async def _connect_locked(self) -> None:
         self._drop()                     # a connection the add-in closed is not leaked
         try:
             self._reader, self._writer = await asyncio.wait_for(
@@ -169,18 +180,18 @@ class RevitClient:
 
     async def ensure_connected(self) -> None:
         """Connect now if not connected (the execution flow calls this before its timed probes)."""
-        if not self.connected:
-            await self.connect()
+        async with self._lock:
+            if not self.connected:
+                await self._connect_locked()
 
     async def disconnect(self) -> None:
-        if self._writer:
-            self._writer.close()
+        writer, self._reader, self._writer = self._writer, None, None   # never a newer connection
+        if writer is not None:
+            writer.close()
             try:
-                await self._writer.wait_closed()
+                await writer.wait_closed()
             except Exception:
                 pass
-            self._writer = None
-            self._reader = None
 
     def _drop(self) -> None:
         """Forget the connection at once (no await, so it also runs while a cancellation unwinds)."""
@@ -234,7 +245,7 @@ class RevitClient:
         timeout = self.timeout if timeout is None else timeout
         async with self._lock:
             if not self.connected:
-                await self.connect()
+                await self._connect_locked()
 
             request_id = self._make_id()
             payload = self._build_payload(method, params, request_id)
@@ -250,9 +261,13 @@ class RevitClient:
             return resp
 
     async def _exchange(self, data: bytes, request_id: str, timeout: float) -> RevitResponse | None:
-        """Write one request and read until the reply with ``request_id``; None on timeout."""
-        self._writer.write(data)
-        await self._writer.drain()
+        """Write one request and read until the reply with ``request_id``; None on timeout.
+        The exchange keeps to the connection it started on (a disconnect() meanwhile closes it)."""
+        reader, writer = self._reader, self._writer
+        if reader is None or writer is None:
+            raise ConnectionError("Revit add-in connection was closed")
+        writer.write(data)
+        await writer.drain()
 
         # Read the response: the add-in sends raw UTF-8 JSON with no delimiter.
         # Several objects may share one read (e.g. a late reply followed by
@@ -268,7 +283,7 @@ class RevitClient:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         return None
-                    chunk = await asyncio.wait_for(self._reader.read(READ_SIZE), timeout=remaining)
+                    chunk = await asyncio.wait_for(reader.read(READ_SIZE), timeout=remaining)
                     if not chunk:
                         raise ConnectionError("Revit add-in closed connection")
                     frames.feed(chunk)
