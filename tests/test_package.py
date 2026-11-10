@@ -19,6 +19,38 @@ def test_declared_dependencies_are_the_allowed_set():
     assert data["project"]["scripts"] == {"revit-bridge": "revit_bridge.mcp_server:main"}
 
 
+def test_the_release_version_strings_agree():
+    """pyproject.toml holds the version; the plugin manifest, every versioned marketplace entry, the
+    plugin's `revit-bridge==X` pin and the package's own entry in uv.lock must say the same.
+    publish.yml checks only the tag against pyproject.toml."""
+    import json
+
+    def load_json(*parts):
+        return json.loads(ROOT.joinpath(*parts).read_text(encoding="utf-8"))
+
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    found = {"plugin/.claude-plugin/plugin.json: version": load_json("plugin", ".claude-plugin", "plugin.json")["version"]}
+
+    entries = [p for p in load_json(".claude-plugin", "marketplace.json")["plugins"] if "version" in p]
+    assert entries
+    for entry in entries:
+        found[f".claude-plugin/marketplace.json: plugins[{entry['name']}].version"] = entry["version"]
+
+    pins = {f"plugin/.mcp.json: mcpServers[{name}] revit-bridge==": arg.split("==", 1)[1]
+            for name, server in load_json("plugin", ".mcp.json")["mcpServers"].items()
+            for arg in server.get("args", []) if arg.startswith("revit-bridge==")}
+    assert pins
+    found.update(pins)
+
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    own = [p for p in lock["package"] if p["name"] == "revit-bridge"]
+    assert len(own) == 1
+    found["uv.lock: revit-bridge version"] = own[0]["version"]
+
+    differ = {where: value for where, value in found.items() if value != version}
+    assert not differ, f"pyproject.toml says {version}; these differ: {differ}"
+
+
 def test_wheel_bundles_packs_skills_and_guidance():
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     included = data["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
