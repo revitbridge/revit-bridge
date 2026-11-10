@@ -144,19 +144,24 @@ class Ledger:
 
     @staticmethod
     def _read(path: Path) -> list[dict]:
-        records: list[dict] = []
+        """Every record of one file. Lines are split on ``\\n`` only: ``json.dumps`` with
+        ``ensure_ascii=False`` writes U+2028, U+2029 and U+0085 raw, and ``str.splitlines``
+        would cut a record there. Each line is decoded on its own, so one that is not
+        UTF-8 (a crash mid-append leaves half a character) or not JSON costs only itself."""
         try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(record, dict):
-                    if not record.get("scope"):
-                        record["scope"] = LOCAL_SCOPE       # a 0.2 line: the local add-in
-                    records.append(record)
+            data = path.read_bytes()
         except OSError:
-            pass
+            return []
+        records: list[dict] = []
+        for raw in data.split(b"\n"):
+            if not raw.strip():
+                continue
+            try:
+                record = json.loads(raw.decode("utf-8"))
+            except ValueError:                              # UnicodeDecodeError is one too
+                continue
+            if isinstance(record, dict):
+                if not record.get("scope"):
+                    record["scope"] = LOCAL_SCOPE           # a 0.2 line: the local add-in
+                records.append(record)
         return records
