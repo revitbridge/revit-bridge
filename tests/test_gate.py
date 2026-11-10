@@ -688,6 +688,29 @@ def test_main_check_on_a_console_stays_readable(monkeypatch):
     assert f'"document": "{ODD_TITLE}"' in text and json.loads(text)["document"] == ODD_TITLE
 
 
+@pytest.mark.parametrize("stdout", ["none", "closed"])
+def test_cli_output_never_raises_without_a_usable_stdout(monkeypatch, stdout):
+    """F5: under pythonw or a host without a console sys.stdout is None; write() raised
+    AttributeError although configure() coped. A closed stream must not raise either."""
+    from revit_bridge import cli_output
+
+    async def answered(**_):
+        return _status_with("Project1")
+
+    monkeypatch.setattr(server, "check_connection", answered)
+    if stdout == "none":
+        monkeypatch.setattr(sys, "stdout", None)
+    else:
+        closed = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        closed.close()
+        monkeypatch.setattr(sys, "stdout", closed)
+    cli_output.configure()
+    cli_output.write("text")
+    cli_output.write_json({"a": 1})
+    assert server.main(["check"]) == 0
+    assert server.main(["skills", "list"]) == 0
+
+
 def test_main_check_exit_code(monkeypatch, capsys):
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
     monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "1")

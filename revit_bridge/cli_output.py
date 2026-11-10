@@ -47,19 +47,28 @@ def interactive() -> bool:
         return False
 
 
+def _emit(text: str, fallback: str) -> None:
+    """``text`` on stdout, or ``fallback`` (ASCII) when the stream cannot encode it. No stdout
+    (pythonw, a host without a console: None), a closed one or a broken pipe: nothing is
+    written and nothing is raised - output never fails the command."""
+    out = sys.stdout
+    if out is None:
+        return
+    try:
+        try:
+            out.write(text)
+        except UnicodeEncodeError:
+            out.write(fallback)
+    except (AttributeError, ValueError, OSError):        # not a stream, closed, or a pipe gone away
+        pass
+
+
 def write(text: str = "") -> None:
     """One line on stdout; a stream that cannot encode a character gets its escape."""
-    out = sys.stdout
-    try:
-        out.write(text + "\n")
-    except UnicodeEncodeError:
-        out.write(text.encode("ascii", "backslashreplace").decode("ascii") + "\n")
+    _emit(text + "\n", text.encode("ascii", "backslashreplace").decode("ascii") + "\n")
 
 
 def write_json(data) -> None:
     """``data`` as indented JSON on stdout: readable on a console, ASCII anywhere else."""
-    out = sys.stdout
-    try:
-        out.write(json.dumps(data, indent=2, ensure_ascii=not interactive()) + "\n")
-    except UnicodeEncodeError:                           # a console whose encoding could not be changed
-        out.write(json.dumps(data, indent=2, ensure_ascii=True) + "\n")
+    _emit(json.dumps(data, indent=2, ensure_ascii=not interactive()) + "\n",
+          json.dumps(data, indent=2, ensure_ascii=True) + "\n")   # a console whose encoding stayed narrow
