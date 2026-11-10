@@ -331,6 +331,18 @@ def _replied(resp) -> bool:
     return bool(getattr(resp, "success", False) or getattr(resp, "raw", ""))
 
 
+# What a client raises when no reply came back: refused, reset, closed by the add-in, timed
+# out (TimeoutError is an OSError since 3.11; named for clarity). Inside a validator any other
+# exception is about what Revit answered (ValidatorError for a probe Revit failed, ValueError
+# for a reply it could not read) - except a probe that got no reply at all (``no_reply``).
+_TRANSPORT_ERRORS = (OSError, EOFError, asyncio.TimeoutError)
+
+
+def _transport_failure(exc: BaseException) -> bool:
+    """True when ``exc`` says nothing about the pack: the connection failed, no reply came back."""
+    return isinstance(exc, _TRANSPORT_ERRORS) or bool(getattr(exc, "no_reply", False))
+
+
 def failure_hint(error: str | None, hint: str | None = None) -> str | None:
     """``hint`` for a failed run (E3): when ``error`` names .NET exception types,
     ``EXCEPTION_HINT`` with them (``hint``, if any, after it); otherwise ``hint`` as is.
@@ -362,8 +374,10 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     of the connection is not such evidence: nothing is counted when the
     connection could not be opened or the probes failed on it (nothing reached
     Revit), when ``send_code`` raised (refused, reset, closed by the add-in,
-    a bad setting: no reply), or when no reply came back within the timeout.
-    The last two still leave their ledger line.
+    a bad setting: no reply), when no reply came back within the timeout, or
+    when the validator's read-back could not reach Revit (``_transport_failure``:
+    its result is still a failed validation). The last three still leave their
+    ledger line.
     """
     if not isinstance(params, dict):
         return _refused({"success": False, "error": "params must be a JSON object"}, name)
@@ -459,14 +473,16 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
                                hint=failure_hint(str(e)))
 
     validation: ValidationReport | None = None
+    read_back_unreachable = False
     if validator is not None and resp.success:
         try:
             validation = await validator.after(client, spec, pack.validator, before, resp.result)
         except Exception as e:  # noqa: BLE001 - a validator that cannot run is a failed validation
             validation = _validation_error(validator.kind, e, before)
+            read_back_unreachable = _transport_failure(e)
     success = bool(resp.success) and (validation is None or validation.passed)
     error = resp.error if not resp.success else ("validation_failed" if validation and not validation.passed else None)
-    if _replied(resp):
+    if _replied(resp) and not read_back_unreachable:
         store.record_usage(name, success=success)
     duration_ms = int((time.monotonic() - started) * 1000)
     evidence_id = _record(

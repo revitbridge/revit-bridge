@@ -387,6 +387,59 @@ def test_a_lost_connection_or_no_reply_after_the_token_is_recorded_but_not_count
     assert host["store"].health_check("create_wall")["recommendation"] == "use_tool"
 
 
+def _after_the_run(counting, answer):
+    """``counting``, except that the count probes after the wall was created get ``answer(request)``:
+    the read-back of ``validator.after``."""
+    ran = []
+
+    def handler(request):
+        code = request["params"].get("code", "") if request["method"] == "send_code_to_revit" else ""
+        if "Wall.Create" in code:
+            ran.append(True)
+        elif ran and "GetElementCount" in code:
+            return answer(request)
+        return counting(request)
+    return handler
+
+
+@pytest.mark.parametrize("answer,detail", [
+    (lambda request: FakeRevit.DROP, "validator could not run: ConnectionError: Revit add-in closed connection"),
+    (lambda request: [], "validator could not run: ValidatorError: Timeout after 0.5s"),
+])
+def test_a_read_back_that_cannot_reach_revit_does_not_count_against_the_pack(host, answer, detail):
+    """F1: the code ran and Revit said so; the validator's read-back then lost the connection or got
+    no reply. The validation and the ledger line say so as before; the pack's usage does not move."""
+    async def go():
+        async with FakeRevit(_after_the_run(counting_handler(1, 2), answer)) as fake:
+            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=0.5)
+            try:
+                return await run_pack(client=client, name="create_wall", params=dict(WALL),
+                                      token=wall_token(host["gate"]), host="web", **host)
+            finally:
+                await client.disconnect()
+
+    result = asyncio.run(go())
+    assert result.success is False and result.error == "validation_failed"
+    assert result.validation.passed is False and result.validation.checks[0].detail == detail
+    record = host["ledger"].get(result.evidence_id)
+    assert record["error"] == "validation_failed" and record["validation"]["checks"][0]["detail"] == detail
+    tool = host["store"].load("create_wall")
+    assert tool.failure_count == 0 and tool.execution_count == 0
+
+
+def test_a_read_back_that_revit_answered_still_counts(host):
+    """A validator that ran and found the assertion false, or whose probe Revit answered with a
+    failure, is evidence about the pack: both count."""
+    failing_probe = _after_the_run(counting_handler(1, 2), lambda request: FakeRevit.code_result(
+        request["id"], None, success=False, error="no document open"))
+    for handler, detail in ((counting_handler(1, 1), "OST_Walls: before 1, after 1, delta 0, expected 1"),
+                            (failing_probe, "validator could not run: ValidatorError: no document open")):
+        result = with_fake(handler, lambda c, f: run_pack(
+            client=c, name="create_wall", params=dict(WALL), token=wall_token(host["gate"]), host="web", **host))
+        assert result.error == "validation_failed" and result.validation.checks[0].detail == detail
+    assert host["store"].load("create_wall").failure_count == 2
+
+
 def test_revit_client_ensure_connected_opens_the_socket_once():
     async def scenario():
         async with FakeRevit() as fake:
