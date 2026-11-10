@@ -30,6 +30,23 @@ def test_the_ci_check_and_this_test_forbid_the_same_packages():
     assert tuple(pattern.split("|")) == FORBIDDEN
 
 
+def test_the_release_job_runs_on_an_interpreter_ci_tests():
+    """publish.yml ran its tests on the runner's default Python (3.14) while CI's matrix held only
+    3.11 and 3.13: 0.6.1 failed to publish on a defect CI never saw. The release job names its
+    interpreter, that interpreter is in the matrix, and the classifiers list every matrix version."""
+    import yaml
+
+    workflows = ROOT / ".github" / "workflows"
+    ci = yaml.safe_load((workflows / "ci.yml").read_text(encoding="utf-8"))
+    publish = yaml.safe_load((workflows / "publish.yml").read_text(encoding="utf-8"))
+    matrix = [str(v) for v in ci["jobs"]["test"]["strategy"]["matrix"]["python"]]
+    setup = [step for step in publish["jobs"]["build"]["steps"] if str(step.get("uses", "")).startswith(
+        "astral-sh/setup-uv")]
+    assert len(setup) == 1 and str(setup[0].get("with", {}).get("python-version")) in matrix, (setup, matrix)
+    classifiers = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["classifiers"]
+    assert {f"Programming Language :: Python :: {v}" for v in matrix} <= set(classifiers)
+
+
 def test_the_release_version_strings_agree():
     """pyproject.toml holds the version; the plugin manifest, every versioned marketplace entry, the
     plugin's `revit-bridge==X` pin and the package's own entry in uv.lock must say the same.
