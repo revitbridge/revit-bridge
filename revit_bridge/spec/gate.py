@@ -17,7 +17,9 @@ was.
 
 Tokens live in memory and, until redeemed or expired, in
 ``<evidence_dir>/pending/<token[:12]>.json`` so a restarted server can still
-honour a confirmation once.
+honour a confirmation once. A redeemed token's file is deleted, or, when it
+cannot be, rewritten as redeemed (``used_at`` set) so a restart cannot honour
+it twice (see ``Gate._retire``).
 """
 from __future__ import annotations
 
@@ -134,7 +136,7 @@ class Gate:
         conf = self.verify(token, projection, scope)
         conf.used_at = _iso(_now())
         self._tokens[token] = conf
-        self._unlink(conf)
+        self._retire(conf)
         return conf
 
     def redeem(self, token: str, projection: dict, scope: str = "local") -> Confirmation:
@@ -193,6 +195,33 @@ class Gate:
     def _forget(self, conf: Confirmation) -> None:
         self._tokens.pop(conf.token, None)
         self._unlink(conf)
+
+    def _retire(self, conf: Confirmation) -> None:
+        """Take a redeemed token off the disk, so a restarted server cannot honour it again.
+
+        The pending file is deleted. When it cannot be (a scanner holding it), it is
+        overwritten with the redeemed record - ``used_at`` set - which ``_load`` reads and
+        ``verify`` refuses as ``used``; ``purge_expired`` removes it once it expires. When
+        neither works and the file still reads as this unused confirmation, the token is
+        refused now (GateError ``used``: nothing runs on it, the designer confirms again);
+        it never ran, so a restarted server may still honour it once.
+        """
+        path = self._path(conf.token)
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return                    # never written (read-only root) or already gone
+        except OSError:
+            pass
+        try:
+            path.write_text(conf.model_dump_json(indent=2), encoding="utf-8")
+            return
+        except OSError:
+            pass
+        left = self._read(path)
+        if left is not None and left.used_at is None and secrets.compare_digest(left.token, conf.token):
+            raise GateError("used", "the confirmation could not be retired on disk; confirm again")
 
     def _unlink(self, conf: Confirmation) -> None:
         self._unlink_path(self._path(conf.token))

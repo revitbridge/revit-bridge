@@ -20,7 +20,7 @@ from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.snapshot.project import LevelInfo, fingerprint_of
 from revit_bridge.snapshot.query import LEVELS_CODE
 
-from revit_bridge.spec.gate import Gate
+from revit_bridge.spec.gate import Gate, GateError
 from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec
 
 from tests.fake_revit import FakeRevit
@@ -284,6 +284,58 @@ def test_token_survives_a_server_restart_once(isolated_data_dir, isolated_store,
         fresh.redeem(token, {"kind": "run_tool", "tool": "query_levels", "params": {}})
     assert excinfo.value.reason == "used"
     assert Gate().peek(token) is None                     # gone from disk
+
+
+def _fail_on(monkeypatch, path, *methods):
+    """Path.<method> raises a sharing violation for ``path`` (a scanner holding the file)."""
+    from pathlib import Path
+
+    for method in methods:
+        real = getattr(Path, method)
+
+        def held(self, *args, _real=real, **kwargs):
+            if self == path:
+                raise PermissionError(32, "The process cannot access the file: it is being used")
+            return _real(self, *args, **kwargs)
+        monkeypatch.setattr(Path, method, held)
+
+
+def test_a_redeemed_token_whose_file_cannot_be_deleted_is_not_honoured_after_a_restart(tmp_path, monkeypatch):
+    """B10: consume ignored a failed delete; a restarted server reloaded the pending file and
+    accepted the token a second time. The file is now overwritten with the redeemed record."""
+    spec = TaskSpec.model_validate(spec_for("query_levels"))
+    projection = spec.execution_projection()
+    gate = Gate(tmp_path / "pending")
+    conf = gate.issue(spec)
+    pending = gate._path(conf.token)
+    _fail_on(monkeypatch, pending, "unlink")
+    assert gate.consume(conf.token, projection).used_at
+    monkeypatch.undo()
+    restarted = Gate(tmp_path / "pending")
+    with pytest.raises(GateError) as excinfo:
+        restarted.verify(conf.token, projection)
+    assert excinfo.value.reason == "used"
+    assert restarted.purge_expired() == 0 and pending.exists()           # removed once it expires
+
+
+def test_a_token_whose_file_can_be_neither_deleted_nor_rewritten_is_refused_now(tmp_path, monkeypatch):
+    """Neither works: nothing runs on it now (it could run again after a restart otherwise);
+    the confirmation never ran, so a restarted server may still honour it once."""
+    spec = TaskSpec.model_validate(spec_for("query_levels"))
+    projection = spec.execution_projection()
+    gate = Gate(tmp_path / "pending")
+    conf = gate.issue(spec)
+    _fail_on(monkeypatch, gate._path(conf.token), "unlink", "write_text")
+    with pytest.raises(GateError) as excinfo:
+        gate.consume(conf.token, projection)
+    assert excinfo.value.reason == "used" and "confirm again" in str(excinfo.value)
+    with pytest.raises(GateError):
+        gate.consume(conf.token, projection)
+    monkeypatch.undo()
+    restarted = Gate(tmp_path / "pending")
+    assert restarted.consume(conf.token, projection).used_at
+    with pytest.raises(GateError):
+        Gate(tmp_path / "pending").verify(conf.token, projection)
 
 
 def test_confirm_spec_returns_errors_without_a_token(isolated_store):
