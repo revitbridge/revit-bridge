@@ -75,6 +75,24 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 - The CI forbidden-dependency check did not list `langchain` and
   `google.generativeai`, which the package test forbids; a test now keeps
   the two lists identical.
+- A validator whose read-back lost the connection or got no reply still
+  counted the run against the pack; only a read-back Revit answered counts
+  now (the validation and the ledger line are unchanged).
+- A `usage.json` or `devices.json` saved with a BOM (Notepad, Windows
+  PowerShell 5.1) was taken for corrupt and the next update dropped its
+  content; a BOM is now accepted. A file that does not parse is kept as
+  `<name>.bad`, then `.bad.2`, `.bad.3`, ..., never over an earlier copy.
+- A writer waiting on the lock of `usage.json` or `devices.json` could go on
+  unlocked while a slow but live holder was still updating, losing that
+  update; a holder's retries now total at most 1.5 s and a waiter waits 4 s.
+- A reconnect could replace the connection under a request in flight, and
+  concurrent connects could each open a connection; connecting now waits
+  for the request in flight. A reply nested too deep for `json` to parse
+  raised `RecursionError` out of the client; it is dropped like any
+  unparsable reply.
+- `revit-bridge check`, `guidance` and `skills` raised `AttributeError` when
+  there is no stdout (pythonw, a host without a console); output to a
+  missing or closed stream is now skipped.
 
 ## [0.6.0] - 2026-11-08
 

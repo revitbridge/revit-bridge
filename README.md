@@ -209,6 +209,11 @@ left out with a `layer_invalid` warning. `uvx revit-bridge guidance check` valid
 them (exit 1 on a problem), `guidance index [DIR] [--check]` rebuilds the lesson
 indexes and the `revit-core` skill export, and `guidance explain --stage fix --errors
 CS1061 --symbols Wall LocationCurve` prints what would be recommended, and why.
+Output of `revit-bridge guidance` and `revit-bridge skills` sent to a pipe or a
+file is UTF-8; in Windows PowerShell 5.1 run `[Console]::OutputEncoding =
+[Text.Encoding]::UTF8` before piping or capturing it, otherwise Chinese text
+shows as mojibake (`revit-bridge check` prints ASCII-escaped JSON there and
+needs nothing).
 
 The plugin ships an eval suite (`plugin/evals/`, the three baseline tasks and
 two second-turn cases, with mocks of the MCP server). Run it by hand from
