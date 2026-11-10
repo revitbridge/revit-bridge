@@ -598,6 +598,14 @@ async def connection_status() -> str:
 # -- Entry Point --------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
+    # A sys.stdout or sys.stderr that is None or closed would make argparse raise - on Python
+    # 3.14 already while the parser is built (its colour probe) - so for this call it is a sink
+    # (cli_output.safe_streams); usable streams, serve's stdout first of all, stay as they are.
+    with cli_output.safe_streams() as replaced:
+        return _main(argv, stdout_missing="stdout" in replaced)
+
+
+def _main(argv: list[str] | None, stdout_missing: bool) -> int:
     parser = argparse.ArgumentParser(
         prog="revit-bridge",
         description="MCP server bridging designers, AI hosts and a running Revit.",
@@ -622,6 +630,14 @@ def main(argv: list[str] | None = None) -> int:
         status = asyncio.run(check_connection(environment=True))
         cli_output.write_json(status)
         return 0 if status["reachable"] else 1
+
+    if stdout_missing:                               # the transport itself is gone: nothing to serve
+        try:
+            sys.stderr.write("revit-bridge serve: stdout is closed or missing; it carries the MCP "
+                             "protocol, so the server cannot run\n")
+        except (OSError, ValueError):
+            pass
+        return 1
 
     # The log goes to stderr in whatever code page the console has (GBK on a
     # Chinese Windows); hosts read it as UTF-8. stdout is the MCP transport and

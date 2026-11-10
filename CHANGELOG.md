@@ -102,6 +102,13 @@ Fixes for a server that outlives Revit, for Chinese-language Windows, and for th
   PowerShell 7 window): Windows PowerShell inherited PowerShell 7's module
   directories and lost `Get-FileHash`, and could lose `Compress-Archive` (no
   zip at all) and `Get-CimInstance` (no Revit listed).
+- On Python 3.14 (Linux, macOS) every `revit-bridge` command died in argparse
+  with `ValueError: I/O operation on closed file` when started with a closed
+  stdout, and on every version `--help`, `--version` and argument errors
+  raised on a closed stdout or stderr: a missing or closed standard stream
+  is now a sink for the CLI call, and `serve` without a usable stdout (its
+  MCP transport) says so on stderr and exits 1. CI now also runs Python
+  3.14, and the release job runs on 3.14 instead of the runner's default.
 
 ## [0.6.0] - 2026-11-08
 
