@@ -4,7 +4,7 @@
 
     verify token -> health -> render -> sandbox -> snapshot + preconditions ->
     validator.before -> consume token -> send_code -> validator.after ->
-    record_usage -> evidence ledger
+    record_usage (only when Revit replied) -> evidence ledger
 
 ``revalidate`` re-runs a recorded execution's assertion against the model as
 it is now. All dependencies (store, gate, ledger, client) are passed in, so
@@ -321,6 +321,28 @@ def _declined(resp) -> bool:
     return getattr(resp, "error_code", None) == DECLINED_ON_DEVICE
 
 
+def _replied(resp) -> bool:
+    """True when Revit answered ``send_code``: a success, a failed run or a JSON-RPC error.
+
+    Both clients (the TCP client and the web relay) return a reply's text in ``raw``
+    and a request that got no reply within its timeout as ``success=False`` with
+    ``raw`` empty (``check_connection`` reads ``raw`` the same way).
+    """
+    return bool(getattr(resp, "success", False) or getattr(resp, "raw", ""))
+
+
+# What a client raises when no reply came back: refused, reset, closed by the add-in, timed
+# out (TimeoutError is an OSError since 3.11; named for clarity). Inside a validator any other
+# exception is about what Revit answered (ValidatorError for a probe Revit failed, ValueError
+# for a reply it could not read) - except a probe that got no reply at all (``no_reply``).
+_TRANSPORT_ERRORS = (OSError, EOFError, asyncio.TimeoutError)
+
+
+def _transport_failure(exc: BaseException) -> bool:
+    """True when ``exc`` says nothing about the pack: the connection failed, no reply came back."""
+    return isinstance(exc, _TRANSPORT_ERRORS) or bool(getattr(exc, "no_reply", False))
+
+
 def failure_hint(error: str | None, hint: str | None = None) -> str | None:
     """``hint`` for a failed run (E3): when ``error`` names .NET exception types,
     ``EXCEPTION_HINT`` with them (``hint``, if any, after it); otherwise ``hint`` as is.
@@ -345,6 +367,17 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     ``success`` means Revit succeeded AND the pack's validator (if any)
     passed; a failed assertion is ``success: false`` with
     ``error: "validation_failed"`` and the result attached.
+
+    The pack's usage counters (``record_usage``: its ``failure_count`` decides
+    the health check) move only on evidence about the pack: a reply from Revit
+    - success, a failed run, an error - and the validator's verdict. The state
+    of the connection is not such evidence: nothing is counted when the
+    connection could not be opened or the probes failed on it (nothing reached
+    Revit), when ``send_code`` raised (refused, reset, closed by the add-in,
+    a bad setting: no reply), when no reply came back within the timeout, or
+    when the validator's read-back could not reach Revit (``_transport_failure``:
+    its result is still a failed validation). The last three still leave their
+    ledger line.
     """
     if not isinstance(params, dict):
         return _refused({"success": False, "error": "params must be a JSON object"}, name)
@@ -381,6 +414,9 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     spec = spec_from_projection(projection, filled, pack)
     bypass = unconfirmed_allowed(env)
     warnings: list[str] = []
+    problem = store.load_problem(name)           # a broken user file gave way to the built-in pack
+    if problem:
+        warnings.append(problem)
     started = time.monotonic()
     validator = None
     if pack.validator:
@@ -394,7 +430,6 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
         await ensure_connected(client)
         failed, document = await preconditions(client, pack, warnings)
     except Exception as e:                     # noqa: BLE001 - nothing reached Revit: nothing to record
-        store.record_usage(name, success=False)
         error = str(e) or type(e).__name__
         return ExecutionResult(success=False, tool=name, error=error, warnings=warnings, hint=failure_hint(error))
 
@@ -427,8 +462,8 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     try:
         resp = await client.send_code(code)
     except Exception as e:
-        # Revit may or may not have run it: exactly the case that needs a ledger line
-        store.record_usage(name, success=False)
+        # Revit may or may not have run it: exactly the case that needs a ledger line.
+        # No reply came back, so nothing is known about the pack: its usage is not touched.
         evidence_id = _record(
             ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
             code=None, document=document, resp=None, validation=None, success=False, error=str(e),
@@ -438,14 +473,17 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
                                hint=failure_hint(str(e)))
 
     validation: ValidationReport | None = None
+    read_back_unreachable = False
     if validator is not None and resp.success:
         try:
             validation = await validator.after(client, spec, pack.validator, before, resp.result)
         except Exception as e:  # noqa: BLE001 - a validator that cannot run is a failed validation
             validation = _validation_error(validator.kind, e, before)
+            read_back_unreachable = _transport_failure(e)
     success = bool(resp.success) and (validation is None or validation.passed)
     error = resp.error if not resp.success else ("validation_failed" if validation and not validation.passed else None)
-    store.record_usage(name, success=success)
+    if _replied(resp) and not read_back_unreachable:
+        store.record_usage(name, success=success)
     duration_ms = int((time.monotonic() - started) * 1000)
     evidence_id = _record(
         ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,

@@ -32,7 +32,11 @@ def _category(cfg: dict, spec: TaskSpec) -> str:
 async def _probe(client, code: str):
     resp = await client.send_code(code)
     if not resp.success:
-        raise ValidatorError(resp.error or "Revit returned no result")
+        error = ValidatorError(resp.error or "Revit returned no result")
+        # A client timeout comes back as success=False with no reply text (``raw``): the probe
+        # never got an answer. The execution flow does not count that against the pack.
+        error.no_reply = not getattr(resp, "raw", "")
+        raise error
     return resp.result
 
 

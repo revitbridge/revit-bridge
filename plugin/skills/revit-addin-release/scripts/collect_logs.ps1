@@ -25,7 +25,23 @@ param(
     [switch]$NoExplorer
 )
 $ErrorActionPreference = 'Continue'
-$ScriptVersion = '2026-11-08'
+$ScriptVersion = '2026-11-09'
+
+# Started from a PowerShell 7 session through another program (this script's .bat run from a
+# PowerShell 7 window, a test runner), Windows PowerShell inherits PowerShell 7's module
+# directories ahead of its own. Its built-in modules that load on demand (Compress-Archive,
+# Get-CimInstance, ...) then resolve to PowerShell 7 copies it cannot load: no zip at all.
+# When a foreign copy of Microsoft.PowerShell.Utility comes first, this Windows PowerShell's own
+# module directory is put in front. A module path that is already its own is left as it is.
+if ($PSVersionTable.PSEdition -ne 'Core') {
+    $ownModules = Join-Path $PSHOME 'Modules'
+    $firstUtility = @($env:PSModulePath -split ';' | Where-Object {
+        $_ -and (Test-Path -LiteralPath "$_\Microsoft.PowerShell.Utility" -ErrorAction SilentlyContinue) }) |
+        Select-Object -First 1
+    if ($firstUtility -and $firstUtility.TrimEnd('\') -ne $ownModules.TrimEnd('\')) {
+        $env:PSModulePath = $ownModules + ';' + $env:PSModulePath
+    }
+}
 
 if (-not $Name -or $Name -eq 'REPLACE-ME') {
     Write-Host 'collect_logs.ps1: the add-in name is missing. Open collect_logs.bat and replace REPLACE-ME with the add-in name.'
@@ -48,7 +64,9 @@ function Try-Do([scriptblock]$block, [string]$what) {
     try { & $block } catch { Say "  [error] $what : $($_.Exception.Message)" }
 }
 
-# Copy one file into files\<label>\ (name kept) unless it looks like a credential.
+# Copy one file into files\<label>\ unless it looks like a credential. A name already
+# taken there (the same file name from another folder) gets ~2, ~3, ... before its
+# extension, so no copy overwrites another; the report names the copy as it is in the zip.
 function Grab([string]$path, [string]$label) {
     if (-not (Test-Path -LiteralPath $path)) { return }
     $item = Get-Item -LiteralPath $path
@@ -58,9 +76,30 @@ function Grab([string]$path, [string]$label) {
     }
     $dest = Join-Path $files $label
     New-Item -ItemType Directory -Force $dest | Out-Null
-    Copy-Item -LiteralPath $path -Destination $dest -Force -ErrorAction SilentlyContinue
-    Say ("  copied {0} ({1} bytes, modified {2:yyyy-MM-dd HH:mm:ss}) -> files\{3}" -f `
-        $path, $item.Length, $item.LastWriteTime, $label)
+    $leaf = $item.Name
+    $n = 1
+    while (Test-Path -LiteralPath (Join-Path $dest $leaf)) {
+        $n++
+        $leaf = '{0}~{1}{2}' -f $item.BaseName, $n, $item.Extension
+    }
+    try {
+        Copy-Item -LiteralPath $path -Destination (Join-Path $dest $leaf) -Force -ErrorAction Stop
+        Say ("  copied {0} ({1} bytes, modified {2:yyyy-MM-dd HH:mm:ss}) -> files\{3}\{4}" -f `
+            $path, $item.Length, $item.LastWriteTime, $label, $leaf)
+    } catch {
+        Say ("  copy FAILED {0} ({1} bytes): {2}" -f $path, $item.Length, $_.Exception.Message.Trim())
+    }
+}
+
+# An XML file read the way Revit reads it: the BOM or the XML declaration picks the
+# encoding, UTF-8 without either. Get-Content would decode a BOM-less UTF-8 file with
+# the ANSI code page under Windows PowerShell 5.1 (GBK on a Chinese Windows) and garble
+# a path such as C:\Users\<Chinese name>\...
+function Read-Xml([string]$path) {
+    $doc = New-Object System.Xml.XmlDocument
+    $doc.XmlResolver = $null
+    $doc.Load($path)
+    return ,$doc
 }
 
 function Reg-Value([string]$key, [string]$value) {
@@ -70,11 +109,25 @@ function Reg-Value([string]$key, [string]$value) {
 # Flags set inside ForEach-Object blocks use $script: scope; a plain assignment there
 # would create a block-local variable and the "nothing found" lines would print wrongly.
 
+# SHA-256 of a file, upper-case hex, with .NET only: Get-FileHash is a script function that
+# Windows PowerShell loads on demand, the first command to go missing under a foreign module
+# path. The file is opened for reading while others may read, write or delete it (Revit
+# holding a DLL).
+function Get-Sha256([string]$path) {
+    $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]'ReadWrite, Delete')
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { return [System.BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+        finally { $sha.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
 # One line per DLL: version, date, size, start of the SHA-256.
 function Describe-Dll([string]$path, [string]$indent) {
     if (-not (Test-Path -LiteralPath $path)) { Say "$indent dll MISSING $path"; return }
     $d = Get-Item -LiteralPath $path
-    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.Substring(0, 12)
+    try { $hash = (Get-Sha256 $path).Substring(0, 12) } catch { $hash = '(unreadable)' }
     Say ("{0} dll {1}  version={2}  modified={3:yyyy-MM-dd HH:mm}  size={4}  sha256={5}" -f `
         $indent, $path, $d.VersionInfo.FileVersion, $d.LastWriteTime, $d.Length, $hash)
 }
@@ -178,7 +231,7 @@ foreach ($root in $manifestRoots) {
             Say ("  {0} {1}: {2}  modified={3:yyyy-MM-dd HH:mm}" -f $root.scope, $year, $manifest.FullName, $manifest.LastWriteTime)
             Grab $manifest.FullName ("addins\" + $root.scope + "\" + $year)
             Try-Do {
-                [xml]$xml = Get-Content -LiteralPath $manifest.FullName -Raw
+                $xml = Read-Xml $manifest.FullName
                 foreach ($node in $xml.SelectNodes('//Assembly')) {
                     $dll = $node.InnerText.Trim()
                     if (-not [System.IO.Path]::IsPathRooted($dll)) { $dll = Join-Path $manifest.DirectoryName $dll }
@@ -193,7 +246,7 @@ if (-not $anyManifest) { Say "  (no .addin naming $Name in the machine or user A
 
 Section 'manifests in other user profiles (not copied)'
 Try-Do {
-    $others = 0
+    $script:others = 0
     Get-ChildItem -LiteralPath (Join-Path $env:SystemDrive 'Users') -Directory -ErrorAction Stop | ForEach-Object {
         if ($_.Name -eq $env:USERNAME) { return }
         $addins = Join-Path $_.FullName 'AppData\Roaming\Autodesk\Revit\Addins'
@@ -202,7 +255,7 @@ Try-Do {
             Where-Object { $_.Name -match $namePattern } |
             ForEach-Object { $script:others++; Say ("  {0}  modified={1:yyyy-MM-dd HH:mm}" -f $_.FullName, $_.LastWriteTime) }
     }
-    if ($others -eq 0) { Say '  (none readable)' }
+    if ($script:others -eq 0) { Say '  (none readable)' }
 } 'other profiles'
 
 # --- bundles ----------------------------------------------------------------
@@ -219,7 +272,7 @@ foreach ($pluginsDir in (Join-Path $env:APPDATA 'Autodesk\ApplicationPlugins'),
             $pc = Join-Path $_.FullName 'PackageContents.xml'
             if (Test-Path -LiteralPath $pc) {
                 Try-Do {
-                    [xml]$xml = Get-Content -LiteralPath $pc -Raw
+                    $xml = Read-Xml $pc
                     Say "    AppVersion $($xml.ApplicationPackage.AppVersion)"
                 } 'PackageContents.xml'
                 Grab $pc ("bundles\" + $_.Name)
@@ -247,6 +300,9 @@ if (Test-Path -LiteralPath $revitLocal) {
         if (-not $recent) { Say "  $label : no journal modified in the last $Days days"; return }
         $newest = $recent | Where-Object { $_.Extension -eq '.txt' } | Select-Object -Last 1
         if ($newest) {
+            # Revit writes its journals in the ANSI code page (GBK on a Chinese Windows), which
+            # is what Get-Content assumes for a file without a BOM under Windows PowerShell 5.1;
+            # the header lines matched here are ASCII, the same under any decoding.
             Try-Do {
                 Get-Content -LiteralPath $newest.FullName -TotalCount 60 -ErrorAction Stop |
                     Where-Object { $_ -match 'Build:|Release:|Branch:' } |

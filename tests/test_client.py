@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 
 from revit_bridge.revit.client import RevitClient
 from revit_bridge.revit.pool import RevitClientPool
@@ -126,6 +128,332 @@ def test_timeout_returns_error_response():
     asyncio.run(scenario())
 
 
+def _drops_the_first_request():
+    """A handler: the first request closes the connection unanswered (Revit restarted), every
+    later one is answered."""
+    seen = []
+
+    def handler(request):
+        seen.append(request["id"])
+        if len(seen) == 1:
+            return FakeRevit.DROP
+        return FakeRevit.default_handler(request)
+    return handler
+
+
+def test_a_connection_the_add_in_closed_is_replaced_by_the_next_call():
+    """A1: the failed call says why; the next one opens a new connection instead of failing again."""
+    async def scenario():
+        async with FakeRevit(_drops_the_first_request()) as server:
+            client = RevitClient(settings=_settings(server))
+            try:
+                try:
+                    await client.send_code("return document.Title;")
+                    raise AssertionError("the first call must fail")
+                except ConnectionError as exc:
+                    first = str(exc)
+                assert client.connected is False                  # dropped, not kept for the next call
+                second = await client.send_code("return document.Title;")
+                third = await client.send_code("return document.Title;")
+                return first, second, third, server.connections
+            finally:
+                await client.disconnect()
+
+    first, second, third, connections = asyncio.run(scenario())
+    assert first == "Revit add-in closed connection"
+    assert second.success is True and second.result == "Project1"
+    assert third.success is True
+    assert connections == 2                                        # one new connection, then kept
+
+
+def test_the_pool_hands_out_a_new_connection_after_the_add_in_closed_one():
+    async def scenario():
+        async with FakeRevit(_drops_the_first_request()) as server:
+            try:
+                results = []
+                for _ in range(3):                                 # what _PooledClient does per call
+                    client = await RevitClientPool.get_client(settings=_settings(server))
+                    try:
+                        results.append((await client.send_code("return document.Title;")).success)
+                    except ConnectionError as exc:
+                        results.append(str(exc))
+                return results, server.connections
+            finally:
+                await RevitClientPool.disconnect()
+
+    results, connections = asyncio.run(scenario())
+    assert results == ["Revit add-in closed connection", True, True]
+    assert connections == 2
+
+
+def test_an_idle_connection_the_add_in_closed_reads_as_not_connected():
+    """The add-in answered and then went away while the client was idle: the next call reconnects
+    without a failed call first."""
+    def handler(request):
+        if len(server_requests) == 0:
+            server_requests.append(request["id"])
+            return FakeRevit.closing(FakeRevit.default_handler(request))
+        return FakeRevit.default_handler(request)
+
+    server_requests: list = []
+
+    async def scenario():
+        async with FakeRevit(handler) as server:
+            client = RevitClient(settings=_settings(server))
+            try:
+                first = await client.send_code("return document.Title;")
+                for _ in range(50):                                # let the loop see the close
+                    if not client.connected:
+                        break
+                    await asyncio.sleep(0.02)
+                closed_seen = client.connected is False
+                second = await client.send_code("return document.Title;")
+                return first, closed_seen, second, server.connections
+            finally:
+                await client.disconnect()
+
+    first, closed_seen, second, connections = asyncio.run(scenario())
+    assert first.success is True and closed_seen is True
+    assert second.success is True and connections == 2
+
+
+def test_a_timed_out_request_cannot_leave_half_a_reply_in_front_of_the_next_one():
+    """A reply cut off by the timeout: its tail must never be read as the start of the next answer.
+    The connection is dropped at the timeout, so the next request starts on a clean stream."""
+    late = {}
+
+    def handler(request):
+        rid = request["id"]
+        if "first" not in late:
+            late["first"] = json.dumps(FakeRevit.ok(rid, {"message": "late"})).encode("utf-8")
+            return [late["first"][:20]]                            # half a reply, then nothing
+        if server_ref[0].connections == 1:                         # still the first connection
+            return [late["first"][20:], FakeRevit.ok(rid, {"message": "fresh"})]
+        return FakeRevit.ok(rid, {"message": "fresh"})
+
+    server_ref: list = []
+
+    async def scenario():
+        async with FakeRevit(handler) as server:
+            server_ref.append(server)
+            client = RevitClient(settings=_settings(server, timeout=0.3))
+            try:
+                timed_out = await client.send_command("say_hello")
+                dropped = client.connected is False
+                client.timeout = 2.0
+                fresh = await client.send_command("say_hello")
+                return timed_out, dropped, fresh
+            finally:
+                await client.disconnect()
+
+    timed_out, dropped, fresh = asyncio.run(scenario())
+    assert timed_out.success is False and "Timeout" in timed_out.error
+    assert dropped is True
+    assert fresh.success is True and fresh.result == {"message": "fresh"}
+
+
+def test_a_caller_s_own_timeout_drops_the_connection_too():
+    """discover() and the execution probes wrap calls in asyncio.wait_for: the abandoned request
+    leaves the stream in an unknown state, so the connection goes with it."""
+    answered = []
+
+    def handler(request):
+        if not answered:
+            answered.append(False)
+            return []                                              # never answers the first request
+        return FakeRevit.default_handler(request)
+
+    async def scenario():
+        async with FakeRevit(handler) as server:
+            client = RevitClient(settings=_settings(server))
+            try:
+                try:
+                    await asyncio.wait_for(client.send_command("say_hello"), timeout=0.2)
+                    raise AssertionError("must time out")
+                except asyncio.TimeoutError:
+                    pass
+                dropped = client.connected is False
+                again = await client.send_command("say_hello")
+                return dropped, again, server.connections
+            finally:
+                await client.disconnect()
+
+    dropped, again, connections = asyncio.run(scenario())
+    assert dropped is True and again.success is True and connections == 2
+
+
+def _pieces(data: bytes, size: int) -> list[bytes]:
+    return [data[i:i + size] for i in range(0, len(data), size)]
+
+
+def test_a_multi_megabyte_reply_in_small_chunks_is_read_in_linear_time():
+    """B2: the reply is scanned once as it arrives, not decoded and parsed again per chunk."""
+    rows = [{"Id": i, "Name": f"Wall \u5899 {i}", "Level": "L1", "Note": "a}b{\"c\"}"} for i in range(40000)]
+    replies: dict = {}
+
+    def handler(request):
+        reply = json.dumps(FakeRevit.code_result(request["id"], rows), ensure_ascii=False).encode("utf-8")
+        replies["size"] = len(reply)
+        return _pieces(reply, 4096)
+
+    async def scenario():
+        async with FakeRevit(handler) as server:
+            client = RevitClient(settings=_settings(server, timeout=60.0))
+            try:
+                await client.ensure_connected()
+                started = time.perf_counter()
+                resp = await client.send_code("return rows;")
+                return resp, time.perf_counter() - started
+            finally:
+                await client.disconnect()
+
+    resp, elapsed = asyncio.run(scenario())
+    assert replies["size"] > 3_000_000
+    assert resp.success is True and resp.result == rows
+    assert elapsed < 2.5, f"{replies['size']} bytes took {elapsed:.2f} s"     # linear: well under 1 s
+
+
+def test_a_character_split_across_reads_and_a_brace_at_a_read_end_inside_a_string():
+    def handler(request):
+        reply = json.dumps(FakeRevit.ok(request["id"], {"text": "\u4e2d\u6587 a} {b", "n": 1}),
+                           ensure_ascii=False).encode("utf-8")
+        cut_char = reply.index("\u6587".encode("utf-8")) + 1          # inside a 3-byte character
+        cut_brace = reply.index(b"a}") + 2                             # the read ends on a "}" in a string
+        return [reply[:cut_char], 0.05, reply[cut_char:cut_brace], 0.05, reply[cut_brace:]]
+
+    async def scenario():
+        async with FakeRevit(handler) as server:
+            client = RevitClient(settings=_settings(server))
+            try:
+                return await client.send_command("say_hello")
+            finally:
+                await client.disconnect()
+
+    resp = asyncio.run(scenario())
+    assert resp.success is True and resp.result == {"text": "\u4e2d\u6587 a} {b", "n": 1}
+
+
+def test_the_deadline_holds_while_a_long_reply_is_still_arriving():
+    def handler(request):
+        reply = json.dumps(FakeRevit.ok(request["id"], {"blob": "x" * 200_000})).encode("utf-8")
+        out: list = []
+        for piece in _pieces(reply, 2048):
+            out += [piece, 0.02]                                   # about 2 s in all
+        return out
+
+    async def scenario():
+        async with FakeRevit(handler) as server:
+            client = RevitClient(settings=_settings(server, timeout=0.4))
+            try:
+                started = time.perf_counter()
+                resp = await client.send_command("say_hello")
+                return resp, time.perf_counter() - started
+            finally:
+                await client.disconnect()
+
+    resp, elapsed = asyncio.run(scenario())
+    assert resp.success is False and resp.error == "Timeout after 0.4s"
+    assert elapsed < 1.5
+
+
+def test_the_framer_finds_every_object_at_every_split_point():
+    """Braces and quotes inside strings, escaped quotes and backslashes, a multi-byte character, a
+    lone backslash at a read end: whatever the cut, the same objects come out, each exactly once."""
+    from revit_bridge.revit.client import _Framer
+
+    stale = {"jsonrpc": "2.0", "id": "old", "result": "late"}
+    reply = {"jsonrpc": "2.0", "id": "1",
+             "result": {"s": "a\\\"}{[\"\u4e2d", "t": "\\", "n": [1, {"x": "}"}, []], "u": "\u2028"}}
+    data = (b"  " + json.dumps(stale).encode("utf-8") + b"\n"
+            + json.dumps(reply, ensure_ascii=False).encode("utf-8") + b"  ")
+
+    def run(pieces):
+        framer, out = _Framer(), []
+        for piece in pieces:
+            framer.feed(piece)
+            while (obj := framer.pop()) is not None:
+                out.append(obj)
+        return out
+
+    for cut in range(1, len(data)):
+        assert run([data[:cut], data[cut:]]) == [stale, reply], cut
+    assert run([data[i:i + 1] for i in range(len(data))]) == [stale, reply]
+    # a top-level value that is not an object, and junk between objects, are skipped
+    assert run([b'[1, 2] 7 "x" }', json.dumps(stale).encode("utf-8")]) == [stale]
+
+
+def test_a_reply_nested_too_deep_to_parse_is_dropped_like_any_unparsable_frame():
+    """F4b: json raises RecursionError (not a ValueError) on a deeply nested value; it escaped pop()."""
+    from revit_bridge.revit.client import _Framer
+
+    framer = _Framer()
+    framer.feed(b"[" * 100_000 + b"]" * 100_000 + json.dumps({"id": "next"}).encode("utf-8"))
+    assert framer.pop() == {"id": "next"}
+
+    def handler(request):
+        return [b"{\"a\": " + b"[" * 100_000 + b"]" * 100_000 + b"}", FakeRevit.ok(request["id"], "after")]
+
+    async def scenario():
+        async with FakeRevit(handler) as server:
+            client = RevitClient(settings=_settings(server))
+            try:
+                return await client.send_command("say_hello")
+            finally:
+                await client.disconnect()
+
+    resp = asyncio.run(scenario())
+    assert resp.success is True and resp.result == "after"
+
+
+def test_a_reconnect_waits_for_the_exchange_in_flight():
+    """F4a: connect() ran outside the client's lock and dropped the connection under an exchange
+    in flight; each task must get its own reply and one connection stays open."""
+    def handler(request):
+        if request["method"] == "slow":
+            return [0.4, FakeRevit.ok(request["id"], "slow reply")]
+        return FakeRevit.ok(request["id"], "fast reply")
+
+    async def scenario():
+        async with FakeRevit(handler) as server:
+            client = RevitClient(settings=_settings(server))
+
+            async def reconnect_and_ask():
+                while not server.requests:                         # the slow exchange is in flight
+                    await asyncio.sleep(0.01)
+                await client.connect()
+                return await client.send_command("fast")
+
+            try:
+                slow, fast = await asyncio.gather(client.send_command("slow"), reconnect_and_ask(),
+                                                  return_exceptions=True)
+                await asyncio.sleep(0.1)                           # let the server see what was closed
+                return slow, fast, server.connections, server.open_connections
+            finally:
+                await client.disconnect()
+
+    slow, fast, connections, still_open = asyncio.run(scenario())
+    assert not isinstance(slow, BaseException) and slow.result == "slow reply", slow
+    assert not isinstance(fast, BaseException) and fast.result == "fast reply", fast
+    assert connections == 2 and still_open == 1
+
+
+def test_concurrent_ensure_connected_calls_open_one_connection():
+    async def scenario():
+        async with FakeRevit() as server:
+            client = RevitClient(settings=_settings(server))
+            try:
+                await asyncio.gather(*(client.ensure_connected() for _ in range(5)))
+                await asyncio.sleep(0.1)
+                answered = await client.send_code("return document.Title;")
+                return answered, server.connections, server.open_connections
+            finally:
+                await client.disconnect()
+
+    answered, connections, still_open = asyncio.run(scenario())
+    assert answered.success is True
+    assert connections == 1 and still_open == 1
+
+
 def test_pool_reuses_connection_and_survives_new_loop():
     async def scenario(server):
         first = await RevitClientPool.get_client(settings=_settings(server))
@@ -140,6 +468,27 @@ def test_pool_reuses_connection_and_survives_new_loop():
 
     asyncio.run(run_all())
     asyncio.run(run_all())  # a second event loop must not trip over the old lock
+
+
+def test_a_bad_setting_is_an_unreachable_status_not_an_exception(monkeypatch, capsys):
+    """B11: REVIT_BRIDGE_PORT=abc made `revit-bridge check` and revit://connection-status raise
+    ValueError instead of answering with the usual unreachable status carrying the message."""
+    from revit_bridge import mcp_server
+    from revit_bridge.revit import probe
+
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "abc")
+    status = asyncio.run(probe.check_connection(environment=True))
+    message = "REVIT_BRIDGE_PORT must be an integer, got 'abc'"
+    assert status["reachable"] is False and status["status"] == "disconnected" and status["error"] == message
+    assert status["document"] is None and status["document_error"] is None
+    assert {"host", "port", "token", "timeout"} <= set(status) and status["port"] == "abc"
+    assert status["capability"]["state"] == "unknown" and status["capability"]["error_kind"] == "settings"
+    assert status["environment"]["capability"] == status["capability"]
+    plain = asyncio.run(probe.check_connection())
+    assert plain["error"] == message and "capability" not in plain
+    assert mcp_server.main(["check"]) == 1
+    assert json.loads(capsys.readouterr().out)["error"] == message
+    assert json.loads(asyncio.run(mcp_server.connection_status()))["error"] == message
 
 
 def test_probe_lives_in_revit_probe_and_stays_importable_from_the_server():

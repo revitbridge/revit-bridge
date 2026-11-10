@@ -1,8 +1,10 @@
-"""Snapshot an installed add-in directory before a test session and verify it afterwards.
+r"""Snapshot an installed add-in directory before a test session and verify it afterwards.
 
   python addin_snapshot.py snapshot <install dir> <backup dir>
       Copies <install dir> into <backup dir>/<its name> (once; an existing backup is kept)
-      and writes <backup dir>/hashes-before.txt with a SHA-256 per file.
+      and writes <backup dir>/hashes-before.txt with a SHA-256 per file. The copy is made
+      aside and renamed when complete; a file that cannot be copied (Revit holding it)
+      fails the snapshot (exit 1) and keeps nothing.
   python addin_snapshot.py verify <install dir> <backup dir> [--ignore <glob> ...]
       Compares the directory with the snapshot: changed, added and missing files.
       --ignore excludes paths (relative, forward slashes) such as "Logs/*" that the
@@ -18,6 +20,7 @@ the base build, then run verify.
 """
 import fnmatch
 import hashlib
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -45,15 +48,35 @@ def main(argv):
         sys.exit("not a directory: %s" % install)
     copy = backup / install.name
     if mode == "snapshot":
+        hashes = backup / "hashes-before.txt"
         if copy.exists():
+            if not hashes.exists():
+                print("incomplete backup at %s (no %s): an earlier snapshot failed; "
+                      "delete it and snapshot again" % (copy, hashes.name))
+                return 1
             print("backup already exists at %s (keeping the first one)" % copy)
             return 0
+        # The copy is made aside and renamed only when whole, after its hashes are written:
+        # a folder named like the install directory is always a complete backup.
         backup.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(install, copy)
-        before = listing(copy)
-        with open(backup / "hashes-before.txt", "w", encoding="utf-8") as f:
+        partial = backup / (install.name + ".partial")
+        if partial.exists():
+            shutil.rmtree(partial)  # left by a snapshot that failed
+        try:
+            shutil.copytree(install, partial)
+        except (OSError, shutil.Error) as error:
+            shutil.rmtree(partial, ignore_errors=True)
+            failed = error.args[0] if isinstance(error, shutil.Error) and error.args else None
+            if isinstance(failed, list) and failed:
+                error = "%d file(s) not copied, first %s: %s" % (len(failed), failed[0][0], failed[0][-1])
+            print("snapshot failed, no backup kept (close what holds the files and run it again): %s" % error)
+            return 1
+        before = listing(partial)
+        with open(backup / "hashes-before.txt.partial", "w", encoding="utf-8") as f:
             for rel, digest in before.items():
                 f.write("%s  %s\n" % (digest, rel))
+        os.replace(backup / "hashes-before.txt.partial", hashes)
+        partial.rename(copy)
         print("backed up %d files to %s" % (len(before), copy))
         return 0
     ignore = []

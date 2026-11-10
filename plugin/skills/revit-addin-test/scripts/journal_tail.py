@@ -33,19 +33,28 @@ else:
     journal = journals[-1]
 
 
+def decode_cut(raw, codec):
+    """raw in codec, strictly - except one character cut off at the very end, as in a journal
+    a hung Revit is still writing, which becomes U+FFFD. None when raw is not in codec."""
+    try:
+        return raw.decode(codec)
+    except UnicodeDecodeError as error:
+        if error.end != len(raw) or len(raw) - error.start > 3:
+            return None  # a bad byte before the end: another encoding
+        try:
+            return raw[:error.start].decode(codec) + chr(0xFFFD)
+        except UnicodeDecodeError:
+            return None
+
+
 def read(path):
     raw = path.read_bytes()
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
         return raw.decode("utf-16", errors="replace")
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        pass
-    for codec in ("gbk", "cp1252"):
-        try:
-            return raw.decode(codec)
-        except UnicodeDecodeError:
-            continue
+    for codec in ("utf-8", "gbk", "cp1252"):
+        text = decode_cut(raw, codec)
+        if text is not None:
+            return text
     return raw.decode("latin-1", errors="replace")
 
 

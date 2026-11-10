@@ -60,6 +60,34 @@ def test_recent_is_newest_first_with_limit_and_tool_filter(tmp_path):
     assert partial["duration_ms"] == 0 and partial["validation"] is None
 
 
+def test_a_record_holding_a_unicode_line_separator_reads_back_whole(tmp_path):
+    """B1: json.dumps(ensure_ascii=False) writes U+2028, U+2029 and U+0085 raw; str.splitlines cut
+    the line there and the record was lost right after append."""
+    ledger = Ledger(tmp_path / "evidence")
+    message = "first\u2028second\u2029third\u0085fourth"
+    record_id = ledger.append({"action": "execute_code", "error": message, "id": "ev_20260920T070000_abcdef"})
+    assert ledger.get(record_id)["error"] == message
+    assert [r["id"] for r in ledger.recent()] == [record_id]
+
+
+def test_a_cut_or_garbled_line_costs_only_itself(tmp_path):
+    """B1: a crash mid-append leaves half a multi-byte character at the end of the file; that raised
+    UnicodeDecodeError (a ValueError, not an OSError) and broke recent() and evidence() for every
+    record. One undecodable and one unparsable line are skipped; the others still read."""
+    ledger = Ledger(tmp_path / "evidence")
+    first = ledger.append({"action": "run_tool", "tool": "create_wall", "id": "ev_20260920T070000_aaaaaa"})
+    path = tmp_path / "evidence" / "2026-09.jsonl"
+    with path.open("ab") as handle:
+        handle.write(b'{"id": "ev_20260920T070100_bbbbbb", "error": "\xff\xfe"}\n')     # not UTF-8
+        handle.write(b"{not json\n")
+    second = ledger.append({"action": "run_tool", "tool": "create_wall", "id": "ev_20260920T070200_cccccc"})
+    with path.open("ab") as handle:
+        handle.write('{"id": "ev_20260920T070300_dddddd", "error": "\u4e2d'.encode("utf-8")[:-1])  # cut
+    assert [r["id"] for r in ledger.recent(10)] == [second, first]
+    assert ledger.get(second)["id"] == second and ledger.get(first)["tool"] == "create_wall"
+    assert ledger.get("ev_20260920T070300_dddddd") is None
+
+
 def test_summaries_and_code_fields():
     assert summarize_result({"ElementId": 5, "Status": "Created", "Message": "m" * 300}) == {
         "ids": [5], "status": "Created", "message": "m" * 200}

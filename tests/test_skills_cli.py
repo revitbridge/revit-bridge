@@ -1,6 +1,9 @@
 """`revit-bridge skills list|install`: the bundled skills are listed and copied whole."""
 from __future__ import annotations
 
+import io
+import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,6 +33,20 @@ def test_list_names_every_bundled_skill_with_its_description(capsys):
     assert [line.split()[0] for line in lines] == NAMES
     assert all(len(line.split(None, 1)) == 2 for line in lines)          # a description on every line
     assert "Revit" in out
+
+
+def test_output_on_a_gbk_pipe_is_utf8(tmp_path, monkeypatch):
+    """A3: the CLI output rule (revit_bridge.cli_output), the same as check and guidance follow."""
+    raw = io.BytesIO()
+    pipe = io.TextIOWrapper(raw, encoding="gbk", errors="strict", newline="\n")     # a cp936 pipe
+    monkeypatch.setattr(sys, "stdout", pipe)
+    target = tmp_path / "sk\xf8lls"
+    assert server.main(["skills", "list"]) == 0
+    assert server.main(["skills", "install", "revit-core", "--to", str(target)]) == 0
+    pipe.flush()
+    text = raw.getvalue().decode("utf-8")
+    assert re.search("[\u4e00-\u9fff]", text)                 # the Chinese half of the descriptions, intact
+    assert f"-> {target / 'revit-core'}" in text
 
 
 def test_install_copies_every_skill_byte_for_byte(tmp_path, capsys):
@@ -64,6 +81,61 @@ def test_install_refuses_an_existing_skill_unless_forced(tmp_path, capsys):
     code, _ = run(capsys, "install", "revit-core", "--to", str(target), "--force")
     assert code == 0
     assert tree(dest) == tree(skills_dir() / "revit-core")
+
+
+def test_a_forced_install_that_fails_midway_keeps_the_old_copy(tmp_path, capsys, monkeypatch):
+    """B7: rmtree then copytree left neither the old copy nor a whole new one when the copy failed
+    (a locked file, a path too long). Now the copy goes to a sibling first and is swapped in."""
+    target = tmp_path / "skills"
+    run(capsys, "install", "revit-addin-dev", "--to", str(target))
+    dest = target / "revit-addin-dev"
+    (dest / "SKILL.md").write_text("edited locally", encoding="utf-8")
+    old = tree(dest)
+    real_copytree = skills_cli.shutil.copytree
+
+    def fails_on_the_third_file(src, dst, *args, **kwargs):
+        if args:                                                  # shutil's own recursion into a subfolder
+            return real_copytree(src, dst, *args, **kwargs)
+        copied = []
+
+        def copy(a, b, **kw):
+            if len(copied) == 2:
+                raise OSError(36, "File name too long", str(b))
+            copied.append(a)
+            return skills_cli.shutil.copy2(a, b, **kw)
+        return real_copytree(src, dst, copy_function=copy, **kwargs)
+
+    monkeypatch.setattr(skills_cli.shutil, "copytree", fails_on_the_third_file)
+    try:
+        code, out = run(capsys, "install", "revit-addin-dev", "--to", str(target), "--force")
+    except OSError as exc:
+        code, out = "raised", str(exc)
+    assert tree(dest) == old, "the old copy was lost"
+    assert code == 1 and "revit-addin-dev: not installed" in out and "left as it was" in out
+    assert sorted(p.name for p in target.iterdir()) == ["revit-addin-dev"]       # no staging left behind
+    monkeypatch.undo()
+    code, _ = run(capsys, "install", "revit-addin-dev", "--to", str(target), "--force")
+    assert code == 0 and tree(dest) == tree(skills_dir() / "revit-addin-dev")
+    assert sorted(p.name for p in target.iterdir()) == ["revit-addin-dev"]
+
+
+def test_an_interrupted_swap_puts_the_old_copy_back_and_still_needs_force(tmp_path, capsys):
+    target = tmp_path / "skills"
+    previous = target / ".revit-core.previous"                   # the process died between the renames
+    previous.mkdir(parents=True)
+    (previous / "SKILL.md").write_text("edited locally", encoding="utf-8")
+    code, out = run(capsys, "install", "revit-core", "--to", str(target))
+    assert code == 1 and "--force" in out
+    assert (target / "revit-core" / "SKILL.md").read_text(encoding="utf-8") == "edited locally"
+    assert not previous.exists()
+
+
+def test_a_destination_that_is_a_file_is_a_clear_error(tmp_path, capsys):
+    target = tmp_path / "skills"
+    target.write_text("not a directory", encoding="utf-8")
+    code, out = run(capsys, "install", "revit-core", "--to", str(target))
+    assert code == 2 and out == f"--to {target}: not a directory\n"
+    assert target.read_text(encoding="utf-8") == "not a directory"
 
 
 def test_unknown_name_is_an_error_and_copies_nothing(tmp_path, capsys):

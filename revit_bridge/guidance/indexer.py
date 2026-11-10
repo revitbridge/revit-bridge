@@ -138,7 +138,11 @@ def _contract_change(root: Path, skill: Path, problems: list[str]) -> Change | N
     except GuidanceError as e:
         problems.extend(e.problems)
         return None
-    current, newline = _split_newlines(skill.read_bytes().decode("utf-8"))
+    try:
+        current, newline = _split_newlines(skill.read_bytes().decode("utf-8"))
+    except UnicodeDecodeError:
+        problems.append(f"{skill}: not UTF-8")
+        return None
     desired = replace_marked(current, contract.note())
     if desired is None:
         problems.append(f"{skill}: the {BEGIN_MARK} ... {END_MARK} markers are missing")

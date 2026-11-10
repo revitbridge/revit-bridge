@@ -95,6 +95,56 @@ def test_transient_windows_errors_are_retried_not_bypassed(tmp_path, monkeypatch
     assert not store.lock_path.exists()
 
 
+def test_a_slow_but_live_holder_never_outlasts_a_waiter(tmp_path, monkeypatch):
+    """F3: a holder may spend its whole read retry and replace retry inside the lock, plus a slow
+    disk; a writer waiting on the lock gives up after LOCK_TIMEOUT_SECONDS and goes on unlocked.
+    With the holder's worst case close to the waiter's timeout, the waiter wrote over the
+    holder's update (count 1, not 2). The holder's worst case must stay well below it."""
+    from pathlib import Path
+
+    from revit_bridge import jsonfile
+
+    assert jsonfile.READ_RETRY_SECONDS + jsonfile.REPLACE_RETRY_SECONDS <= jsonfile.LOCK_TIMEOUT_SECONDS / 2
+    assert jsonfile.LOCK_TIMEOUT_SECONDS < jsonfile.LOCK_STALE_SECONDS     # a live holder is never "stale"
+
+    store = UsageStore(tmp_path / "usage.json")                      # the default lock timeout
+    store.path.write_text("{}", encoding="utf-8")
+    holder_in_lock = threading.Event()
+    holder = {}
+    real_read, real_replace, real_fsync = Path.read_bytes, os.replace, os.fsync
+
+    def slow_read(self):
+        if threading.current_thread().name == "holder" and self == store.path:
+            holder.setdefault("read_until", time.monotonic() + jsonfile.READ_RETRY_SECONDS - 0.05)
+            holder_in_lock.set()
+            if time.monotonic() < holder["read_until"]:
+                raise PermissionError(32, "a scanner holds the file")
+        return real_read(self)
+
+    def slow_replace(src, dst):
+        if threading.current_thread().name == "holder":
+            holder.setdefault("replace_until", time.monotonic() + jsonfile.REPLACE_RETRY_SECONDS - 0.05)
+            if time.monotonic() < holder["replace_until"]:
+                raise PermissionError(32, "a reader holds the file")
+        return real_replace(src, dst)
+
+    def slow_fsync(fd):
+        if threading.current_thread().name == "holder":
+            time.sleep(0.5)                                          # a slow disk
+        return real_fsync(fd)
+
+    monkeypatch.setattr(Path, "read_bytes", slow_read)
+    monkeypatch.setattr(os, "replace", slow_replace)
+    monkeypatch.setattr(os, "fsync", slow_fsync)
+    first = threading.Thread(target=lambda: store.record("x"), name="holder")
+    first.start()
+    assert holder_in_lock.wait(5)
+    store.record("x")                                                # the waiter
+    first.join(10)
+    monkeypatch.undo()
+    assert store.get("x")["execution_count"] == 2
+
+
 def test_unwritable_lock_never_stalls_for_the_full_timeout(tmp_path, monkeypatch):
     """Review B-8: only FileExistsError is "busy"; other failures skip the lock quickly."""
     from revit_bridge.capabilities import usage as usage_module
@@ -123,6 +173,38 @@ def test_unwritable_lock_never_stalls_for_the_full_timeout(tmp_path, monkeypatch
     started = time.monotonic()
     assert store.record("x")["execution_count"] == 2
     assert time.monotonic() - started < 0.1                            # immediately
+
+
+def test_a_read_that_fails_inside_record_never_resets_the_counters(tmp_path, monkeypatch):
+    """B5: a sharing violation read as {} and written back reset every pack's counters."""
+    from tests.test_devices import _deny_reads
+
+    store = UsageStore(tmp_path / "usage.json")
+    store.record("a")
+    store.record("b", success=False)
+    before = store.path.read_bytes()
+    _deny_reads(monkeypatch, store.path)
+    try:
+        store.record("c")
+        raise AssertionError("record must not go on from a file it could not read")
+    except OSError:
+        pass
+    assert store.read_all() == {}                                    # a plain read stays tolerant
+    monkeypatch.undo()
+    assert store.path.read_bytes() == before
+    store.path.write_text("[1, 2]", encoding="utf-8")                # not an object: kept, then replaced
+    assert store.record("c")["execution_count"] == 1
+    assert store.path.with_name("usage.json.bad").read_text(encoding="utf-8") == "[1, 2]"
+
+
+def test_a_usage_file_saved_with_a_bom_keeps_its_counters(tmp_path):
+    """F2a: the counters of a usage.json saved with a BOM were reset by the next update."""
+    store = UsageStore(tmp_path / "usage.json")
+    store.record("a")
+    store.path.write_bytes(b"\xef\xbb\xbf" + store.path.read_bytes())
+    assert store.get("a")["execution_count"] == 1
+    assert store.record("a")["execution_count"] == 2
+    assert not store.path.with_name("usage.json.bad").exists()
 
 
 def test_record_usage_never_fails_the_run(tmp_path, monkeypatch):

@@ -19,6 +19,17 @@ def test_declared_dependencies_are_the_allowed_set():
     assert data["project"]["scripts"] == {"revit-bridge": "revit_bridge.mcp_server:main"}
 
 
+def test_the_ci_check_and_this_test_forbid_the_same_packages():
+    """B12: the CI step's grep missed langchain (and google.generativeai). ci.yml keeps the names of
+    FORBIDDEN in the same order; this test is what keeps the two identical."""
+    import re
+
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    step = workflow[workflow.index("- name: Forbidden dependencies must be absent"):]
+    pattern = re.search(r'uv tree \| grep -iE "([^"]+)"', step).group(1)
+    assert tuple(pattern.split("|")) == FORBIDDEN
+
+
 def test_the_release_version_strings_agree():
     """pyproject.toml holds the version; the plugin manifest, every versioned marketplace entry, the
     plugin's `revit-bridge==X` pin and the package's own entry in uv.lock must say the same.

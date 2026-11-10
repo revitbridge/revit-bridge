@@ -2,6 +2,9 @@
 RevitClientPool - singleton TCP connection with auto-reconnect.
 
 Avoids per-request connect/disconnect overhead (~1s ExternalEvent latency).
+A call that failed on the connection (closed by the add-in, reset, timed out)
+drops it, and a connection the add-in closed while idle reads as not
+connected (``RevitClient.connected``): the next ``get_client`` opens a new one.
 The pool is bound to the running event loop; when a different loop calls it
 (e.g. successive ``asyncio.run`` invocations) the stale connection is dropped
 and a fresh one is opened.
@@ -36,7 +39,11 @@ class RevitClientPool:
                          token: str | None = None,
                          settings: RevitSettings | None = None) -> RevitClient:
         async with cls._get_lock():
+            # ``connected`` is false once a failed call dropped the connection or the add-in
+            # closed it (Revit restarted): a new client then opens a new connection.
             if cls._instance is None or not cls._instance.connected:
+                if cls._instance is not None:
+                    await cls._instance.disconnect()     # a socket the add-in half-closed
                 cls._instance = RevitClient(
                     host=host, port=port, timeout=timeout,
                     connect_timeout=connect_timeout, token=token,

@@ -7,7 +7,9 @@ too because they share the fake add-in fixtures.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import sys
 
 import pytest
 
@@ -18,7 +20,7 @@ from revit_bridge.revit.pool import RevitClientPool
 from revit_bridge.snapshot.project import LevelInfo, fingerprint_of
 from revit_bridge.snapshot.query import LEVELS_CODE
 
-from revit_bridge.spec.gate import Gate
+from revit_bridge.spec.gate import Gate, GateError
 from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec
 
 from tests.fake_revit import FakeRevit
@@ -282,6 +284,58 @@ def test_token_survives_a_server_restart_once(isolated_data_dir, isolated_store,
         fresh.redeem(token, {"kind": "run_tool", "tool": "query_levels", "params": {}})
     assert excinfo.value.reason == "used"
     assert Gate().peek(token) is None                     # gone from disk
+
+
+def _fail_on(monkeypatch, path, *methods):
+    """Path.<method> raises a sharing violation for ``path`` (a scanner holding the file)."""
+    from pathlib import Path
+
+    for method in methods:
+        real = getattr(Path, method)
+
+        def held(self, *args, _real=real, **kwargs):
+            if self == path:
+                raise PermissionError(32, "The process cannot access the file: it is being used")
+            return _real(self, *args, **kwargs)
+        monkeypatch.setattr(Path, method, held)
+
+
+def test_a_redeemed_token_whose_file_cannot_be_deleted_is_not_honoured_after_a_restart(tmp_path, monkeypatch):
+    """B10: consume ignored a failed delete; a restarted server reloaded the pending file and
+    accepted the token a second time. The file is now overwritten with the redeemed record."""
+    spec = TaskSpec.model_validate(spec_for("query_levels"))
+    projection = spec.execution_projection()
+    gate = Gate(tmp_path / "pending")
+    conf = gate.issue(spec)
+    pending = gate._path(conf.token)
+    _fail_on(monkeypatch, pending, "unlink")
+    assert gate.consume(conf.token, projection).used_at
+    monkeypatch.undo()
+    restarted = Gate(tmp_path / "pending")
+    with pytest.raises(GateError) as excinfo:
+        restarted.verify(conf.token, projection)
+    assert excinfo.value.reason == "used"
+    assert restarted.purge_expired() == 0 and pending.exists()           # removed once it expires
+
+
+def test_a_token_whose_file_can_be_neither_deleted_nor_rewritten_is_refused_now(tmp_path, monkeypatch):
+    """Neither works: nothing runs on it now (it could run again after a restart otherwise);
+    the confirmation never ran, so a restarted server may still honour it once."""
+    spec = TaskSpec.model_validate(spec_for("query_levels"))
+    projection = spec.execution_projection()
+    gate = Gate(tmp_path / "pending")
+    conf = gate.issue(spec)
+    _fail_on(monkeypatch, gate._path(conf.token), "unlink", "write_text")
+    with pytest.raises(GateError) as excinfo:
+        gate.consume(conf.token, projection)
+    assert excinfo.value.reason == "used" and "confirm again" in str(excinfo.value)
+    with pytest.raises(GateError):
+        gate.consume(conf.token, projection)
+    monkeypatch.undo()
+    restarted = Gate(tmp_path / "pending")
+    assert restarted.consume(conf.token, projection).used_at
+    with pytest.raises(GateError):
+        Gate(tmp_path / "pending").verify(conf.token, projection)
 
 
 def test_confirm_spec_returns_errors_without_a_token(isolated_store):
@@ -581,6 +635,82 @@ def test_main_check_exit_code_follows_reachable(monkeypatch, capsys):
         thread.join(5)
 
 
+# A document title with a character outside GBK (o with stroke), one inside it, one beyond the BMP.
+ODD_TITLE = "Proj\xf8ct \u9879\u76ee \U0001f3d7"
+
+
+class _Stream(io.TextIOWrapper):
+    """A stdout in the GBK code page: a pipe, or an interactive console when ``tty``."""
+
+    tty = False
+
+    def isatty(self):
+        return self.tty
+
+
+def _gbk_stdout(monkeypatch, tty: bool = False) -> tuple[_Stream, io.BytesIO]:
+    raw = io.BytesIO()
+    stream = _Stream(raw, encoding="gbk", errors="strict", newline="\n")
+    stream.tty = tty
+    monkeypatch.setattr(sys, "stdout", stream)
+    return stream, raw
+
+
+def _status_with(title: str) -> dict:
+    return {"host": "127.0.0.1", "port": 18080, "token": "not set", "timeout": 60.0, "document": title,
+            "document_error": None, "reachable": True, "error": None, "status": "connected"}
+
+
+def test_main_check_on_a_gbk_pipe_prints_json_every_reader_parses(monkeypatch):
+    """A3: the title used to raise UnicodeEncodeError (nothing printed, exit 1 although Revit answered).
+    On a pipe the JSON is ASCII: the same text in every code page, the title exact after parsing."""
+    async def answered(**_):
+        return _status_with(ODD_TITLE)
+
+    monkeypatch.setattr(server, "check_connection", answered)
+    stream, raw = _gbk_stdout(monkeypatch)
+    assert server.main(["check"]) == 0
+    stream.flush()
+    data = raw.getvalue()
+    assert data and max(data) < 0x80
+    assert json.loads(data.decode("gbk")) == json.loads(data.decode("utf-8")) == _status_with(ODD_TITLE)
+
+
+def test_main_check_on_a_console_stays_readable(monkeypatch):
+    async def answered(**_):
+        return _status_with(ODD_TITLE)
+
+    monkeypatch.setattr(server, "check_connection", answered)
+    stream, raw = _gbk_stdout(monkeypatch, tty=True)
+    assert server.main(["check"]) == 0
+    stream.flush()
+    text = raw.getvalue().decode("utf-8")
+    assert f'"document": "{ODD_TITLE}"' in text and json.loads(text)["document"] == ODD_TITLE
+
+
+@pytest.mark.parametrize("stdout", ["none", "closed"])
+def test_cli_output_never_raises_without_a_usable_stdout(monkeypatch, stdout):
+    """F5: under pythonw or a host without a console sys.stdout is None; write() raised
+    AttributeError although configure() coped. A closed stream must not raise either."""
+    from revit_bridge import cli_output
+
+    async def answered(**_):
+        return _status_with("Project1")
+
+    monkeypatch.setattr(server, "check_connection", answered)
+    if stdout == "none":
+        monkeypatch.setattr(sys, "stdout", None)
+    else:
+        closed = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        closed.close()
+        monkeypatch.setattr(sys, "stdout", closed)
+    cli_output.configure()
+    cli_output.write("text")
+    cli_output.write_json({"a": 1})
+    assert server.main(["check"]) == 0
+    assert server.main(["skills", "list"]) == 0
+
+
 def test_main_check_exit_code(monkeypatch, capsys):
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
     monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "1")
@@ -850,7 +980,7 @@ def test_an_execution_that_dies_mid_request_is_still_recorded(isolated_store, re
                 assert record["tool"] == "create_wall" and record["token_prefix"] == token[:6]
                 assert record["result_summary"] == {"ids": []}
                 assert server._gate.peek(token).used_at                      # consumed: not retried by accident
-                assert isolated_store.load("create_wall").failure_count == 1
+                assert isolated_store.load("create_wall").failure_count == 0  # no reply: not the pack's (A2)
             finally:
                 await RevitClientPool.disconnect()
 

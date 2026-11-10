@@ -24,16 +24,16 @@
                       symbols.
 
 The environment is read here, once, and passed to the loader. Output is
-plain text: ids, paths, titles and reasons, never a lesson body; a character
-the console cannot show is written as a backslash escape.
+plain text: ids, paths, titles and reasons, never a lesson body, written by
+the CLI output rule (``revit_bridge.cli_output``: UTF-8, nothing can fail to
+encode).
 """
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
-from revit_bridge import guidance
+from revit_bridge import cli_output, guidance
 from revit_bridge.guidance import indexer
 from revit_bridge.guidance.model import LAYERS, STAGES
 from revit_bridge.paths import guidance_dir, guidance_layer_dirs
@@ -66,21 +66,13 @@ def add_parser(sub) -> None:
     explain.add_argument("--inline", action="store_true", help="check_code's inline budget for a compile error")
 
 
-def _safe_streams() -> None:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(errors="backslashreplace")
-        except (AttributeError, ValueError):
-            pass
-
-
 def _say(line: str = "") -> None:
-    print(line)
+    cli_output.write(line)
 
 
 def run(args: argparse.Namespace) -> int:
     """Run ``revit-bridge guidance <subcommand>``; returns the exit code."""
-    _safe_streams()
+    cli_output.configure()                       # the CLI output rule, see revit_bridge.cli_output
     if args.guidance_command == "check":
         return _check(args.dirs)
     if args.guidance_command == "index":

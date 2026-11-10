@@ -7,6 +7,21 @@ param([switch] $RequireNone)
 # UTF-8 output so Git Bash and Python read non-ASCII window titles correctly.
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# Started from a PowerShell 7 session through another program (Git Bash, Python), Windows
+# PowerShell inherits PowerShell 7's module directories ahead of its own, and Get-CimInstance
+# (CimCmdlets, loaded on demand) resolves to a copy it cannot load: every Revit would go
+# unlisted. When a foreign copy of Microsoft.PowerShell.Utility comes first, this Windows
+# PowerShell's own module directory is put in front; its own module path is left as it is.
+if ($PSVersionTable.PSEdition -ne 'Core') {
+    $ownModules = Join-Path $PSHOME 'Modules'
+    $firstUtility = @($env:PSModulePath -split ';' | Where-Object {
+        $_ -and (Test-Path -LiteralPath "$_\Microsoft.PowerShell.Utility" -ErrorAction SilentlyContinue) }) |
+        Select-Object -First 1
+    if ($firstUtility -and $firstUtility.TrimEnd('\') -ne $ownModules.TrimEnd('\')) {
+        $env:PSModulePath = $ownModules + ';' + $env:PSModulePath
+    }
+}
+
 $procs = @(Get-CimInstance Win32_Process -Filter "Name='Revit.exe'")
 if ($procs.Count -eq 0) { Write-Output 'no Revit running'; exit 0 }
 foreach ($p in $procs) {

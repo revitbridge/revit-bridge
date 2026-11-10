@@ -338,6 +338,19 @@ def merge_always(lower: tuple[str, ...], higher: tuple[str, ...]) -> tuple[str, 
 
 # -- SKILL.md ------------------------------------------------------------------------
 
+def _not_utf8(path: Path) -> bool:
+    """True when ``path`` is a file that reads but is not UTF-8 - saved as "ANSI" in Notepad,
+    which is GBK on a Chinese Windows. A file that is missing or cannot be read is not this
+    check's business."""
+    try:
+        path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def read_skill(path: Path) -> tuple[dict, str] | None:
     """The front matter mapping and body of a SKILL.md, or None when it has none."""
     try:
@@ -613,6 +626,8 @@ def scan(root: Path, layer: str, problems: list[str]) -> tuple[list[Category], l
         if directory.name not in CATEGORIES:
             problems.append(f"{directory.name}/: not a category in the category table")
         else:
+            if _not_utf8(directory / SKILL_FILE):
+                problems.append(f"{directory.name}/{SKILL_FILE}: not UTF-8")
             categories.append(_load_category(directory, layer))
         lessons_dir = directory / LESSONS_DIR
         if lessons_dir.is_dir():

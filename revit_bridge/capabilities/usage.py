@@ -35,7 +35,8 @@ def empty_usage() -> dict:
 
 
 class UsageStore:
-    """Reads and updates ``usage.json``. Missing or corrupt files read as empty."""
+    """Reads and updates ``usage.json``. Missing or corrupt files read as empty; an update
+    never goes on from a file it could not read (see ``LockedJsonFile.read_for_update``)."""
 
     def __init__(self, path: Path | str, lock_timeout: float = LOCK_TIMEOUT_SECONDS):
         self._file = LockedJsonFile(path, lock_timeout)
@@ -44,16 +45,16 @@ class UsageStore:
         self.lock_timeout = lock_timeout
 
     def read_all(self) -> dict[str, dict]:
-        data = self._file.read()
-        return {name: self._clean(entry) for name, entry in data.items() if isinstance(entry, dict)}
+        return self._entries(self._file.read())
 
     def get(self, name: str) -> dict:
         return self.read_all().get(name, empty_usage())
 
     def record(self, name: str, success: bool = True) -> dict:
-        """Count one run. Success resets ``failure_count``; failure increments it."""
+        """Count one run. Success resets ``failure_count``; failure increments it.
+        Raises OSError when the file cannot be read or written (it is left as it was)."""
         with self._file.locked():
-            data = self.read_all()
+            data = self._entries(self._file.read_for_update())
             entry = data.get(name, empty_usage())
             if success:
                 entry["execution_count"] += 1
@@ -67,12 +68,16 @@ class UsageStore:
 
     def forget(self, name: str) -> None:
         with self._file.locked():
-            data = self.read_all()
+            data = self._entries(self._file.read_for_update())
             if name in data:
                 del data[name]
                 self._file.write(data)
 
     # -- internals -------------------------------------------------------------
+
+    @classmethod
+    def _entries(cls, data: dict) -> dict[str, dict]:
+        return {name: cls._clean(entry) for name, entry in data.items() if isinstance(entry, dict)}
 
     @staticmethod
     def _clean(entry: dict) -> dict:

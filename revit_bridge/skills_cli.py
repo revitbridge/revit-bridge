@@ -12,9 +12,12 @@
                               --profile bridge is revit-bridge + revit-core. Names and
                               a profile add up; folders are copied in bundled
                               (alphabetical) order. An existing DIR/<name> is left
-                              alone unless --force replaces it. Exit 2 on an unknown
-                              name, 1 when a destination exists and --force was not
-                              given.
+                              alone unless --force replaces it; a folder is copied in
+                              full next to its destination first and then swapped in,
+                              so a failed copy leaves the old one as it was. Exit 2 on
+                              an unknown name or a DIR that is not a directory (or
+                              cannot be created), 1 when a destination exists and
+                              --force was not given or a copy failed.
 
 The skills are self-contained folders; nothing here starts a server or needs Revit.
 """
@@ -22,9 +25,9 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import sys
 from pathlib import Path
 
+from revit_bridge import cli_output
 from revit_bridge.guidance.loader import read_skill
 from revit_bridge.paths import skills_dir
 
@@ -72,18 +75,14 @@ def add_parser(sub) -> None:
 
 
 def _write(text: str) -> None:
-    out = sys.stdout
-    try:
-        out.write(text + "\n")
-    except UnicodeEncodeError:
-        out.write(text.encode("ascii", "backslashreplace").decode("ascii") + "\n")
+    cli_output.write(text)
 
 
 def run(args: argparse.Namespace) -> int:
-    # Hosts and pipes read UTF-8; a GBK console would otherwise garble the Chinese
-    # half of a description.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    # The CLI output rule (revit_bridge.cli_output): hosts and pipes read UTF-8; the
+    # locale code page (GBK on a Chinese Windows) would garble the Chinese half of a
+    # description.
+    cli_output.configure()
     skills = available()
     if args.skills_command == "list":
         width = max(len(n) for n in skills) if skills else 0
@@ -101,17 +100,73 @@ def run(args: argparse.Namespace) -> int:
     wanted = set(names) or set(skills)
     names = [n for n in skills if n in wanted]          # bundled order, no duplicates
     target = Path(args.to).expanduser()
-    target.mkdir(parents=True, exist_ok=True)
+    if target.exists() and not target.is_dir():
+        _write(f"--to {target}: not a directory")
+        return 2
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        _write(f"--to {target}: cannot be created: {error}")
+        return 2
     code = 0
     for name in names:
         dest = target / name
-        if dest.exists():
-            if not args.force:
-                _write(f"{name}: {dest} exists; use --force to replace it")
+        previous = _previous(dest)
+        if previous.exists() and not dest.exists():      # a swap that was interrupted: the old copy goes back
+            try:
+                previous.rename(dest)
+            except OSError as error:
+                _write(f"{name}: not installed; the previous copy {previous} could not be put back: {error}")
                 code = 1
                 continue
-            shutil.rmtree(dest)
-        shutil.copytree(skills[name], dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        if dest.exists() and not args.force:
+            _write(f"{name}: {dest} exists; use --force to replace it")
+            code = 1
+            continue
+        try:
+            removed = _install(skills[name], dest)
+        except OSError as error:                         # shutil.Error is one too
+            _write(f"{name}: not installed, {dest} left as it was: {error}")
+            code = 1
+            continue
         files = sum(1 for p in dest.rglob("*") if p.is_file())
         _write(f"{name}: {files} files -> {dest}")
+        if not removed:
+            _write(f"{name}: the previous copy could not be removed; delete {_previous(dest)}")
     return code
+
+
+def _staging(dest: Path) -> Path:
+    return dest.with_name(f".{dest.name}.installing")
+
+
+def _previous(dest: Path) -> Path:
+    return dest.with_name(f".{dest.name}.previous")
+
+
+def _install(source: Path, dest: Path) -> bool:
+    """Copy the skill folder ``source`` to ``dest`` through a sibling: the copy is made in
+    full first and then swapped in, so a failure (a locked file, a path too long) leaves
+    ``dest`` as it was - the old copy, or nothing - and raises. On success the old copy is
+    removed as before; returns False when it could not be (it stays as ``_previous(dest)``)."""
+    staging, previous = _staging(dest), _previous(dest)
+    for leftover in (staging, previous):                 # left by an earlier run that failed
+        if leftover.exists():
+            shutil.rmtree(leftover)
+    try:
+        shutil.copytree(source, staging, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        if dest.exists():
+            dest.rename(previous)
+            try:
+                staging.rename(dest)
+            except BaseException:
+                previous.rename(dest)
+                raise
+        else:
+            staging.rename(dest)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    if previous.exists():
+        shutil.rmtree(previous, ignore_errors=True)
+    return not previous.exists()

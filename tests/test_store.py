@@ -424,3 +424,32 @@ def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):
     (store.user_dir / "mine.yaml").write_text("name: mine\ncode_template: return 1;\n", encoding="utf-8")
     (store.user_dir / "mine.disabled").touch()
     assert store.load("mine") is not None and "mine" in names_of(store)
+
+
+@pytest.mark.parametrize("content", [b"name: [unclosed\ncode_template: x\n",          # not YAML
+                                     b"- a\n- list\n",                               # not a mapping
+                                     "name: query_levels\ncode_template: \u4e2d\n".encode("gbk")])  # not UTF-8
+def test_a_broken_user_pack_gives_way_to_the_built_in_one_with_a_warning(tmp_path, content):
+    """B6: list_tools listed the built-in while load returned None, so run_tool said "not found"
+    for a tool the list showed. load, path_of and list_tools now agree on the built-in, and
+    load_problem says why the user's file was passed over."""
+    store = ToolStore(user_dir=tmp_path / "user")
+    builtin = store.load("query_levels")
+    store.user_dir.mkdir()
+    user_file = store.user_dir / "query_levels.yaml"
+    user_file.write_bytes(content)
+    assert "query_levels" in names_of(store)
+    tool = store.load("query_levels")
+    assert tool is not None and tool.code_template == builtin.code_template
+    assert store.path_of("query_levels") == store.builtin_dir / "query_levels.yaml"
+    assert store.render("query_levels", {})[0] == builtin.code_template
+    problem = store.load_problem("query_levels")
+    assert problem.startswith(f"user pack {user_file} cannot be read") and "built-in" in problem
+    assert store.update("query_levels", {"description": "x"}) is None    # never written over silently
+    assert user_file.read_bytes() == content
+    assert store.load_problem("create_wall") is None                     # no user file: nothing to say
+
+    # without a built-in of that name a broken user pack is still "not found", as before
+    (store.user_dir / "mine.yaml").write_bytes(content)
+    assert store.load("mine") is None and store.load_problem("mine") is None
+    assert store.path_of("mine") == store.user_dir / "mine.yaml"

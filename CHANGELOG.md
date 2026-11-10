@@ -12,6 +12,93 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   add-in client speaks raw TCP). Runtime dependencies are now `mcp`,
   `pydantic` and `pyyaml`.
 
+### Fixed
+
+- After Revit restarted, every call failed with "Revit add-in closed
+  connection" until the MCP server itself was restarted. A call whose
+  exchange did not complete (connection closed or reset, no reply in time,
+  cancelled) now drops the connection, and the next call opens a new one;
+  the request is never sent again, since Revit may have run it.
+- A capability pack was refused for good after two attempts made while Revit
+  was not reachable: they counted as pack failures, the health check
+  answered `write_new_code` and `run_tool` refused the pack across restarts.
+  A pack's failure count now moves only on Revit's replies and on failed
+  validations; a refused, lost or timed-out connection is still recorded in
+  the ledger when the token was used, but does not count against the pack.
+- `revit-bridge check` crashed with `UnicodeEncodeError` on a Chinese Windows
+  when its output was piped or redirected and the document title held a
+  character outside GBK. `check`, `guidance` and `skills` now write by one
+  rule: UTF-8, nothing can fail to encode, and `check`'s JSON is ASCII
+  (escaped) unless it goes to a console, so it parses in every code page,
+  Windows PowerShell 5.1 included. `guidance` on a pipe now writes UTF-8.
+- `collect_logs.ps1` (`revit-addin-release`) read a BOM-less UTF-8 `.addin`
+  in the ANSI code page under Windows PowerShell 5.1, so on a profile path
+  with Chinese characters it reported the add-in DLL as MISSING; manifests
+  and `PackageContents.xml` are now read as XML (their declaration picks the
+  encoding). It also always ended the other-profiles section with "(none
+  readable)", printed "copied" for a copy that failed (now "copy FAILED"
+  with the reason) and let two files of the same name overwrite each other
+  (the second is now kept as `name~2.ext`).
+- The evidence ledger lost a record holding U+2028, U+2029 or U+0085, and a
+  line cut by a crash mid-append broke `evidence` for every record; lines
+  are now split on newlines only and a bad line costs only itself.
+- A multi-megabyte add-in reply was reassembled in quadratic time (5 MB took
+  27 s and blocked the server); it is now read in one linear pass.
+- `guidance index` died with a bare `UnicodeDecodeError` on a SKILL.md saved
+  as GBK while `guidance check` said 0 problems; both now report
+  `<path>: not UTF-8` and exit 1.
+- `journal_tail.py` printed a GBK or UTF-8 journal that ends mid-character
+  (a hung Revit still writing it) as cp1252 junk; one cut character no
+  longer changes the encoding.
+- An update of `usage.json` or `auth/devices.json` read a transient sharing
+  violation as an empty file and wrote that back (every paired device
+  gone); it now retries and then fails without writing, keeps a file that
+  does not parse as `<name>.bad`, and fsyncs before replacing.
+- A user pack file that cannot be read, named like a built-in pack, made
+  `run_tool` say "Tool not found" for a tool `list_tools` showed; the
+  built-in pack is used and the run carries a warning naming the file.
+- `skills install --force` removed the old skill before copying the new one,
+  so a failed copy left neither; the copy is now made aside and swapped in.
+  `--to` naming an existing file is a clear error (exit 2), not a traceback.
+- `addin_snapshot.py` kept a backup that failed halfway as "the first one",
+  without `hashes-before.txt`; the copy is now renamed into place only when
+  complete.
+- `new_addin.py` left a partial project after a failed write, so the next
+  attempt said "already exists"; the project is built aside and renamed. Its
+  error line is ASCII, whatever the system language.
+- A redeemed confirmation token whose pending file could not be deleted
+  (held by a scanner) was accepted again after a server restart; the file is
+  now rewritten as redeemed, or the token is refused when neither works.
+- `REVIT_BRIDGE_PORT=abc` made `revit-bridge check` and
+  `revit://connection-status` raise `ValueError`; they now report
+  `disconnected` with the message.
+- The CI forbidden-dependency check did not list `langchain` and
+  `google.generativeai`, which the package test forbids; a test now keeps
+  the two lists identical.
+- A validator whose read-back lost the connection or got no reply still
+  counted the run against the pack; only a read-back Revit answered counts
+  now (the validation and the ledger line are unchanged).
+- A `usage.json` or `devices.json` saved with a BOM (Notepad, Windows
+  PowerShell 5.1) was taken for corrupt and the next update dropped its
+  content; a BOM is now accepted. A file that does not parse is kept as
+  `<name>.bad`, then `.bad.2`, `.bad.3`, ..., never over an earlier copy.
+- A writer waiting on the lock of `usage.json` or `devices.json` could go on
+  unlocked while a slow but live holder was still updating, losing that
+  update; a holder's retries now total at most 1.5 s and a waiter waits 4 s.
+- A reconnect could replace the connection under a request in flight, and
+  concurrent connects could each open a connection; connecting now waits
+  for the request in flight. A reply nested too deep for `json` to parse
+  raised `RecursionError` out of the client; it is dropped like any
+  unparsable reply.
+- `revit-bridge check`, `guidance` and `skills` raised `AttributeError` when
+  there is no stdout (pythonw, a host without a console); output to a
+  missing or closed stream is now skipped.
+- The log collector (`collect_logs.ps1`) and `revit_ps.ps1` work when started
+  from a PowerShell 7 session through another program (the `.bat` run from a
+  PowerShell 7 window): Windows PowerShell inherited PowerShell 7's module
+  directories and lost `Get-FileHash`, and could lose `Compress-Archive` (no
+  zip at all) and `Get-CimInstance` (no Revit listed).
+
 ## [0.6.0] - 2026-11-08
 
 The skills now follow an add-in phase by phase, and every phase works with or

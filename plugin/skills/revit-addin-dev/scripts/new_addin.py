@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
+import os
 import re
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -75,13 +78,24 @@ def create_project(output: Path, name: str, revit_version: int | str, vendor_id:
     if sdk:
         files["global.json"] = json.dumps({"sdk": {"version": sdk, "rollForward": roll_forward}}, indent=2) + "\n"
 
-    # Claim a new directory exclusively. Never merge with an existing project,
-    # empty directory, symlink, or manifest, and never overwrite existing files.
+    # A new directory only: never merge with an existing project, empty directory,
+    # symlink, or manifest, and never overwrite existing files. The project is written
+    # into a fresh sibling and renamed into place when complete, so a failure halfway
+    # leaves nothing behind and the next attempt starts clean.
     output = output.expanduser().absolute()
-    output.mkdir(parents=True, exist_ok=False)
-    for relative, content in files.items():
-        with (output / relative).open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(content)
+    if output.exists() or output.is_symlink():
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(output))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = output.with_name(".%s.%s.partial" % (output.name, uuid4().hex[:8]))
+    staging.mkdir()
+    try:
+        for relative, content in files.items():
+            with (staging / relative).open("x", encoding="utf-8", newline="\n") as stream:
+                stream.write(content)
+        os.rename(staging, output)  # Windows refuses an existing target; output was checked above
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return {"project": str(output / f"{name}.csproj"), "revit_version": year,
             "revit_release": release, "target_framework": FRAMEWORKS[release], "sdk": sdk,
             "addin_id": addin_id, "files": sorted(files), "installed": False}
@@ -99,9 +113,23 @@ def main() -> int:
     try:
         result = create_project(args.output, args.name, args.revit_version, args.vendor_id)
     except (OSError, ValueError) as error:
-        parser.exit(2, f"Cannot create add-in: {error}\n")
+        parser.exit(2, f"Cannot create add-in: {describe(error)}\n")
     print(json.dumps(result, indent=2))
     return 0
+
+
+def describe(error: Exception) -> str:
+    """The error in ASCII, so any caller can decode it: str(OSError) is the system's own text
+    (GBK on a Chinese Windows) and a path may hold any character (written as an escape)."""
+    if isinstance(error, OSError):
+        text = type(error).__name__
+        if error.errno is not None:
+            text += f": {os.strerror(error.errno)}"
+        if error.filename is not None:
+            text += f": {error.filename}"
+    else:
+        text = str(error)
+    return text.encode("ascii", "backslashreplace").decode("ascii")
 
 
 if __name__ == "__main__":

@@ -272,6 +272,7 @@ class ToolStore:
                 f"it is read-only"
             )
         self.usage = UsageStore(self.user_dir / USAGE_FILE)
+        self._logged: set = set()                  # load_problem warnings already logged
 
     @property
     def tools_dir(self) -> Path:
@@ -299,15 +300,32 @@ class ToolStore:
         A user file always wins, even next to a stale ``.disabled`` marker;
         the marker only hides the built-in copy. ``list_tools`` applies the
         same rule, so a pack dropped into the user directory by hand is
-        visible everywhere or nowhere.
+        visible everywhere or nowhere. A user file that cannot be read as a
+        pack (not YAML, not UTF-8, not a mapping) gives way to a visible
+        built-in pack of the same name, as ``list_tools`` lets it;
+        ``load_problem`` says why.
         """
         user = self._tool_path(name)
-        if user.exists():
+        builtin = self._visible_builtin(name)
+        if user.exists() and (builtin is None or self._read_pack(user) is not None):
             return user
-        if self.is_disabled(name):
-            return None
+        return builtin
+
+    def _visible_builtin(self, name: str) -> Path | None:
         builtin = self._builtin_path(name)
-        return builtin if builtin.exists() else None
+        return builtin if builtin.exists() and not self.is_disabled(name) else None
+
+    def load_problem(self, name: str) -> str | None:
+        """Why the user pack ``name`` is passed over for the built-in one: its file exists
+        but cannot be read as a pack. None otherwise. ``load``, ``path_of`` and
+        ``list_tools`` then use the built-in pack; this is the warning for the caller."""
+        user = self._tool_path(name)
+        if not user.exists() or self._visible_builtin(name) is None:
+            return None
+        data, why = self._read_pack_why(user)
+        if data is not None:
+            return None
+        return f"user pack {user} cannot be read ({why}); the built-in pack {name!r} is used instead"
 
     def _ensure_user_dir(self) -> None:
         self.user_dir.mkdir(parents=True, exist_ok=True)
@@ -332,13 +350,19 @@ class ToolStore:
         )
 
     def _read_pack(self, path: Path) -> dict | None:
+        return self._read_pack_why(path)[0]
+
+    @staticmethod
+    def _read_pack_why(path: Path) -> tuple[dict | None, str | None]:
+        """``(pack data, None)``, or ``(None, why)`` for a file that cannot be read as a pack."""
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             if not isinstance(data, dict):
-                return None
-            return normalize_pack(data, fallback_name=path.stem)
-        except Exception:
-            return None
+                return None, "not a mapping"
+            return normalize_pack(data, fallback_name=path.stem), None
+        except Exception as exc:  # noqa: BLE001 - any unreadable pack reads as "not found"
+            detail = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+            return None, f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
     def _to_tool(self, data: dict, usage: dict | None = None) -> SolidifiedTool:
         usage = usage or self.usage.get(data["name"])
@@ -350,13 +374,29 @@ class ToolStore:
         """Load a pack by name: the user copy wins, a disabled built-in is hidden.
 
         Malformed files read as "not found" so a corrupt pack cannot crash the
-        caller.
+        caller; a malformed user file of a built-in pack's name gives way to
+        the built-in one (``path_of``), with a warning in the log once per
+        file version and from ``load_problem``.
         """
         path = self.path_of(name)
         if path is None:
             return None
+        if path != self._tool_path(name):
+            self._log_problem(name)
         data = self._read_pack(path)
         return self._to_tool(data) if data else None
+
+    def _log_problem(self, name: str) -> None:
+        problem = self.load_problem(name)
+        if problem is None:
+            return
+        try:
+            key = (str(self._tool_path(name)), self._tool_path(name).stat().st_mtime_ns)
+        except OSError:
+            key = (str(self._tool_path(name)), None)
+        if key not in self._logged:
+            self._logged.add(key)
+            _log.warning("%s", problem)
 
     def list_tools(self) -> list[SolidifiedTool]:
         """Built-in packs plus user packs; same name -> the user pack.
@@ -457,8 +497,10 @@ class ToolStore:
     def update(self, name: str, updates: dict) -> SolidifiedTool | None:
         """Change editable fields; a built-in pack is copied to the user
         directory first. ``code_template`` or ``parameters`` changes bump the
-        patch version."""
-        source = self.path_of(name)
+        patch version. A user file that cannot be read as a pack is never
+        written over: None, as before."""
+        user = self._tool_path(name)
+        source = user if user.exists() else self.path_of(name)
         if source is None:
             return None
         data = self._read_pack(source)
