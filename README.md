@@ -12,8 +12,9 @@ Revit executes the code.
 ## Install
 
 Prerequisites: Python 3.11+ with [`uv`](https://docs.astral.sh/uv/) (for `uvx`),
-Revit 2026 with the add-in installed and its local TCP listener on (default
-`127.0.0.1:18080`).
+Revit 2020, 2021 or 2023-2026 with the add-in installed (one install per Revit
+year; see [revit-bridge-addin](https://github.com/revitbridge/revit-bridge-addin#supported-revit-years))
+and its local TCP listener on (default `127.0.0.1:18080`).
 
 **Claude Desktop** — `claude_desktop_config.json`:
 
@@ -223,7 +224,7 @@ part of CI.
 
 ## Pair with revit-api-docs
 
-[revit-api-docs](https://github.com/revitbridge/revit-api-docs) is an optional second server: `search_revit_api` looks API names up in the Revit 2026 API reference, and `check_code` hints point at it.
+[revit-api-docs](https://github.com/revitbridge/revit-api-docs) is an optional second server: `search_revit_api` looks API names up in the Revit 2026 API reference, and `check_code` hints point at it. Its data set covers Revit 2026 only, whichever Revit year the add-in runs in; for another year, treat members that changed between releases as unconfirmed.
 The plugin does not start it: add it with `claude mcp add revit-api-docs -- uvx revit-api-docs`, or in one config:
 
 ```json
