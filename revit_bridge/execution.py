@@ -400,6 +400,9 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     spec = spec_from_projection(projection, filled, pack)
     bypass = unconfirmed_allowed(env)
     warnings: list[str] = []
+    problem = store.load_problem(name)           # a broken user file gave way to the built-in pack
+    if problem:
+        warnings.append(problem)
     started = time.monotonic()
     validator = None
     if pack.validator:

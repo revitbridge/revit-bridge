@@ -77,6 +77,19 @@ def test_run_pack_from_a_web_host_writes_its_own_ledger(host):
                                         "warnings", "preconditions_failed", "hint", "refusal"}
 
 
+def test_run_pack_runs_the_built_in_pack_when_the_user_copy_is_broken_and_says_so(host):
+    """B6: "Tool not found" for a pack list_tools showed; now the built-in runs, with a warning."""
+    host["store"].user_dir.mkdir(parents=True)
+    broken = host["store"].user_dir / "create_wall.yaml"
+    broken.write_text("name: [unclosed\n", encoding="utf-8")
+    token = wall_token(host["gate"])
+    result = with_fake(counting_handler(1, 2), lambda c, f: run_pack(
+        client=c, name="create_wall", params=dict(WALL), token=token, host="web", **host))
+    assert result.success is True
+    assert len(result.warnings) == 1 and result.warnings[0].startswith(f"user pack {broken} cannot be read")
+    assert host["ledger"].get(result.evidence_id)["warnings"] == result.warnings
+
+
 def test_run_pack_refuses_without_a_token_and_never_touches_revit(host):
     async def scenario(client, fake):
         out = await run_pack(client=client, name="create_wall", params=dict(WALL), token="", host="web", **host)
