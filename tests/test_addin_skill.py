@@ -169,6 +169,41 @@ def test_invalid_input_writes_nothing(tmp_path, name, year, vendor):
     assert not output.exists()
 
 
+def test_a_write_that_fails_halfway_leaves_nothing_and_the_retry_works(tmp_path, monkeypatch):
+    """B9: a failure after the first file left a partial project, and the next attempt failed with
+    "already exists". The project is now built aside and renamed into place when complete."""
+    output = tmp_path / "new"
+    real_open = Path.open
+
+    def disk_full(self, *args, **kwargs):
+        if self.name == "Command.cs":
+            raise OSError(28, "No space left on device", str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", disk_full)
+    with pytest.raises(OSError):
+        create_project(output, "WallInspector", 2026, "MYCO")
+    monkeypatch.undo()
+    assert not output.exists(), sorted(p.name for p in output.iterdir())
+    assert list(tmp_path.iterdir()) == []                              # no staging folder left either
+    result = create_project(output, "WallInspector", 2026, "MYCO")
+    assert sorted(p.name for p in output.iterdir()) == result["files"]
+
+
+def test_the_cli_error_line_is_ascii_whatever_the_language_of_the_system(tmp_path):
+    """B9: str(OSError) is the OS's own text (GBK on a Chinese Windows) and the path may hold
+    Chinese: a reader decoding stderr with another code page got UnicodeDecodeError."""
+    output = tmp_path / "\u5899\u4f53 project"
+    command = [sys.executable, str(GENERATOR), "--name", "WallInspector", "--revit-version", "2026",
+               "--vendor-id", "MYCO", "--output", str(output)]
+    assert subprocess.run(command, capture_output=True).returncode == 0
+    again = subprocess.run(command, capture_output=True)
+    assert again.returncode == 2 and again.stdout == b""
+    assert again.stderr.isascii(), again.stderr
+    line = again.stderr.decode("ascii")
+    assert line.startswith("Cannot create add-in: FileExistsError") and "\\u5899\\u4f53 project" in line
+
+
 @pytest.mark.parametrize("release", ["2026", "2026.5", "2027"])
 def test_copied_skill_cli_works_from_an_unrelated_working_directory(tmp_path, release):
     installed = tmp_path / "installed skill"
@@ -177,7 +212,7 @@ def test_copied_skill_cli_works_from_an_unrelated_working_directory(tmp_path, re
     command = [sys.executable, str(installed / "scripts" / "new_addin.py"),
                "--name", "WallInspector", "--revit-version", release, "--vendor-id", "MYCO",
                "--output", str(output)]
-    run = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, check=True)
+    run = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", check=True)
     result = json.loads(run.stdout)
     assert Path(result["project"]).is_file()
     assert result["revit_version"] == int(release.split(".")[0])
@@ -185,7 +220,7 @@ def test_copied_skill_cli_works_from_an_unrelated_working_directory(tmp_path, re
     assert sorted(p.name for p in output.iterdir()) == result["files"]
     assert (output / "global.json").is_file()
     before = {p.name: p.read_bytes() for p in output.iterdir()}
-    again = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True)
+    again = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, encoding="utf-8")
     assert again.returncode == 2
     assert again.stdout == ""
     assert {p.name: p.read_bytes() for p in output.iterdir()} == before
@@ -195,7 +230,7 @@ def test_cli_rejects_an_unknown_update_without_guessing(tmp_path):
     output = tmp_path / "new"
     run = subprocess.run([sys.executable, str(GENERATOR), "--name", "WallInspector",
                           "--revit-version", "2027.5", "--vendor-id", "MYCO", "--output", str(output)],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8")
     assert run.returncode == 2
     assert "invalid choice: '2027.5'" in run.stderr
     assert run.stdout == ""
