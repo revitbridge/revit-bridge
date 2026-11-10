@@ -25,7 +25,7 @@ param(
     [switch]$NoExplorer
 )
 $ErrorActionPreference = 'Continue'
-$ScriptVersion = '2026-11-08'
+$ScriptVersion = '2026-11-09'
 
 if (-not $Name -or $Name -eq 'REPLACE-ME') {
     Write-Host 'collect_logs.ps1: the add-in name is missing. Open collect_logs.bat and replace REPLACE-ME with the add-in name.'
@@ -48,7 +48,9 @@ function Try-Do([scriptblock]$block, [string]$what) {
     try { & $block } catch { Say "  [error] $what : $($_.Exception.Message)" }
 }
 
-# Copy one file into files\<label>\ (name kept) unless it looks like a credential.
+# Copy one file into files\<label>\ unless it looks like a credential. A name already
+# taken there (the same file name from another folder) gets ~2, ~3, ... before its
+# extension, so no copy overwrites another; the report names the copy as it is in the zip.
 function Grab([string]$path, [string]$label) {
     if (-not (Test-Path -LiteralPath $path)) { return }
     $item = Get-Item -LiteralPath $path
@@ -58,9 +60,30 @@ function Grab([string]$path, [string]$label) {
     }
     $dest = Join-Path $files $label
     New-Item -ItemType Directory -Force $dest | Out-Null
-    Copy-Item -LiteralPath $path -Destination $dest -Force -ErrorAction SilentlyContinue
-    Say ("  copied {0} ({1} bytes, modified {2:yyyy-MM-dd HH:mm:ss}) -> files\{3}" -f `
-        $path, $item.Length, $item.LastWriteTime, $label)
+    $leaf = $item.Name
+    $n = 1
+    while (Test-Path -LiteralPath (Join-Path $dest $leaf)) {
+        $n++
+        $leaf = '{0}~{1}{2}' -f $item.BaseName, $n, $item.Extension
+    }
+    try {
+        Copy-Item -LiteralPath $path -Destination (Join-Path $dest $leaf) -Force -ErrorAction Stop
+        Say ("  copied {0} ({1} bytes, modified {2:yyyy-MM-dd HH:mm:ss}) -> files\{3}\{4}" -f `
+            $path, $item.Length, $item.LastWriteTime, $label, $leaf)
+    } catch {
+        Say ("  copy FAILED {0} ({1} bytes): {2}" -f $path, $item.Length, $_.Exception.Message.Trim())
+    }
+}
+
+# An XML file read the way Revit reads it: the BOM or the XML declaration picks the
+# encoding, UTF-8 without either. Get-Content would decode a BOM-less UTF-8 file with
+# the ANSI code page under Windows PowerShell 5.1 (GBK on a Chinese Windows) and garble
+# a path such as C:\Users\<Chinese name>\...
+function Read-Xml([string]$path) {
+    $doc = New-Object System.Xml.XmlDocument
+    $doc.XmlResolver = $null
+    $doc.Load($path)
+    return ,$doc
 }
 
 function Reg-Value([string]$key, [string]$value) {
@@ -178,7 +201,7 @@ foreach ($root in $manifestRoots) {
             Say ("  {0} {1}: {2}  modified={3:yyyy-MM-dd HH:mm}" -f $root.scope, $year, $manifest.FullName, $manifest.LastWriteTime)
             Grab $manifest.FullName ("addins\" + $root.scope + "\" + $year)
             Try-Do {
-                [xml]$xml = Get-Content -LiteralPath $manifest.FullName -Raw
+                $xml = Read-Xml $manifest.FullName
                 foreach ($node in $xml.SelectNodes('//Assembly')) {
                     $dll = $node.InnerText.Trim()
                     if (-not [System.IO.Path]::IsPathRooted($dll)) { $dll = Join-Path $manifest.DirectoryName $dll }
@@ -193,7 +216,7 @@ if (-not $anyManifest) { Say "  (no .addin naming $Name in the machine or user A
 
 Section 'manifests in other user profiles (not copied)'
 Try-Do {
-    $others = 0
+    $script:others = 0
     Get-ChildItem -LiteralPath (Join-Path $env:SystemDrive 'Users') -Directory -ErrorAction Stop | ForEach-Object {
         if ($_.Name -eq $env:USERNAME) { return }
         $addins = Join-Path $_.FullName 'AppData\Roaming\Autodesk\Revit\Addins'
@@ -202,7 +225,7 @@ Try-Do {
             Where-Object { $_.Name -match $namePattern } |
             ForEach-Object { $script:others++; Say ("  {0}  modified={1:yyyy-MM-dd HH:mm}" -f $_.FullName, $_.LastWriteTime) }
     }
-    if ($others -eq 0) { Say '  (none readable)' }
+    if ($script:others -eq 0) { Say '  (none readable)' }
 } 'other profiles'
 
 # --- bundles ----------------------------------------------------------------
@@ -219,7 +242,7 @@ foreach ($pluginsDir in (Join-Path $env:APPDATA 'Autodesk\ApplicationPlugins'),
             $pc = Join-Path $_.FullName 'PackageContents.xml'
             if (Test-Path -LiteralPath $pc) {
                 Try-Do {
-                    [xml]$xml = Get-Content -LiteralPath $pc -Raw
+                    $xml = Read-Xml $pc
                     Say "    AppVersion $($xml.ApplicationPackage.AppVersion)"
                 } 'PackageContents.xml'
                 Grab $pc ("bundles\" + $_.Name)
@@ -247,6 +270,9 @@ if (Test-Path -LiteralPath $revitLocal) {
         if (-not $recent) { Say "  $label : no journal modified in the last $Days days"; return }
         $newest = $recent | Where-Object { $_.Extension -eq '.txt' } | Select-Object -Last 1
         if ($newest) {
+            # Revit writes its journals in the ANSI code page (GBK on a Chinese Windows), which
+            # is what Get-Content assumes for a file without a BOM under Windows PowerShell 5.1;
+            # the header lines matched here are ASCII, the same under any decoding.
             Try-Do {
                 Get-Content -LiteralPath $newest.FullName -TotalCount 60 -ErrorAction Stop |
                     Where-Object { $_ -match 'Build:|Release:|Branch:' } |
