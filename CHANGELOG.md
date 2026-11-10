@@ -93,6 +93,11 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 - `revit-bridge check`, `guidance` and `skills` raised `AttributeError` when
   there is no stdout (pythonw, a host without a console); output to a
   missing or closed stream is now skipped.
+- The log collector (`collect_logs.ps1`) and `revit_ps.ps1` work when started
+  from a PowerShell 7 session through another program (the `.bat` run from a
+  PowerShell 7 window): Windows PowerShell inherited PowerShell 7's module
+  directories and lost `Get-FileHash`, and could lose `Compress-Archive` (no
+  zip at all) and `Get-CimInstance` (no Revit listed).
 
 ## [0.6.0] - 2026-11-08
 

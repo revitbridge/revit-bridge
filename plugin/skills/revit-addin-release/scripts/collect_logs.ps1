@@ -27,6 +27,22 @@ param(
 $ErrorActionPreference = 'Continue'
 $ScriptVersion = '2026-11-09'
 
+# Started from a PowerShell 7 session through another program (this script's .bat run from a
+# PowerShell 7 window, a test runner), Windows PowerShell inherits PowerShell 7's module
+# directories ahead of its own. Its built-in modules that load on demand (Compress-Archive,
+# Get-CimInstance, ...) then resolve to PowerShell 7 copies it cannot load: no zip at all.
+# When a foreign copy of Microsoft.PowerShell.Utility comes first, this Windows PowerShell's own
+# module directory is put in front. A module path that is already its own is left as it is.
+if ($PSVersionTable.PSEdition -ne 'Core') {
+    $ownModules = Join-Path $PSHOME 'Modules'
+    $firstUtility = @($env:PSModulePath -split ';' | Where-Object {
+        $_ -and (Test-Path -LiteralPath "$_\Microsoft.PowerShell.Utility" -ErrorAction SilentlyContinue) }) |
+        Select-Object -First 1
+    if ($firstUtility -and $firstUtility.TrimEnd('\') -ne $ownModules.TrimEnd('\')) {
+        $env:PSModulePath = $ownModules + ';' + $env:PSModulePath
+    }
+}
+
 if (-not $Name -or $Name -eq 'REPLACE-ME') {
     Write-Host 'collect_logs.ps1: the add-in name is missing. Open collect_logs.bat and replace REPLACE-ME with the add-in name.'
     exit 2
@@ -93,11 +109,25 @@ function Reg-Value([string]$key, [string]$value) {
 # Flags set inside ForEach-Object blocks use $script: scope; a plain assignment there
 # would create a block-local variable and the "nothing found" lines would print wrongly.
 
+# SHA-256 of a file, upper-case hex, with .NET only: Get-FileHash is a script function that
+# Windows PowerShell loads on demand, the first command to go missing under a foreign module
+# path. The file is opened for reading while others may read, write or delete it (Revit
+# holding a DLL).
+function Get-Sha256([string]$path) {
+    $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]'ReadWrite, Delete')
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { return [System.BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+        finally { $sha.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
 # One line per DLL: version, date, size, start of the SHA-256.
 function Describe-Dll([string]$path, [string]$indent) {
     if (-not (Test-Path -LiteralPath $path)) { Say "$indent dll MISSING $path"; return }
     $d = Get-Item -LiteralPath $path
-    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.Substring(0, 12)
+    try { $hash = (Get-Sha256 $path).Substring(0, 12) } catch { $hash = '(unreadable)' }
     Say ("{0} dll {1}  version={2}  modified={3:yyyy-MM-dd HH:mm}  size={4}  sha256={5}" -f `
         $indent, $path, $d.VersionInfo.FileVersion, $d.LastWriteTime, $d.Length, $hash)
 }
