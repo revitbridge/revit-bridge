@@ -711,6 +711,72 @@ def test_cli_output_never_raises_without_a_usable_stdout(monkeypatch, stdout):
     assert server.main(["skills", "list"]) == 0
 
 
+def _closed_stream() -> io.TextIOWrapper:
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    stream.close()
+    return stream
+
+
+# Every kind of CLI entry and what it ends with: a return code, or argparse's SystemExit code.
+CLI_CALLS = [
+    (["check"], 0),
+    (["guidance", "check", "{content}"], 0),
+    (["skills", "list"], 0),
+    (["--version"], 0),
+    (["--help"], 0),
+    (["skills", "install"], 2),                      # --to is missing: argparse writes the error to stderr
+]
+
+
+@pytest.mark.parametrize("stream,state", [("stdout", "closed"), ("stdout", "none"),
+                                          ("stderr", "closed"), ("stderr", "none")])
+@pytest.mark.parametrize("argv,expected", CLI_CALLS, ids=lambda v: " ".join(v) if isinstance(v, list) else None)
+def test_no_cli_entry_raises_when_a_standard_stream_is_unusable(monkeypatch, stream, state, argv, expected):
+    """On Python 3.14 (Linux, macOS) building the ArgumentParser asks _colorize whether the
+    output stream is a terminal, which calls fileno()/isatty() on it: a closed sys.stdout raised
+    ValueError before any revit-bridge code ran. argparse's own --help, --version and error
+    output wrote to a closed stream on every version. Nothing but SystemExit may escape, and
+    the caller's streams are its own again afterwards."""
+    from tests.test_guidance import CONTENT
+
+    async def answered(**_):
+        return _status_with("Project1")
+
+    monkeypatch.setattr(server, "check_connection", answered)
+    unusable = None if state == "none" else _closed_stream()
+    monkeypatch.setattr(sys, stream, unusable)
+    try:
+        code = server.main([a.replace("{content}", str(CONTENT)) for a in argv])
+    except SystemExit as exc:
+        code = exc.code
+    assert code == expected
+    assert getattr(sys, stream) is unusable
+
+
+@pytest.mark.parametrize("state", ["none", "closed"])
+@pytest.mark.parametrize("argv", [["serve"], []])
+def test_serve_without_a_usable_stdout_says_so_and_exits(monkeypatch, capsys, state, argv):
+    """stdout is the MCP transport: without it nothing can be served. A clear line on stderr and
+    exit 1, not a traceback, and the server is never started."""
+    started = []
+    monkeypatch.setattr(server.mcp, "run", lambda **kwargs: started.append(kwargs))
+    monkeypatch.setattr(sys, "stdout", None if state == "none" else _closed_stream())
+    assert server.main(argv) == 1
+    assert started == []
+    assert "stdout" in capsys.readouterr().err
+
+
+def test_serve_keeps_the_real_stdout_when_only_stderr_is_unusable(monkeypatch):
+    transport = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(server.mcp, "run", lambda **kwargs: seen.append(sys.stdout))
+    monkeypatch.setattr(sys, "stdout", transport)
+    monkeypatch.setattr(sys, "stderr", None)
+    assert server.main(["serve"]) == 0
+    assert seen == [transport]                       # the very stream, not a wrapper or a sink
+    assert sys.stderr is None
+
+
 def test_main_check_exit_code(monkeypatch, capsys):
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
     monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "1")

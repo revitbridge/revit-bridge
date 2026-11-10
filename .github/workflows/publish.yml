@@ -9,7 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The release tests run on an interpreter the CI matrix covers, never the runner's
+      # default (0.6.1 failed on the runner's 3.14 while CI tested only 3.11 and 3.13).
+      # 3.14 is the newest in the matrix and what a fresh `uvx revit-bridge` most likely gets.
       - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
       - name: Tag must match the package version
         run: |
           expected="v$(uv version --short)"

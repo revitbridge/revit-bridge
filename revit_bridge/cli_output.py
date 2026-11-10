@@ -22,11 +22,66 @@ Who reads each stream decides it:
   escapes still give back the exact characters.
 
 ``serve`` does not come here: its stdout is the MCP transport.
+
+Before any of that, ``safe_streams`` makes the standard streams safe for the whole CLI call
+(``mcp_server.main``): a ``sys.stdout`` or ``sys.stderr`` that is None (pythonw, a host
+without a console) or closed is replaced by a sink and put back afterwards, so nothing that
+writes or probes them can raise - argparse's help, version and error output, and on Python
+3.14 its colour probe, which calls ``fileno()`` and ``isatty()`` on the stream while the
+parser is being built. A usable stream is never touched: ``serve`` keeps its real stdout and
+a terminal keeps its colours.
 """
 from __future__ import annotations
 
+import io
 import json
 import sys
+from contextlib import contextmanager
+
+
+class _Sink(io.TextIOBase):
+    """Takes every write and drops it; no terminal, no file descriptor (``fileno`` raises
+    ``io.UnsupportedOperation``, as for any in-memory stream), never closed."""
+
+    encoding = "utf-8"
+    errors = "strict"
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def isatty(self) -> bool:
+        return False
+
+
+def usable(stream) -> bool:
+    """True for a standard stream output can go to: present and not closed."""
+    if stream is None:
+        return False
+    try:
+        return not getattr(stream, "closed", False)
+    except Exception:  # noqa: BLE001 - a stream that cannot even say whether it is closed
+        return False
+
+
+@contextmanager
+def safe_streams():
+    """For one CLI call: ``sys.stdout`` / ``sys.stderr`` that is None or closed is replaced by
+    a sink and the caller's object put back afterwards; a usable one is left exactly as it is.
+    Yields the names of the streams that were replaced (``{"stdout"}``, ...)."""
+    replaced = {}
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        if not usable(stream):
+            replaced[name] = stream
+            setattr(sys, name, _Sink())
+    try:
+        yield set(replaced)
+    finally:
+        for name, stream in replaced.items():
+            setattr(sys, name, stream)
 
 
 def configure() -> None:
