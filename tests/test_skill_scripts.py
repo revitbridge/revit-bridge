@@ -130,6 +130,58 @@ def test_journal_tail_keeps_reading_utf16_and_whole_files(tmp_path):
         assert run.returncode == 0 and expected in out, (codec, out)
 
 
+# -- addin_snapshot.py ------------------------------------------------------------------------
+
+SNAPSHOT = SKILLS / "revit-addin-test" / "scripts" / "addin_snapshot.py"
+
+
+def test_addin_snapshot_never_keeps_an_incomplete_backup(tmp_path, capsys, monkeypatch):
+    """B8: copytree created the backup folder and raised at the end when one file failed (a DLL
+    Revit holds); the next snapshot saw the folder, kept it as "the first one", and
+    hashes-before.txt was never written. Now the copy is made aside and renamed when whole."""
+    import runpy
+
+    main = runpy.run_path(str(SNAPSHOT))["main"]              # capsys holds the stdout it reconfigures
+    install, backup = tmp_path / "MyAddin", tmp_path / "backup"
+    (install / "sub").mkdir(parents=True)
+    for rel in ("MyAddin.dll", "Locked.dll", "sub/settings.json"):
+        (install / rel).write_text(rel, encoding="utf-8")
+    real_copytree = shutil.copytree
+
+    def revit_holds_one_dll(src, dst, *args, **kwargs):
+        if args:                                              # shutil's own recursion into a subfolder
+            return real_copytree(src, dst, *args, **kwargs)
+
+        def copy(a, b, **kw):
+            if Path(a).name == "Locked.dll":
+                raise PermissionError(13, "used by another process", a)
+            return shutil.copy2(a, b, **kw)
+        return real_copytree(src, dst, copy_function=copy, **kwargs)
+
+    argv = ["addin_snapshot.py", "snapshot", str(install), str(backup)]
+    monkeypatch.setattr(shutil, "copytree", revit_holds_one_dll)
+    try:
+        code = main(argv)
+    except (OSError, SystemExit) as exc:
+        code = exc
+    assert not (backup / "MyAddin").exists(), "an incomplete backup was kept"
+    assert code == 1 and "snapshot failed" in capsys.readouterr().out
+    assert not (backup / "hashes-before.txt").exists()
+    monkeypatch.undo()
+
+    assert main(argv) == 0
+    assert "backed up 3 files" in capsys.readouterr().out
+    hashes = (backup / "hashes-before.txt").read_text(encoding="utf-8").splitlines()
+    assert sorted(line.split("  ")[1] for line in hashes) == ["Locked.dll", "MyAddin.dll", "sub/settings.json"]
+    assert sorted(p.name for p in backup.iterdir()) == ["MyAddin", "hashes-before.txt"]
+    assert main(["addin_snapshot.py", "verify", str(install), str(backup)]) == 0
+
+    # a backup left incomplete by the old script (no hashes-before.txt) is not taken for a whole one
+    (backup / "hashes-before.txt").unlink()
+    assert main(argv) == 1
+    assert "incomplete" in capsys.readouterr().out
+
+
 def section(report: str, title: str) -> str:
     return report.split(f"=== {title} ===", 1)[1].split("\n=== ", 1)[0]
 
