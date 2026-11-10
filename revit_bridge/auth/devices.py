@@ -140,7 +140,7 @@ class DeviceStore:
         expires_at = _iso(now + timedelta(seconds=PAIRING_TTL_SECONDS))
         browser_key = secrets.token_urlsafe(BROWSER_KEY_BYTES)
         with self._file.locked():
-            data = self._load()
+            data = self._load(update=True)
             self._purge(data, now)
             device_id = new_device_id()
             while device_id in data["devices"]:
@@ -171,7 +171,7 @@ class DeviceStore:
         now = _now()
         token = secrets.token_urlsafe(DEVICE_TOKEN_BYTES)
         with self._file.locked():
-            data = self._load()
+            data = self._load(update=True)
             dropped = self._purge(data, now)
             pairing = data["pairings"].get(code_hash)
             device = data["devices"].get(pairing.get("device_id")) if pairing else None
@@ -207,7 +207,7 @@ class DeviceStore:
     def revoke(self, device_id: str) -> bool:
         """Revoke ``device_id`` (idempotent); False only when there is no such device."""
         with self._file.locked():
-            data = self._load()
+            data = self._load(update=True)
             device = data["devices"].get(device_id) if isinstance(device_id, str) else None
             if device is None:
                 return False
@@ -221,7 +221,7 @@ class DeviceStore:
     def touch(self, device_id: str) -> None:
         """Record activity on ``device_id`` (``last_seen``); unknown ids are ignored."""
         with self._file.locked():
-            data = self._load()
+            data = self._load(update=True)
             device = data["devices"].get(device_id) if isinstance(device_id, str) else None
             if device is not None:
                 device["last_seen"] = _iso(_now())
@@ -234,7 +234,7 @@ class DeviceStore:
     def purge(self) -> int:
         """Drop expired, unredeemed pairings (and their never-activated devices); returns how many."""
         with self._file.locked():
-            data = self._load()
+            data = self._load(update=True)
             dropped = self._purge(data, _now())
             if dropped:
                 self._file.write(data)
@@ -242,8 +242,10 @@ class DeviceStore:
 
     # -- internals ---------------------------------------------------------------
 
-    def _load(self) -> dict:
-        raw = self._file.read()
+    def _load(self, update: bool = False) -> dict:
+        """The document; ``update`` inside ``locked()``: never ``{}`` for a file that could
+        not be read (``LockedJsonFile.read_for_update``), so no update writes devices away."""
+        raw = self._file.read_for_update() if update else self._file.read()
         devices = raw.get("devices") if isinstance(raw.get("devices"), dict) else {}
         pairings = raw.get("pairings") if isinstance(raw.get("pairings"), dict) else {}
         return {

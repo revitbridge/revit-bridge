@@ -12,9 +12,18 @@ update costs less than a stuck host - and a lock older than
 most ``PERMISSION_RETRY_SECONDS`` (on Windows the create fails that way for
 a moment while the previous holder's unlink is pending) and any other
 ``OSError`` (read-only data root, missing directory) skips the lock at
-once. The write goes to ``<name>.tmp`` and is moved into place with
-``os.replace``; on Windows a reader holding the file blocks the replace for
-a moment, so that is retried for ``REPLACE_RETRY_SECONDS``.
+once. The write goes to ``<name>.tmp``, is flushed to the disk (``fsync``)
+and is moved into place with ``os.replace``; on Windows a reader holding the
+file blocks the replace for a moment, so that is retried for
+``REPLACE_RETRY_SECONDS``.
+
+The read of an update (``read_for_update``, inside ``locked()``) is strict
+where the plain ``read`` is tolerant: only a missing or empty file is ``{}``.
+Any other read failure (a scanner holding the file, a sharing violation) is
+retried for ``READ_RETRY_SECONDS`` and then raised - going on with ``{}``
+would write an empty document over the real one (every paired device, every
+counter gone). A file that reads but is not a JSON object is copied to
+``<name>.bad`` before the update replaces it.
 """
 from __future__ import annotations
 
@@ -29,6 +38,8 @@ LOCK_TIMEOUT_SECONDS = 2.0     # how long a writer waits for another host
 LOCK_STALE_SECONDS = 10.0      # a lock this old belongs to a process that died
 PERMISSION_RETRY_SECONDS = 0.1 # Windows pending-delete window; a read-only root stalls no longer
 REPLACE_RETRY_SECONDS = 1.0    # Windows: a reader holding the file blocks os.replace
+READ_RETRY_SECONDS = 1.0       # an update's read: a scanner or a reader holding the file
+BAD_SUFFIX = ".bad"            # where a file that does not parse is kept before an update replaces it
 _LOCK_POLL_SECONDS = 0.02
 
 
@@ -36,8 +47,9 @@ class LockedJsonFile:
     """A JSON object file with a sibling lock file (see module doc).
 
     ``read`` never raises: a missing, unreadable or corrupt file - or one
-    whose top level is not an object - reads as ``{}``. Callers hold
-    ``locked()`` around every read-modify-write and call ``write`` inside it.
+    whose top level is not an object - reads as ``{}``; it is for callers
+    that only read. Callers hold ``locked()`` around every read-modify-write
+    and read with ``read_for_update`` and call ``write`` inside it.
     """
 
     def __init__(self, path: Path | str, lock_timeout: float = LOCK_TIMEOUT_SECONDS):
@@ -54,9 +66,43 @@ class LockedJsonFile:
             return {}
         return data if isinstance(data, dict) else {}
 
+    def read_for_update(self) -> dict:
+        """The document a read-modify-write starts from (call it inside ``locked()``).
+
+        A missing or empty file is ``{}``. Any other read failure is retried for
+        ``READ_RETRY_SECONDS`` and then raised, so the update never writes back an
+        empty document that is not the file's content. A file that reads but is not
+        a JSON object is copied to ``<name>.bad`` (raising when that copy cannot be
+        written) and is then ``{}``, for the update to replace.
+        """
+        deadline = time.monotonic() + READ_RETRY_SECONDS
+        while True:
+            try:
+                raw = self.path.read_bytes()
+                break
+            except FileNotFoundError:
+                return {}
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(_LOCK_POLL_SECONDS)
+        if not raw.strip():
+            return {}
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except ValueError:                                # UnicodeDecodeError is one too
+            data = None
+        if isinstance(data, dict):
+            return data
+        self.path.with_name(self.path.name + BAD_SUFFIX).write_bytes(raw)
+        return {}
+
     def write(self, data: dict) -> None:
         tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, ensure_ascii=False, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())                     # on the disk before it replaces the old file
         # Readers do not take the lock; on Windows a file that one of them has
         # open cannot be replaced, so wait it out.
         deadline = time.monotonic() + REPLACE_RETRY_SECONDS

@@ -125,6 +125,28 @@ def test_unwritable_lock_never_stalls_for_the_full_timeout(tmp_path, monkeypatch
     assert time.monotonic() - started < 0.1                            # immediately
 
 
+def test_a_read_that_fails_inside_record_never_resets_the_counters(tmp_path, monkeypatch):
+    """B5: a sharing violation read as {} and written back reset every pack's counters."""
+    from tests.test_devices import _deny_reads
+
+    store = UsageStore(tmp_path / "usage.json")
+    store.record("a")
+    store.record("b", success=False)
+    before = store.path.read_bytes()
+    _deny_reads(monkeypatch, store.path)
+    try:
+        store.record("c")
+        raise AssertionError("record must not go on from a file it could not read")
+    except OSError:
+        pass
+    assert store.read_all() == {}                                    # a plain read stays tolerant
+    monkeypatch.undo()
+    assert store.path.read_bytes() == before
+    store.path.write_text("[1, 2]", encoding="utf-8")                # not an object: kept, then replaced
+    assert store.record("c")["execution_count"] == 1
+    assert store.path.with_name("usage.json.bad").read_text(encoding="utf-8") == "[1, 2]"
+
+
 def test_record_usage_never_fails_the_run(tmp_path, monkeypatch):
     from revit_bridge.capabilities.store import ToolStore
 

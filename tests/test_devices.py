@@ -173,6 +173,82 @@ def test_default_path_and_corrupt_file(tmp_path, monkeypatch):
         store.redeem(pairing.code)
 
 
+def _deny_reads(monkeypatch, path, times=None):
+    """Reads of ``path`` raise a sharing violation (a scanner holding the file): ``times`` times,
+    or always. Returns the list of denied attempts."""
+    from pathlib import Path
+
+    denied = []
+    real_text, real_bytes = Path.read_text, Path.read_bytes
+
+    def check(self):
+        if str(self) == str(path) and (times is None or len(denied) < times):
+            denied.append(1)
+            raise PermissionError(13, "The process cannot access the file because it is being used")
+
+    def read_text(self, *args, **kwargs):
+        check(self)
+        return real_text(self, *args, **kwargs)
+
+    def read_bytes(self):
+        check(self)
+        return real_bytes(self)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    return denied
+
+
+def test_a_read_that_fails_inside_an_update_never_drops_the_devices(tmp_path, monkeypatch):
+    """B5: the update used to read a sharing violation as {} and write that back: every paired
+    device gone. Now it retries, then raises, and the file is left as it was."""
+    store = DeviceStore(tmp_path / "devices.json")
+    first, second = store.create_pairing("a"), store.create_pairing("b")
+    store.redeem(first.code)
+    before = store.path.read_bytes()
+    _deny_reads(monkeypatch, store.path)
+    started = time.monotonic()
+    with pytest.raises(OSError):
+        store.create_pairing("c")
+    assert time.monotonic() - started < 5
+    assert store.list() == []                                  # a plain read stays tolerant: no raise
+    assert store.verify_browser(second.device_id, second.browser_key) is None
+    monkeypatch.undo()
+    assert store.path.read_bytes() == before
+    assert {d.label for d in store.list()} == {"a", "b"}
+
+
+def test_a_transient_read_failure_inside_an_update_is_waited_out(tmp_path, monkeypatch):
+    store = DeviceStore(tmp_path / "devices.json")
+    store.create_pairing("a")
+    denied = _deny_reads(monkeypatch, store.path, times=3)
+    store.create_pairing("b")
+    assert len(denied) == 3
+    monkeypatch.undo()
+    assert {d.label for d in store.list()} == {"a", "b"}
+
+
+def test_a_corrupt_devices_file_is_kept_before_it_is_replaced(tmp_path):
+    store = DeviceStore(tmp_path / "devices.json")
+    store.path.write_bytes(b'{"devices": {"dev_x": {"label": "half')       # cut off mid-write
+    store.create_pairing("new")
+    assert store.path.with_name("devices.json.bad").read_bytes() == b'{"devices": {"dev_x": {"label": "half'
+    assert [d.label for d in store.list()] == ["new"]
+    store.path.write_text("  \n", encoding="utf-8")                        # empty: nothing to keep
+    store.path.with_name("devices.json.bad").unlink()
+    store.create_pairing("again")
+    assert not store.path.with_name("devices.json.bad").exists()
+
+
+def test_the_new_file_is_on_disk_before_it_replaces_the_old_one(tmp_path, monkeypatch):
+    events = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(os, "replace", lambda src, dst: (events.append("replace"), real_replace(src, dst))[1])
+    DeviceStore(tmp_path / "devices.json").create_pairing()
+    assert events == ["fsync", "replace"]
+
+
 def test_purge_counts_only_expired_open_pairings(tmp_path):
     store = DeviceStore(tmp_path / "devices.json")
     keep = store.create_pairing("keep")
