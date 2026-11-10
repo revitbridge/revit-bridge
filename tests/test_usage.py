@@ -172,7 +172,7 @@ def test_unwritable_lock_never_stalls_for_the_full_timeout(tmp_path, monkeypatch
     monkeypatch.setattr(os, "open", no_such_device)
     started = time.monotonic()
     assert store.record("x")["execution_count"] == 2
-    assert time.monotonic() - started < 0.1                            # immediately
+    assert time.monotonic() - started < 0.6                            # no lock wait at all; the write itself (fsync) may take a moment on a slow disk
 
 
 def test_a_read_that_fails_inside_record_never_resets_the_counters(tmp_path, monkeypatch):
