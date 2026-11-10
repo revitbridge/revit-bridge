@@ -17,6 +17,9 @@ import pytest
 SKILL = Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-addin-dev"
 GENERATOR = SKILL / "scripts" / "new_addin.py"
 create_project = runpy.run_path(str(GENERATOR))["create_project"]
+# The CLI runs in an isolated child: PYTHON* variables (PYTHONIOENCODING, PYTHONUTF8, PYTHONPATH)
+# of the shell that started pytest and the user site do not reach it.
+PYTHON_CHILD = [sys.executable, "-I"]
 
 
 @pytest.mark.parametrize("year,framework", [(2024, "net48"), (2025, "net8.0-windows"),
@@ -194,7 +197,7 @@ def test_the_cli_error_line_is_ascii_whatever_the_language_of_the_system(tmp_pat
     """B9: str(OSError) is the OS's own text (GBK on a Chinese Windows) and the path may hold
     Chinese: a reader decoding stderr with another code page got UnicodeDecodeError."""
     output = tmp_path / "\u5899\u4f53 project"
-    command = [sys.executable, str(GENERATOR), "--name", "WallInspector", "--revit-version", "2026",
+    command = [*PYTHON_CHILD, str(GENERATOR), "--name", "WallInspector", "--revit-version", "2026",
                "--vendor-id", "MYCO", "--output", str(output)]
     assert subprocess.run(command, capture_output=True).returncode == 0
     again = subprocess.run(command, capture_output=True)
@@ -209,7 +212,7 @@ def test_copied_skill_cli_works_from_an_unrelated_working_directory(tmp_path, re
     installed = tmp_path / "installed skill"
     shutil.copytree(SKILL, installed, ignore=shutil.ignore_patterns("__pycache__"))
     output = tmp_path / "user project"
-    command = [sys.executable, str(installed / "scripts" / "new_addin.py"),
+    command = [*PYTHON_CHILD, str(installed / "scripts" / "new_addin.py"),
                "--name", "WallInspector", "--revit-version", release, "--vendor-id", "MYCO",
                "--output", str(output)]
     run = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", check=True)
@@ -228,7 +231,7 @@ def test_copied_skill_cli_works_from_an_unrelated_working_directory(tmp_path, re
 
 def test_cli_rejects_an_unknown_update_without_guessing(tmp_path):
     output = tmp_path / "new"
-    run = subprocess.run([sys.executable, str(GENERATOR), "--name", "WallInspector",
+    run = subprocess.run([*PYTHON_CHILD, str(GENERATOR), "--name", "WallInspector",
                           "--revit-version", "2027.5", "--vendor-id", "MYCO", "--output", str(output)],
                          capture_output=True, text=True, encoding="utf-8")
     assert run.returncode == 2
