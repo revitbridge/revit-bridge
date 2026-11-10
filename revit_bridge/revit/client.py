@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass
 
@@ -48,31 +49,85 @@ class RevitResponse:
     error_code: int | None = None    # the JSON-RPC error code, when the add-in answered with an error
 
 
-_DECODER = json.JSONDecoder()
+# Bytes that matter outside a JSON string.
+_STRUCTURAL = re.compile(rb'[{}\[\]"]')
+# The rest of a JSON string, from inside it: plain runs and escape pairs, possessive so the
+# scan is linear. It stops at the closing quote, at a lone backslash whose escaped byte has
+# not arrived yet, or at the end of the data.
+_STRING_REST = re.compile(rb'(?:[^"\\]++|\\.)*+', re.DOTALL)
+READ_SIZE = 65536
 
 
-def _pop_json_object(buf: bytes) -> tuple[dict | None, bytes]:
-    """Split the first complete JSON object off ``buf``.
+class _Framer:
+    """Cuts the add-in's undelimited byte stream into JSON objects, in linear time.
 
-    Returns ``(obj, rest)``; ``(None, buf)`` when the buffer holds no complete
-    object yet. Leading whitespace is skipped. Non-object JSON (a bare number,
-    a list) is dropped so a corrupt frame cannot wedge the loop.
+    The add-in writes raw JSON with no delimiter, so a reply is complete when
+    its outermost brace closes. Each byte is scanned once, as it arrives:
+    outside a string only braces, brackets and quotes count; inside one, a
+    regex runs to the closing quote. Only a complete object is decoded and
+    parsed, once, so a multi-byte character or an escape split across reads
+    is never decoded in halves (UTF-8 lead and continuation bytes are >= 0x80
+    and never look like one of those ASCII bytes), and a ``}`` that happens to
+    end a read inside a string costs nothing. Whatever lies between objects
+    at the top level - whitespace, a bare value, junk - is skipped, and a
+    complete value that is not an object is dropped, so a corrupt frame
+    cannot wedge the loop.
     """
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+        self._pos = 0              # the next byte to scan
+        self._start = 0            # where the open top-level value began
+        self._depth = 0
+        self._in_string = False
+
+    def feed(self, data: bytes) -> None:
+        self._buf += data
+
+    def pop(self) -> dict | None:
+        """The next complete object, or None until more data arrives."""
+        buf = self._buf
+        while True:
+            if self._in_string:
+                end = _STRING_REST.match(buf, self._pos).end()
+                if end >= len(buf) or buf[end] != 0x22:          # not closed yet
+                    self._pos = end
+                    return None
+                self._pos, self._in_string = end + 1, False
+                continue
+            found = _STRUCTURAL.search(buf, self._pos)
+            if found is None:
+                self._pos = len(buf)
+                if self._depth == 0:                              # only skipped bytes: forget them
+                    buf.clear()
+                    self._pos = 0
+                return None
+            at = found.start()
+            byte = buf[at]
+            self._pos = at + 1
+            if byte == 0x22:                                      # "
+                self._in_string = True
+            elif byte in (0x7B, 0x5B):                            # { [
+                if self._depth == 0:
+                    self._start = at
+                self._depth += 1
+            elif self._depth > 0:                                 # } ] (a stray one at the top is junk)
+                self._depth -= 1
+                if self._depth == 0:
+                    frame = bytes(buf[self._start:self._pos])
+                    del buf[:self._pos]
+                    self._pos = 0
+                    obj = _parse_frame(frame)
+                    if isinstance(obj, dict):
+                        return obj
+
+
+def _parse_frame(frame: bytes):
     try:
-        text = buf.decode("utf-8")
-    except UnicodeDecodeError:
-        return None, buf  # multi-byte character split across reads
-    stripped = text.lstrip()
-    if not stripped:
-        return None, b""
-    try:
-        obj, end = _DECODER.raw_decode(stripped)
-    except json.JSONDecodeError:
-        return None, buf  # incomplete, keep reading
-    rest = stripped[end:].encode("utf-8")
-    if not isinstance(obj, dict):
-        return _pop_json_object(rest)
-    return obj, rest
+        return json.loads(frame.decode("utf-8", errors="replace"))
+    except ValueError:
+        _log.warning("[send_command] Dropping an unparseable frame of %d bytes", len(frame))
+        return None
 
 
 class RevitClient:
@@ -199,29 +254,24 @@ class RevitClient:
         self._writer.write(data)
         await self._writer.drain()
 
-        # Read response - accumulate until one complete JSON object arrived.
-        # Add-in sends raw UTF-8 JSON with no delimiter, reads up to 8192 bytes.
-        # Several objects may share one chunk (e.g. a late reply followed by
-        # ours); the leftover bytes stay in `buf` for the next iteration.
-        # Loop to skip stale responses whose id doesn't match request_id.
+        # Read the response: the add-in sends raw UTF-8 JSON with no delimiter.
+        # Several objects may share one read (e.g. a late reply followed by
+        # ours); the framer keeps what follows an object for the next pop.
+        # Loop to skip stale responses whose id doesn't match request_id. The
+        # deadline is checked before every read, and scanning a read costs
+        # time in proportion to its size, so a long reply cannot outlast it.
         deadline = time.monotonic() + timeout
-        buf = b""
+        frames = _Framer()
         while True:
             try:
-                while True:
-                    resp, buf = _pop_json_object(buf)
-                    if resp is not None:
-                        break
+                while (resp := frames.pop()) is None:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         return None
-                    chunk = await asyncio.wait_for(
-                        self._reader.read(8192),
-                        timeout=remaining,
-                    )
+                    chunk = await asyncio.wait_for(self._reader.read(READ_SIZE), timeout=remaining)
                     if not chunk:
                         raise ConnectionError("Revit add-in closed connection")
-                    buf += chunk
+                    frames.feed(chunk)
             except asyncio.TimeoutError:
                 return None
 

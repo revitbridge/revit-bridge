@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 from revit_bridge.revit.client import RevitClient
 from revit_bridge.revit.pool import RevitClientPool
@@ -279,6 +280,106 @@ def test_a_caller_s_own_timeout_drops_the_connection_too():
 
     dropped, again, connections = asyncio.run(scenario())
     assert dropped is True and again.success is True and connections == 2
+
+
+def _pieces(data: bytes, size: int) -> list[bytes]:
+    return [data[i:i + size] for i in range(0, len(data), size)]
+
+
+def test_a_multi_megabyte_reply_in_small_chunks_is_read_in_linear_time():
+    """B2: the reply is scanned once as it arrives, not decoded and parsed again per chunk."""
+    rows = [{"Id": i, "Name": f"Wall 墙 {i}", "Level": "L1", "Note": "a}b{\"c\"}"} for i in range(40000)]
+    replies: dict = {}
+
+    def handler(request):
+        reply = json.dumps(FakeRevit.code_result(request["id"], rows), ensure_ascii=False).encode("utf-8")
+        replies["size"] = len(reply)
+        return _pieces(reply, 4096)
+
+    async def scenario():
+        async with FakeRevit(handler) as server:
+            client = RevitClient(settings=_settings(server, timeout=60.0))
+            try:
+                await client.ensure_connected()
+                started = time.perf_counter()
+                resp = await client.send_code("return rows;")
+                return resp, time.perf_counter() - started
+            finally:
+                await client.disconnect()
+
+    resp, elapsed = asyncio.run(scenario())
+    assert replies["size"] > 3_000_000
+    assert resp.success is True and resp.result == rows
+    assert elapsed < 2.5, f"{replies['size']} bytes took {elapsed:.2f} s"     # linear: well under 1 s
+
+
+def test_a_character_split_across_reads_and_a_brace_at_a_read_end_inside_a_string():
+    def handler(request):
+        reply = json.dumps(FakeRevit.ok(request["id"], {"text": "中文 a} {b", "n": 1}),
+                           ensure_ascii=False).encode("utf-8")
+        cut_char = reply.index("文".encode("utf-8")) + 1          # inside a 3-byte character
+        cut_brace = reply.index(b"a}") + 2                             # the read ends on a "}" in a string
+        return [reply[:cut_char], 0.05, reply[cut_char:cut_brace], 0.05, reply[cut_brace:]]
+
+    async def scenario():
+        async with FakeRevit(handler) as server:
+            client = RevitClient(settings=_settings(server))
+            try:
+                return await client.send_command("say_hello")
+            finally:
+                await client.disconnect()
+
+    resp = asyncio.run(scenario())
+    assert resp.success is True and resp.result == {"text": "中文 a} {b", "n": 1}
+
+
+def test_the_deadline_holds_while_a_long_reply_is_still_arriving():
+    def handler(request):
+        reply = json.dumps(FakeRevit.ok(request["id"], {"blob": "x" * 200_000})).encode("utf-8")
+        out: list = []
+        for piece in _pieces(reply, 2048):
+            out += [piece, 0.02]                                   # about 2 s in all
+        return out
+
+    async def scenario():
+        async with FakeRevit(handler) as server:
+            client = RevitClient(settings=_settings(server, timeout=0.4))
+            try:
+                started = time.perf_counter()
+                resp = await client.send_command("say_hello")
+                return resp, time.perf_counter() - started
+            finally:
+                await client.disconnect()
+
+    resp, elapsed = asyncio.run(scenario())
+    assert resp.success is False and resp.error == "Timeout after 0.4s"
+    assert elapsed < 1.5
+
+
+def test_the_framer_finds_every_object_at_every_split_point():
+    """Braces and quotes inside strings, escaped quotes and backslashes, a multi-byte character, a
+    lone backslash at a read end: whatever the cut, the same objects come out, each exactly once."""
+    from revit_bridge.revit.client import _Framer
+
+    stale = {"jsonrpc": "2.0", "id": "old", "result": "late"}
+    reply = {"jsonrpc": "2.0", "id": "1",
+             "result": {"s": "a\\\"}{[\"中", "t": "\\", "n": [1, {"x": "}"}, []], "u": " "}}
+    data = (b"  " + json.dumps(stale).encode("utf-8") + b"\n"
+            + json.dumps(reply, ensure_ascii=False).encode("utf-8") + b"  ")
+
+    def run(pieces):
+        framer, out = _Framer(), []
+        for piece in pieces:
+            framer.feed(piece)
+            while (obj := framer.pop()) is not None:
+                out.append(obj)
+        return out
+
+    for cut in range(1, len(data)):
+        assert run([data[:cut], data[cut:]]) == [stale, reply], cut
+    assert run([data[i:i + 1] for i in range(len(data))]) == [stale, reply]
+    # a top-level value that is not an object, and junk between objects, are skipped
+    assert run([b'[1, 2] 7 "x" }', json.dumps(stale).encode("utf-8")]) == [stale]
 
 
 def test_pool_reuses_connection_and_survives_new_loop():
