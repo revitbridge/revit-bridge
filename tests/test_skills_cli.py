@@ -83,6 +83,50 @@ def test_install_refuses_an_existing_skill_unless_forced(tmp_path, capsys):
     assert tree(dest) == tree(skills_dir() / "revit-core")
 
 
+def test_a_forced_install_that_fails_midway_keeps_the_old_copy(tmp_path, capsys, monkeypatch):
+    """B7: rmtree then copytree left neither the old copy nor a whole new one when the copy failed
+    (a locked file, a path too long). Now the copy goes to a sibling first and is swapped in."""
+    target = tmp_path / "skills"
+    run(capsys, "install", "revit-addin-dev", "--to", str(target))
+    dest = target / "revit-addin-dev"
+    (dest / "SKILL.md").write_text("edited locally", encoding="utf-8")
+    old = tree(dest)
+    real_copytree = skills_cli.shutil.copytree
+
+    def fails_on_the_third_file(src, dst, *args, **kwargs):
+        if args:                                                  # shutil's own recursion into a subfolder
+            return real_copytree(src, dst, *args, **kwargs)
+        copied = []
+
+        def copy(a, b, **kw):
+            if len(copied) == 2:
+                raise OSError(36, "File name too long", str(b))
+            copied.append(a)
+            return skills_cli.shutil.copy2(a, b, **kw)
+        return real_copytree(src, dst, copy_function=copy, **kwargs)
+
+    monkeypatch.setattr(skills_cli.shutil, "copytree", fails_on_the_third_file)
+    try:
+        code, out = run(capsys, "install", "revit-addin-dev", "--to", str(target), "--force")
+    except OSError as exc:
+        code, out = "raised", str(exc)
+    assert tree(dest) == old, "the old copy was lost"
+    assert code == 1 and "revit-addin-dev: not installed" in out and "left as it was" in out
+    assert sorted(p.name for p in target.iterdir()) == ["revit-addin-dev"]       # no staging left behind
+    monkeypatch.undo()
+    code, _ = run(capsys, "install", "revit-addin-dev", "--to", str(target), "--force")
+    assert code == 0 and tree(dest) == tree(skills_dir() / "revit-addin-dev")
+    assert sorted(p.name for p in target.iterdir()) == ["revit-addin-dev"]
+
+
+def test_a_destination_that_is_a_file_is_a_clear_error(tmp_path, capsys):
+    target = tmp_path / "skills"
+    target.write_text("not a directory", encoding="utf-8")
+    code, out = run(capsys, "install", "revit-core", "--to", str(target))
+    assert code == 2 and out == f"--to {target}: not a directory\n"
+    assert target.read_text(encoding="utf-8") == "not a directory"
+
+
 def test_unknown_name_is_an_error_and_copies_nothing(tmp_path, capsys):
     code, out = run(capsys, "install", "revit-nope", "--to", str(tmp_path / "skills"))
     assert code == 2 and "revit-nope" in out and "revit-addin-dev" in out
