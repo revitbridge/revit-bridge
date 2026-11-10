@@ -9,7 +9,18 @@ and environment (``environment=True``).
 """
 from __future__ import annotations
 
-from revit_bridge.revit.settings import RevitSettings
+import os
+
+from revit_bridge.revit.settings import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DEFAULT_TIMEOUT,
+    ENV_HOST,
+    ENV_PORT,
+    ENV_TIMEOUT,
+    ENV_TOKEN,
+    RevitSettings,
+)
 
 PING_PROBE = "return document.Title;"
 CHECK_PROBE = PING_PROBE
@@ -35,7 +46,10 @@ async def check_connection(settings: RevitSettings | None = None, environment: b
     from revit_bridge.revit.client import RevitClient   # client imports PING_PROBE from here
     from revit_bridge.revit.environment import get_environment, unknown_environment
 
-    settings = settings or RevitSettings.from_env()
+    try:
+        settings = settings or RevitSettings.from_env()
+    except ValueError as exc:                  # REVIT_BRIDGE_PORT=abc and the like: nothing to reach
+        return _unreachable_settings(exc, environment)
     status = settings.describe()
     status["document"] = None
     status["document_error"] = None
@@ -67,6 +81,27 @@ async def check_connection(settings: RevitSettings | None = None, environment: b
         if env is None:
             env = unknown_environment(unreached or Capabilities("unknown", reason=status["error"],
                                                                 error_kind="unreachable"))
+        status["capability"] = env["capability"]
+        status["environment"] = env
+    return status
+
+
+def _unreachable_settings(exc: ValueError, environment: bool) -> dict:
+    """``check_connection``'s status when a ``REVIT_BRIDGE_*`` value does not parse: the
+    same keys, not reachable, the message as ``error``. ``host`` .. ``timeout`` show the
+    values as set (the bad one as typed) or the defaults."""
+    from revit_bridge.revit.capabilities import Capabilities
+    from revit_bridge.revit.environment import unknown_environment
+
+    def raw(name: str, default):
+        return os.environ.get(name, "").strip() or default
+
+    status = {"host": raw(ENV_HOST, DEFAULT_HOST), "port": raw(ENV_PORT, DEFAULT_PORT),
+              "token": "set" if raw(ENV_TOKEN, None) else "not set", "timeout": raw(ENV_TIMEOUT, DEFAULT_TIMEOUT),
+              "document": None, "document_error": None, "reachable": False, "error": str(exc),
+              "status": "disconnected"}
+    if environment:
+        env = unknown_environment(Capabilities.from_exception(exc))
         status["capability"] = env["capability"]
         status["environment"] = env
     return status

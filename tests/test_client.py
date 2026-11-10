@@ -398,6 +398,27 @@ def test_pool_reuses_connection_and_survives_new_loop():
     asyncio.run(run_all())  # a second event loop must not trip over the old lock
 
 
+def test_a_bad_setting_is_an_unreachable_status_not_an_exception(monkeypatch, capsys):
+    """B11: REVIT_BRIDGE_PORT=abc made `revit-bridge check` and revit://connection-status raise
+    ValueError instead of answering with the usual unreachable status carrying the message."""
+    from revit_bridge import mcp_server
+    from revit_bridge.revit import probe
+
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "abc")
+    status = asyncio.run(probe.check_connection(environment=True))
+    message = "REVIT_BRIDGE_PORT must be an integer, got 'abc'"
+    assert status["reachable"] is False and status["status"] == "disconnected" and status["error"] == message
+    assert status["document"] is None and status["document_error"] is None
+    assert {"host", "port", "token", "timeout"} <= set(status) and status["port"] == "abc"
+    assert status["capability"]["state"] == "unknown" and status["capability"]["error_kind"] == "settings"
+    assert status["environment"]["capability"] == status["capability"]
+    plain = asyncio.run(probe.check_connection())
+    assert plain["error"] == message and "capability" not in plain
+    assert mcp_server.main(["check"]) == 1
+    assert json.loads(capsys.readouterr().out)["error"] == message
+    assert json.loads(asyncio.run(mcp_server.connection_status()))["error"] == message
+
+
 def test_probe_lives_in_revit_probe_and_stays_importable_from_the_server():
     """Phase 6.0: check_connection moved; the 0.1 web host imports it from mcp_server."""
     from revit_bridge import mcp_server, revit
