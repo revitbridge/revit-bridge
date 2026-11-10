@@ -240,6 +240,32 @@ def test_a_corrupt_devices_file_is_kept_before_it_is_replaced(tmp_path):
     assert not store.path.with_name("devices.json.bad").exists()
 
 
+def test_a_devices_file_saved_with_a_bom_keeps_its_devices(tmp_path):
+    """F2a: Notepad or PowerShell 5.1 `-Encoding UTF8` put a BOM in front of a hand-edited file;
+    the update took it for corrupt and replaced it: every paired device but the new one gone."""
+    store = DeviceStore(tmp_path / "devices.json")
+    store.create_pairing("a")
+    store.create_pairing("b")
+    store.path.write_bytes(b"\xef\xbb\xbf" + store.path.read_bytes())
+    assert sorted(d.label for d in store.list()) == ["a", "b"]           # the tolerant read
+    store.create_pairing("c")                                            # the update
+    assert sorted(d.label for d in store.list()) == ["a", "b", "c"]
+    assert not store.path.with_name("devices.json.bad").exists()
+    assert not store.path.read_bytes().startswith(b"\xef\xbb\xbf")       # written as before: no BOM
+
+
+def test_a_later_corruption_never_overwrites_the_first_bad_copy(tmp_path):
+    """F2b: each corrupt version is kept, the first as <name>.bad, the next ones as .bad.2, .bad.3."""
+    store = DeviceStore(tmp_path / "devices.json")
+    for n, junk in enumerate((b"first junk", b"second junk", b"third junk"), 1):
+        store.path.write_bytes(junk)
+        store.create_pairing(f"after {n}")
+    bad = store.path.with_name("devices.json.bad")
+    assert bad.read_bytes() == b"first junk"
+    assert bad.with_name("devices.json.bad.2").read_bytes() == b"second junk"
+    assert bad.with_name("devices.json.bad.3").read_bytes() == b"third junk"
+
+
 def test_the_new_file_is_on_disk_before_it_replaces_the_old_one(tmp_path, monkeypatch):
     events = []
     real_fsync, real_replace = os.fsync, os.replace

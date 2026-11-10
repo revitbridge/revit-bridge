@@ -23,7 +23,9 @@ Any other read failure (a scanner holding the file, a sharing violation) is
 retried for ``READ_RETRY_SECONDS`` and then raised - going on with ``{}``
 would write an empty document over the real one (every paired device, every
 counter gone). A file that reads but is not a JSON object is copied to
-``<name>.bad`` before the update replaces it.
+``<name>.bad`` (``.bad.2``, ``.bad.3``, ... - never over an earlier copy)
+before the update replaces it. Both reads accept a leading UTF-8 BOM (a file
+saved by Notepad or Windows PowerShell 5.1); what is written has none.
 """
 from __future__ import annotations
 
@@ -61,7 +63,7 @@ class LockedJsonFile:
         if not self.path.exists():
             return {}
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(self.path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return {}
         return data if isinstance(data, dict) else {}
@@ -72,7 +74,7 @@ class LockedJsonFile:
         A missing or empty file is ``{}``. Any other read failure is retried for
         ``READ_RETRY_SECONDS`` and then raised, so the update never writes back an
         empty document that is not the file's content. A file that reads but is not
-        a JSON object is copied to ``<name>.bad`` (raising when that copy cannot be
+        a JSON object is copied aside (``_keep_bad``; raising when that copy cannot be
         written) and is then ``{}``, for the update to replace.
         """
         deadline = time.monotonic() + READ_RETRY_SECONDS
@@ -86,16 +88,34 @@ class LockedJsonFile:
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(_LOCK_POLL_SECONDS)
-        if not raw.strip():
+        try:
+            text = raw.decode("utf-8-sig")                # a BOM (Notepad, PowerShell 5.1) is fine
+        except UnicodeDecodeError:
+            text = None
+        if text is not None and not text.strip():
             return {}
         try:
-            data = json.loads(raw.decode("utf-8"))
-        except ValueError:                                # UnicodeDecodeError is one too
+            data = json.loads(text) if text is not None else None
+        except ValueError:
             data = None
         if isinstance(data, dict):
             return data
-        self.path.with_name(self.path.name + BAD_SUFFIX).write_bytes(raw)
+        self._keep_bad(raw)
         return {}
+
+    def _keep_bad(self, raw: bytes) -> Path:
+        """Copy a file that does not parse to ``<name>.bad`` - or ``.bad.2``, ``.bad.3``, ... when
+        that exists: an earlier copy is never overwritten, since each may hold the only trace of
+        what was written between two corruptions (the files are small; corruption is rare)."""
+        n = 1
+        while True:
+            bad = self.path.with_name(self.path.name + BAD_SUFFIX + (f".{n}" if n > 1 else ""))
+            try:
+                with open(bad, "xb") as handle:
+                    handle.write(raw)
+                return bad
+            except FileExistsError:
+                n += 1
 
     def write(self, data: dict) -> None:
         tmp = self.path.with_name(self.path.name + ".tmp")

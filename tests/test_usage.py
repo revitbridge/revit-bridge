@@ -147,6 +147,16 @@ def test_a_read_that_fails_inside_record_never_resets_the_counters(tmp_path, mon
     assert store.path.with_name("usage.json.bad").read_text(encoding="utf-8") == "[1, 2]"
 
 
+def test_a_usage_file_saved_with_a_bom_keeps_its_counters(tmp_path):
+    """F2a: the counters of a usage.json saved with a BOM were reset by the next update."""
+    store = UsageStore(tmp_path / "usage.json")
+    store.record("a")
+    store.path.write_bytes(b"\xef\xbb\xbf" + store.path.read_bytes())
+    assert store.get("a")["execution_count"] == 1
+    assert store.record("a")["execution_count"] == 2
+    assert not store.path.with_name("usage.json.bad").exists()
+
+
 def test_record_usage_never_fails_the_run(tmp_path, monkeypatch):
     from revit_bridge.capabilities.store import ToolStore
 
