@@ -17,6 +17,14 @@ import pytest
 
 SKILLS = Path(__file__).resolve().parents[1] / "plugin" / "skills"
 COLLECT_LOGS = SKILLS / "revit-addin-release" / "scripts" / "collect_logs.ps1"
+JOURNAL_TAIL = SKILLS / "revit-addin-test" / "scripts" / "journal_tail.py"
+
+
+def child_env(tmp_path: Path, **extra: str) -> dict:
+    """A child Python in a GBK locale whatever the host: no UTF-8 mode, no PYTHONIOENCODING."""
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+    env.update({"PYTHONUTF8": "0", "LOCALAPPDATA": str(tmp_path / "local"), **extra})
+    return env
 
 POWERSHELL = shutil.which("powershell") if sys.platform == "win32" else None
 needs_windows_powershell = pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell 5.1 is not available")
@@ -29,7 +37,7 @@ def collect_logs_fixture(root: Path) -> dict:
     """A user's machine in miniature under ``root``: a profile whose path holds Chinese
     characters and a space, a BOM-less UTF-8 manifest pointing at a DLL in it, another
     user's manifest, and two same-named add-in logs in different folders."""
-    profile = root / "张三 profile"                         # a Chinese user name
+    profile = root / "\u5f20\u4e09 profile"                         # a Chinese user name
     roaming, local = profile / "AppData" / "Roaming", profile / "AppData" / "Local"
     dll = roaming / "Autodesk" / "Revit" / "Addins" / "2026" / ADDIN / f"{ADDIN}.dll"
     dll.parent.mkdir(parents=True)
@@ -43,7 +51,7 @@ def collect_logs_fixture(root: Path) -> dict:
     bundle.mkdir(parents=True)
     (bundle / "PackageContents.xml").write_bytes(
         ('<?xml version="1.0" encoding="utf-8"?>\n<ApplicationPackage AppVersion="1.2.3" '
-         'Description="墙体检查"/>\n').encode("utf-8"))
+         'Description="\u5899\u4f53\u68c0\u67e5"/>\n').encode("utf-8"))
     other = root / "sys" / "Users" / OTHER_USER / "AppData" / "Roaming" / "Autodesk" / "Revit" / "Addins" / "2026"
     other.mkdir(parents=True)
     (other / f"{ADDIN}.addin").write_text("<RevitAddIns/>", encoding="utf-8")
@@ -85,6 +93,41 @@ def run_collect_logs(script: Path, root: Path) -> tuple[str, dict[str, bytes], s
         copies = {name: archive.read(entry) for name, entry in entries.items()
                   if name.startswith("files/") and not name.endswith("/")}
     return report, copies, stdout
+
+
+# -- journal_tail.py ------------------------------------------------------------------------
+
+JOURNAL = ("' Build: 20250101_1515(x64)\n"
+           "' 0:< \u6d4b\u8bd5 TaskDialog \u663e\u793a\u4e2d\u6587\n"
+           'Jrn.Command "Ribbon" , "\u6253\u5f00\u6587\u4ef6"\n'
+           "' 0:< still writing \u672b\u5c3e")
+
+
+@pytest.mark.parametrize("codec", ["gbk", "utf-8"])
+def test_journal_tail_reads_a_journal_cut_mid_character(tmp_path, codec):
+    """B4: a live journal (a hung Revit) ends mid-character; that one cut character must not
+    send the whole file to cp1252/latin-1 junk."""
+    journal = tmp_path / "journal.0001.txt"
+    journal.write_bytes(JOURNAL.encode(codec)[:-1])                  # the last character is cut
+    run = subprocess.run([sys.executable, str(JOURNAL_TAIL), "2026", "--all", "--file", str(journal)],
+                         env=child_env(tmp_path), capture_output=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    out = run.stdout.decode("utf-8")
+    assert "\u6d4b\u8bd5 TaskDialog \u663e\u793a\u4e2d\u6587" in out, out
+    assert 'Jrn.Command "Ribbon" , "\u6253\u5f00\u6587\u4ef6"' in out
+    assert "still writing \u672b" in out
+
+
+def test_journal_tail_keeps_reading_utf16_and_whole_files(tmp_path):
+    for codec, data in (("utf-16", JOURNAL.encode("utf-16")), ("gbk", JOURNAL.encode("gbk")),
+                        ("cp1252", "Jrn.Data caf\xe9 TaskDialog\n".encode("cp1252"))):
+        journal = tmp_path / f"journal.{codec}.txt"
+        journal.write_bytes(data)
+        run = subprocess.run([sys.executable, str(JOURNAL_TAIL), "2026", "--all", "--file", str(journal)],
+                             env=child_env(tmp_path), capture_output=True, timeout=60)
+        out = run.stdout.decode("utf-8")
+        expected = "caf\xe9 TaskDialog" if codec == "cp1252" else "still writing \u672b\u5c3e"
+        assert run.returncode == 0 and expected in out, (codec, out)
 
 
 def section(report: str, title: str) -> str:
