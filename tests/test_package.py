@@ -15,7 +15,7 @@ FORBIDDEN = ("openai", "anthropic", "google-genai", "google.generativeai", "cohe
 def test_declared_dependencies_are_the_allowed_set():
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     names = sorted(d.split(">")[0].split("<")[0].split("=")[0].strip() for d in data["project"]["dependencies"])
-    assert names == ["mcp", "pydantic", "pyyaml", "websockets"]
+    assert names == ["mcp", "pydantic", "pyyaml"]
     assert data["project"]["scripts"] == {"revit-bridge": "revit_bridge.mcp_server:main"}
 
 

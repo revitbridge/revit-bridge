@@ -6,6 +6,12 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- The `websockets` runtime dependency: nothing in the package imports it (the
+  add-in client speaks raw TCP). Runtime dependencies are now `mcp`,
+  `pydantic` and `pyyaml`.
+
 ## [0.6.0] - 2026-11-08
 
 The skills now follow an add-in phase by phase, and every phase works with or

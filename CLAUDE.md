@@ -43,7 +43,7 @@ uvx --from . revit-bridge check   # read the open document's title through the a
 ## Hard constraints
 
 - No LLM SDK (openai, anthropic, google-genai, cohere, ...), no chromadb, no FastAPI.
-  Runtime dependencies are exactly `mcp`, `pydantic>=2`, `pyyaml`, `websockets`.
+  Runtime dependencies are exactly `mcp`, `pydantic>=2`, `pyyaml`.
   `tests/test_package.py` enforces this.
 - Configuration comes only from `REVIT_BRIDGE_*` environment variables. No config files.
 - No `sys.path` manipulation, no imports from other repositories.
