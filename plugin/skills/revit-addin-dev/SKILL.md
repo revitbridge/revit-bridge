@@ -39,7 +39,7 @@ Choose the next step by the development need:
 | --- | --- |
 | Implement a generic command, explain an API, repair a build | Work from source and target-version API references; a running Revit is optional. |
 | Understand the selected objects, actual parameter identity, loaded types, or an observed failure | Read the smallest useful model context through available bridge tools. |
-| Try an algorithm in the current model | Use a focused bridge prototype within the existing confirmation protocol, then verify the result. |
+| Try an algorithm in the current model | Run the core logic with dry_run_code: it executes in the open model and rolls back, so it needs no confirmation. Read what it would change and what Revit warned about. Keep the confirmation protocol for runs that must stay. |
 | Deliver the feature as an independent plugin | Port the logic into the project's command/service structure, build against the target Revit API, and test the compiled entry point separately. |
 
 Read [Bridge-assisted development](references/bridge-development.md) before using live tools or porting a snippet. If no bridge is available, continue coding and compiling; identify only the checks that require Revit. Code generation or a successful build alone does not authorize edits to a live model.
@@ -78,7 +78,7 @@ Hand-tested batches of generated add-ins (36 builds, 2026-10) failed on the same
 2. **Inserts never overlap**: check every planned door, window or opening against the host's `FindInserts` and against each other before the first placement; refuse or move with a message.
 3. **Rebuilt elements keep their properties**: diameter, system, level, type and connections are copied from the original; split MEP curves in place (`BreakCurve`) rather than delete-and-recreate.
 4. **The UI tells the truth**: inputs are validated with the reason shown; OK acts or explains; Cancel and Escape return `Result.Cancelled`; no silent `catch`; a closing summary.
-5. **Core logic runs in the open model before delivery** when a bridge reaches a Revit; when its confirmation needs a human who is not there, say "not verified in Revit" in the report.
+5. **Core logic runs in the open model before delivery** when a bridge reaches a Revit: dry-run it (dry_run_code needs no confirmation) on the real elements the command will meet, and fix what it shows. Say "not verified in Revit" only when no bridge reaches a Revit or the add-in has no dry run.
 
 ## Verify and hand over
 

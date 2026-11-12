@@ -234,7 +234,7 @@ def test_the_skill_says_what_to_do_after_a_run_that_threw():
 
     skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
     text = skill.read_text(encoding="utf-8")
-    step8 = text[text.index("8. **Verify and report**"):text.index("## Parameter source protocol")]
+    step8 = text[text.index("8. **Verify and report**"):text.index("## Dry run: try it without changing anything")]
     paragraph = step8[step8.index("**A run that threw.**"):]
     assert len(paragraph.strip().splitlines()) <= 5
     for phrase in ('`call get_guidance(stage="fix", exceptions=[...])`', "Report the failure as it is",

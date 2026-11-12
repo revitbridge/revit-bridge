@@ -26,6 +26,16 @@ Always in this order. Do not skip a step because the task looks simple.
 
    **A run that threw.** When `success` is false and `hint` begins `call get_guidance(stage="fix", exceptions=[...])`, Revit threw that exception while the code ran. Report the failure as it is, then make that call and read the lessons before you change anything. The changed code is new code: `check_code` until it compiles, plan the verification again, show the new card and get a new confirmation - the old token is spent. After a pack (`run_tool`) the hint goes on with its retry advice: write `execute_code` C# instead of retrying the pack.
 
+## Dry run: try it without changing anything
+
+`dry_run_code(code, parameters)` runs the code in the open model and always rolls it back. It needs no confirmation and no token, because it keeps nothing. It returns what the code returned, what it would have added, modified and deleted, and every warning or error Revit raised.
+
+- Use it after `check_code` passes and before you show the card: a card for code that has already run cleanly on this model is a better card. Put its outcome on the card as one line (`Dry run: +1 OST_Walls, +2 OST_Doors, no warnings`).
+- Use it when nobody is there to confirm. The real run still needs the designer; the dry run does not. Report "dry run passed, not applied" - never "done".
+- Read `changes` before you trust the code. More `modified` elements than the designer named means the code reaches further than the request (editing a type changes every instance of it).
+- A dry run is not an execution. Ids it returns are gone after the rollback; nothing it created exists.
+- If the add-in answers `no_dry_run`, go on without it and say so.
+
 ## Parameter source protocol
 
 Every value in a spec comes from exactly one source, written in `source` with its `evidence`:

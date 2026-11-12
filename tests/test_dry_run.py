@@ -455,3 +455,47 @@ def test_the_hook_script_itself(name, denied):
         assert decision["permissionDecision"] == "deny" and "confirm_spec" in decision["permissionDecisionReason"]
     else:
         assert run.stdout == b"" and run.stderr == b""
+
+
+# -- the skill texts (work plan 2026-11-12, 6) --------------------------------------------------
+
+SKILLS = ROOT / "plugin" / "skills"
+
+
+def test_the_bridge_skill_has_the_dry_run_section_after_the_flow():
+    text = (SKILLS / "revit-bridge" / "SKILL.md").read_text(encoding="utf-8")
+    heading = "## Dry run: try it without changing anything"
+    assert text.count(heading) == 1
+    assert text.index("**A run that threw.**") < text.index(heading) < text.index("## Parameter source protocol")
+    section = text[text.index(heading):text.index("## Parameter source protocol")]
+    for phrase in ("`dry_run_code(code, parameters)` runs the code in the open model and always rolls it back.",
+                   "It needs no confirmation and no token, because it keeps nothing.",
+                   "Use it after `check_code` passes and before you show the card",
+                   "(`Dry run: +1 OST_Walls, +2 OST_Doors, no warnings`)",
+                   'Report "dry run passed, not applied" - never "done".',
+                   "Read `changes` before you trust the code.",
+                   "A dry run is not an execution. Ids it returns are gone after the rollback",
+                   "If the add-in answers `no_dry_run`, go on without it and say so."):
+        assert phrase in section, phrase
+    # steps 6 and 7 keep their words: the real run still needs the designer and the token
+    assert ('wait for an explicit "yes / confirm / go ahead". A silent designer has not confirmed.' in text)
+    assert "A hook denies both calls without a token. Never invent a token." in text
+
+
+def test_the_addin_dev_skill_dry_runs_the_core_logic():
+    text = (SKILLS / "revit-addin-dev" / "SKILL.md").read_text(encoding="utf-8")
+    assert ("| Try an algorithm in the current model | Run the core logic with dry_run_code: it executes in the open "
+            "model and rolls back, so it needs no confirmation. Read what it would change and what Revit warned "
+            "about. Keep the confirmation protocol for runs that must stay. |") in text
+    assert ('5. **Core logic runs in the open model before delivery** when a bridge reaches a Revit: dry-run it '
+            '(dry_run_code needs no confirmation) on the real elements the command will meet, and fix what it '
+            'shows. Say "not verified in Revit" only when no bridge reaches a Revit or the add-in has no dry run.'
+            ) in text
+    assert "within the existing confirmation protocol" not in text and "who is not there" not in text
+    reference = (SKILLS / "revit-addin-dev" / "references" / "bridge-development.md").read_text(encoding="utf-8")
+    heading = "## Prototype with the existing contract\n\n"
+    start = reference.index(heading) + len(heading)
+    assert reference[start:].startswith(
+        "For trying logic, use `dry_run_code` first: it runs in the open model and rolls back, with no TaskSpec, "
+        "no confirmation and no token. The contract below is for a run whose result must stay in the model.\n\n"
+        "A normal source/build task needs neither a TaskSpec nor a live prototype.")
