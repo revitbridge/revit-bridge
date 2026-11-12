@@ -283,8 +283,14 @@ def test_a_dry_run_that_threw_points_at_the_fix_lessons(revit_env):
     assert set(out) == REPLY_KEYS and out["success"] is False and out["rolled_back"] is True
     assert out["error"] == THROWN and out["changes"] == empty and out["result"] is None
     names = json.dumps(["Autodesk.Revit.Exceptions.ArgumentException"])
-    assert out["hint"] == failure_hint(THROWN) == EXCEPTION_HINT.format(exceptions=names)
+    assert out["hint"] == dry_run.failure_hint(THROWN) == dry_run.DRY_RUN_EXCEPTION_HINT.format(exceptions=names)
     assert out["hint"].startswith('call get_guidance(stage="fix", exceptions=')
+    # execute_code's call, but the changed code is dry-run again, not confirmed again
+    executed = failure_hint(THROWN)
+    assert executed == EXCEPTION_HINT.format(exceptions=names)                   # execute_code's own hint as before
+    assert out["hint"].split("; ")[0] == executed.split("; ")[0]
+    assert out["hint"].endswith("the changed code needs check_code and another dry run.")
+    assert "confirmation" not in out["hint"] and executed.endswith("a new confirmation.")
     record = server._ledger.get(out["evidence_id"])
     assert record["success"] is False and record["error"] == THROWN
     assert record["result_summary"]["changes"] == {"added": 0, "modified": 0, "deleted": 0}
@@ -317,8 +323,8 @@ def test_no_dry_run_reply_is_recorded_with_the_rollback_unconfirmed(tmp_path, re
 
     out = asyncio.run(_with_client(dry_addin(respond=respond), scenario, timeout=0.5))
     assert set(out) == REPLY_KEYS and out["success"] is False and out["error"] == error
-    assert out["rolled_back"] is None and out["hint"] == failure_hint(error, dry_run.NO_REPLY_HINT)
-    assert out["hint"].endswith(dry_run.NO_REPLY_HINT)
+    assert out["rolled_back"] is None and out["hint"] == dry_run.failure_hint(error, dry_run.NO_REPLY_HINT)
+    assert out["hint"].endswith(dry_run.NO_REPLY_HINT) and "confirmation" not in out["hint"]
     record = ledger.get(out["evidence_id"])                   # it may have reached Revit: recorded
     assert record["action"] == "dry_run" and record["host"] == "web" and record["error"] == error
     assert record["params"] == {"parameters": [3]} and record["result_summary"]["rolled_back"] is None

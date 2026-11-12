@@ -34,9 +34,11 @@
    ``spec_hash``, ``projection_hash``, ``token_prefix``, ``confirmed_by`` and
    ``channel`` are null. The refusals of 1 and 2 reached no code and leave
    no line.
-6. A failure whose ``error`` names .NET exception types gets the ``hint``
-   ``execute_code`` gives (``execution.failure_hint``): the
-   ``get_guidance(stage="fix", exceptions=[...])`` call.
+6. A failure whose ``error`` names .NET exception types gets a ``hint`` in
+   the style of ``execute_code``'s (``execution.failure_hint``): the same
+   ``get_guidance(stage="fix", exceptions=[...])`` call, but the changed
+   code needs ``check_code`` and another dry run, not a new confirmation
+   (``DRY_RUN_EXCEPTION_HINT``, ``failure_hint`` here).
 
 The gate takes no part: no token, no ``gate_refusal``, no
 ``REVIT_BRIDGE_ALLOW_UNCONFIRMED``. Nor is the execution path's document
@@ -59,7 +61,8 @@ import time
 from typing import Any
 
 from revit_bridge.evidence.ledger import LOCAL_SCOPE, Ledger, code_fields, summarize_result
-from revit_bridge.execution import ensure_connected, failure_hint
+from revit_bridge.execution import ensure_connected
+from revit_bridge.guidance.scan import exception_types
 from revit_bridge.revit import sandbox
 from revit_bridge.revit.capabilities import (
     DRY_RUN_METHOD,
@@ -83,6 +86,20 @@ NOT_ROLLED_BACK_HINT = ("The add-in did not report that the dry run was rolled b
                         "else, and do not call dry_run_code again.")
 NO_REPLY_HINT = ("No dry-run reply came back, so the rollback is not confirmed: check the model with query "
                  "before you go on.")
+# E3 for a dry run: execute_code's call (execution.EXCEPTION_HINT), but what the changed code needs
+# next is another dry run, not a new confirmation.
+DRY_RUN_EXCEPTION_HINT = ('call get_guidance(stage="fix", exceptions={exceptions}) and read those lessons before '
+                          'changing the code; the changed code needs check_code and another dry run.')
+
+
+def failure_hint(error: str | None, hint: str | None = None) -> str | None:
+    """``hint`` for a failed dry run: when ``error`` names .NET exception types,
+    ``DRY_RUN_EXCEPTION_HINT`` with them (``hint``, if any, after it); otherwise ``hint`` as is."""
+    names = exception_types(error)
+    if not names:
+        return hint
+    call = DRY_RUN_EXCEPTION_HINT.format(exceptions=json.dumps(names))
+    return f"{call} {hint}" if hint else call
 
 
 def reply(**fields) -> dict:
