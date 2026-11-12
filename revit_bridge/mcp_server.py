@@ -338,21 +338,24 @@ async def check_code(code: str, parameters: list | None = None) -> str:
 
 
 @mcp.tool(annotations=_READ_ONLY)
-async def dry_run_code(code: str, parameters: list | None = None) -> str:
+async def dry_run_code(code: str, parameters: list | None = None, include: list[str] | None = None) -> str:
     """Run C# in the open Revit model and always roll it back: nothing is kept, the undo
     stack is untouched. Needs no confirmation and no token. Use it to find out whether
     code works on this model before delivering it or before asking the designer to
     confirm the real run. Returns what the code returned, what it would have added,
     modified and deleted (counts by category), and every Revit warning or error it
-    raised. It does not replace execute_code: a dry run changes nothing."""
-    refused = dry_run.blocked_reply(code)             # the sandbox needs no Revit
+    raised. It does not replace execute_code: a dry run changes nothing.
+
+    include: paths of C# source files to compile together with the code, so the code can call into them. Use it to dry-run the add-in's own core-logic file unchanged - the same file you then build into the add-in. Each file must be complete (its own usings and namespace) and must not do file, process or network work."""
+    refused, _ = dry_run.prepare(code, include)       # the sandbox and the files need no Revit
     if refused is not None:
         return _dumps(refused)
     try:
         client = await RevitClientPool.get_client()
     except Exception as e:                            # refused, timed out, bad settings: nothing ran
         return _dumps(dry_run.not_asked(Capabilities.from_exception(e)))
-    return _dumps(await dry_run.dry_run_code(client, code, parameters, ledger=_ledger, host="mcp"))
+    return _dumps(await dry_run.dry_run_code(client, code, parameters, include=include, ledger=_ledger,
+                                             host="mcp"))
 
 
 @mcp.tool(annotations=_MUTATING)

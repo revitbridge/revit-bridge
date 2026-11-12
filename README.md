@@ -152,11 +152,14 @@ describes the starter generator; it does not install or launch the add-in.
      without running it (no token): `diagnostics` with lines in your code,
      `hints`, and `guidance` (the lessons for those errors, or pointers once it
      compiles); `checked: false` when the add-in cannot (an older add-in).
-   - `dry_run_code(code, parameters)` - runs C# in Revit and always rolls it
-     back (no token): what the code returned, what it would have added,
-     modified and deleted (counts by category), and every Revit warning or
-     error; `no_dry_run` when the add-in has no dry run, and
-     `dry_run_not_rolled_back` is a defect to report at once.
+   - `dry_run_code(code, parameters, include)` - runs C# in Revit and always
+     rolls it back (no token): what the code returned, what it would have
+     added, modified and deleted (counts by category), and every Revit warning
+     or error; `no_dry_run` when the add-in has no dry run, and
+     `dry_run_not_rolled_back` is a defect to report at once. `include` names
+     local `.cs` files compiled with the code (at most 20, 400 KB in all), so
+     an add-in's core-logic file is dry-run as it is; it needs an add-in that
+     reports `features.dry_run_sources` (else `no_dry_run_include`).
    - `get_guidance(stage=...)` — lessons for writing Revit code (the snippet
      contract, units, API pitfalls), chosen by stage, API symbols, OST_*
      categories, compiler errors and run-time exceptions; read-only, no token.

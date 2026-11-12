@@ -144,6 +144,12 @@ class Capabilities:
             return features["dry_run"] is True
         return self.has_method(DRY_RUN_METHOD)
 
+    @property
+    def can_dry_run_sources(self) -> bool:
+        """The dry run also compiles extra source files (``sources``): ``features.dry_run_sources`` only,
+        since a parameter has no entry in the method list."""
+        return self.can_dry_run and self.features.get("dry_run_sources") is True
+
     def as_dict(self) -> dict:
         """The JSON shape the tools and ``revit-bridge check`` print."""
         return {

@@ -19,6 +19,14 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   a success (`dry_run_not_rolled_back`). Each dry run leaves a ledger line
   with `action: "dry_run"` and no confirmation. The gate, `execute_code`,
   `run_tool` and the hook are unchanged; the hook does not match the new tool.
+- `dry_run_code(..., include=[...])`: local `.cs` files compiled together
+  with the code (sent as `sources`, named by their base names), so an
+  add-in's core-logic file is dry-run unchanged and then built as it is.
+  Refused before Revit is asked: a missing file, another extension, two
+  files with the same name, more than 20 files or 400 KB, text that is not
+  UTF-8, a file the sandbox refuses. An add-in without
+  `features.dry_run_sources` answers `no_dry_run_include`. The ledger line
+  records each file's name and SHA-256.
 - The `revit-bridge` skill has a section on dry runs and says what they
   need; `revit-addin-dev` and `revit-task-brief` dry-run the core logic
   before delivery instead of reporting "not verified in Revit" when nobody

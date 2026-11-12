@@ -53,7 +53,12 @@ code works on this model before delivering it or before asking the designer to
 confirm the real run. Returns what the code returned, what it would have added,
 modified and deleted (counts by category), and every Revit warning or error it
 raised. It does not replace execute_code: a dry run changes nothing."""
-THROWN = "Autodesk.Revit.Exceptions.ArgumentException: The curve is too short."
+# The include paragraph appended to it (planner, package A extension), verbatim.
+INCLUDE_PARAGRAPH = (
+    "include: paths of C# source files to compile together with the code, so the code can call into them. Use it "
+    "to dry-run the add-in's own core-logic file unchanged - the same file you then build into the add-in. Each "
+    "file must be complete (its own usings and namespace) and must not do file, process or network work.")
+THROWN ="Autodesk.Revit.Exceptions.ArgumentException: The curve is too short."
 
 
 def dry_addin(answer=OK_REPLY, caps=DRY_CAPS, respond=None):
@@ -154,9 +159,9 @@ def test_the_gate_takes_no_part(revit_env, monkeypatch):
 def test_the_tool_schema_has_no_token_and_the_planned_description():
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
     tool = tools["dry_run_code"]
-    assert set(tool.input_schema["properties"]) == {"code", "parameters"}
+    assert set(tool.input_schema["properties"]) == {"code", "parameters", "include"}
     assert tool.input_schema["required"] == ["code"]
-    assert tool.description == DESCRIPTION
+    assert tool.description == DESCRIPTION + "\n\n" + INCLUDE_PARAGRAPH
     assert tool.annotations.model_dump(by_alias=True)["readOnlyHint"] is True
 
 
@@ -306,7 +311,7 @@ def test_a_compile_failure_is_reported_as_the_addin_sent_it(revit_env):
     summary = server._ledger.get(out["evidence_id"])["result_summary"]
     # no value is not zero: the counts the add-in did not give stay null
     assert summary == {"ids": [], "rolled_back": True, "changes": {"added": None, "modified": None, "deleted": None},
-                       "failures": None, "diagnostics": 1}
+                       "failures": None, "diagnostics": 1, "sources": []}
 
 
 @pytest.mark.parametrize("respond,error", [
@@ -363,7 +368,7 @@ def test_the_dry_run_leaves_a_ledger_line_without_any_confirmation(revit_env, is
     assert record["success"] is True and record["error"] is None
     assert record["result_summary"] == {"ids": [9001], "rolled_back": True,
                                         "changes": {"added": 3, "modified": 1, "deleted": 0},
-                                        "failures": 1, "diagnostics": 0}
+                                        "failures": 1, "diagnostics": 0, "sources": []}
     assert record["preconditions_failed"] == [] and record["warnings"] == []
     assert [r["id"] for r in json.loads(asyncio.run(server.mcp.call_tool("evidence", {})).content[0].text)] == [
         out["evidence_id"]]
@@ -539,3 +544,138 @@ def test_the_bridge_skill_says_what_the_dry_run_needs_and_the_readme_stays_true(
     readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
     assert ("refuses to run anything the designer has not confirmed - except a dry run, which is always rolled "
             "back and keeps nothing.") in readme
+
+
+# -- include: the add-in's own source files, dry-run as they are ---------------------------------------
+
+SRC_CAPS = dict(DRY_CAPS, features={**DRY_CAPS["features"], "dry_run_sources": True})
+CORE = ("using Autodesk.Revit.DB;\n\nnamespace MyAddin\n{\n    public static class Core\n    {\n"
+        "        public static object Run(Document document, ElementId id) => new { ElementId = Geometry.Id(id) };\n"
+        "    }\n}\n")
+HELPERS = ("using Autodesk.Revit.DB;\n\nnamespace MyAddin\n{\n    public static class Geometry\n    {\n"
+           "        public static long Id(ElementId id) => id.Value; // 墙\n    }\n}\n")
+CALL = "return MyAddin.Core.Run(document, new ElementId(long.Parse(parameters[0].ToString())));"
+
+
+def write(path: Path, text: str = CORE, bom: bool = False, data: bytes | None = None) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data if data is not None else (b"\xef\xbb\xbf" if bom else b"") + text.encode("utf-8"))
+    return path
+
+
+def test_include_sends_each_file_by_its_base_name_and_records_its_hash(revit_env, tmp_path):
+    core = write(tmp_path / "src" / "Core.cs", CORE, bom=True)
+    helpers = write(tmp_path / "src" / "Geometry" / "Helpers.cs", HELPERS)
+    replies, requests = dry(dry_addin(caps=SRC_CAPS), revit_env,
+                            {"code": CALL, "parameters": ["311"], "include": [str(core), str(helpers)]})
+    out = replies[0]
+    assert set(out) == REPLY_KEYS and out["success"] is True and out["warnings"] == []
+    assert methods(requests) == ["get_bridge_capabilities", "dry_run_code_in_revit"]
+    # the text as written (the BOM dropped, UTF-8 kept), under the base name
+    assert requests[1]["params"] == {"code": CALL, "parameters": ["311"],
+                                     "sources": [{"name": "Core.cs", "text": CORE},
+                                                 {"name": "Helpers.cs", "text": HELPERS}]}
+    record = server._ledger.get(out["evidence_id"])
+    assert list(record) == list(RECORD_FIELDS)                                    # the schema as before
+    # the hash of the bytes on disk, BOM included: it matches the file the add-in is built from
+    assert record["result_summary"]["sources"] == [
+        {"name": "Core.cs", "sha256": hashlib.sha256(core.read_bytes()).hexdigest()},
+        {"name": "Helpers.cs", "sha256": hashlib.sha256(helpers.read_bytes()).hexdigest()}]
+    assert record["code_head"] == CALL and "public static class" not in json.dumps(record)   # names, not texts
+
+
+@pytest.mark.parametrize("include", [None, []], ids=["none", "empty"])
+def test_without_include_the_request_is_as_before(revit_env, include):
+    for caps in (DRY_CAPS, SRC_CAPS):                     # with or without dry_run_sources
+        args = {"code": CODE} if include is None else {"code": CODE, "include": include}
+        replies, requests = dry(dry_addin(caps=caps), revit_env, args)
+        assert replies[0]["success"] is True
+        assert requests[-1]["params"] == {"code": CODE, "parameters": []}         # no sources key at all
+        assert server._ledger.get(replies[0]["evidence_id"])["result_summary"]["sources"] == []
+
+
+def test_a_diagnostic_in_an_included_file_names_it(revit_env, tmp_path):
+    core = write(tmp_path / "Core.cs")
+    answer = {"success": False, "rolled_back": True, "result": None, "error": "",
+              "diagnostics": [dict(CS1061, file="Core.cs")], "fingerprint": "sha256:abc"}
+    replies, _ = dry(dry_addin(answer, caps=SRC_CAPS), revit_env, {"code": CALL, "include": [str(core)]})
+    assert replies[0]["diagnostics"] == [dict(CS1061, file="Core.cs")] and replies[0]["success"] is False
+
+
+def _many(tmp_path: Path, count: int) -> list[str]:
+    return [str(write(tmp_path / f"F{i}.cs")) for i in range(count)]
+
+
+INCLUDE_REFUSALS = {
+    "missing": (lambda tmp: [str(tmp / "Missing.cs")], "include_not_found",
+                lambda tmp: [f"{tmp / 'Missing.cs'}: no such file"]),
+    "directory": (lambda tmp: [str((tmp / "Folder.cs").mkdir() or tmp / "Folder.cs")], "include_not_found",
+                  lambda tmp: [f"{tmp / 'Folder.cs'}: no such file"]),
+    "not_cs": (lambda tmp: [str(write(tmp / "Core.cs")), str(write(tmp / "Notes.txt"))], "include_not_cs",
+               lambda tmp: [f"{tmp / 'Notes.txt'}: not a .cs file"]),
+    "same_name": (lambda tmp: [str(write(tmp / "a" / "Core.cs")), str(write(tmp / "b" / "core.cs"))],
+                  "include_duplicate_name",
+                  lambda tmp: [f"Core.cs: {tmp / 'a' / 'Core.cs'}, {tmp / 'b' / 'core.cs'}"]),
+    "too_many": (lambda tmp: _many(tmp, 21), "include_too_many", lambda tmp: ["21 files given, at most 20"]),
+    "too_large": (lambda tmp: [str(write(tmp / "A.cs", "// " + "x" * 200_000)),
+                               str(write(tmp / "B.cs", "// " + "y" * 199_998))], "include_too_large",
+                  lambda tmp: ["400004 bytes in all, at most 400000"]),
+    "not_utf8": (lambda tmp: [str(write(tmp / "Core.cs", data=b"// \xff\xfe broken\n"))], "include_unreadable",
+                 None),
+    "blocked": (lambda tmp: [str(write(tmp / "Core.cs")),
+                             str(write(tmp / "Io.cs", 'class Io { string R() => System.IO.File.ReadAllText("x"); }'))],
+                "include_blocked",
+                lambda tmp: ["Io.cs: Blocked pattern: System.IO (file operations)",
+                             "Io.cs: Blocked pattern: File I/O operations"]),
+}
+
+
+@pytest.mark.parametrize("case", list(INCLUDE_REFUSALS))
+def test_include_is_refused_before_the_addin_is_asked(revit_env, tmp_path, case):
+    paths, error, warnings = INCLUDE_REFUSALS[case]
+    include = paths(tmp_path)
+    replies, requests = dry(dry_addin(caps=SRC_CAPS), revit_env, {"code": CALL, "include": include})
+    out = replies[0]
+    assert set(out) == REPLY_KEYS and out["success"] is False and out["error"] == error
+    assert out["hint"] == dry_run.INCLUDE_HINTS[error] and out["evidence_id"] is None
+    if warnings is not None:
+        assert out["warnings"] == warnings(tmp_path)
+    else:
+        assert len(out["warnings"]) == 1 and out["warnings"][0].startswith(f"{tmp_path / 'Core.cs'}: UnicodeDecodeError")
+    assert requests == [] and server._ledger.recent() == []                      # not even the capability
+
+
+def test_the_size_limit_is_inclusive_and_counts_utf8_bytes(tmp_path):
+    exact = write(tmp_path / "Exact.cs", "// " + "x" * (dry_run.MAX_SOURCE_BYTES - 3))
+    refused, sources = dry_run.read_sources([str(exact)])
+    assert refused is None and len(sources[0]["text"].encode("utf-8")) == dry_run.MAX_SOURCE_BYTES
+    wide = write(tmp_path / "Wide.cs", "// " + "墙" * ((dry_run.MAX_SOURCE_BYTES - 3) // 3 + 1))   # 3 bytes each
+    assert dry_run.read_sources([str(wide)])[0]["error"] == "include_too_large"
+    assert dry_run.read_sources(None) == (None, []) and dry_run.read_sources([]) == (None, [])
+    assert dry_run.read_sources([str(exact)] * 2)[0]["error"] == "include_duplicate_name"   # the same file twice
+
+
+def test_include_needs_an_addin_that_compiles_sources(revit_env, tmp_path):
+    core = write(tmp_path / "Core.cs")
+    replies, requests = dry(dry_addin(caps=DRY_CAPS), revit_env, {"code": CALL, "include": [str(core)]})
+    out = replies[0]
+    assert out == dry_run.reply(error="no_dry_run_include", hint=dry_run.NO_DRY_RUN_INCLUDE_HINT)
+    assert "paste the code the snippet needs" in out["hint"] and "say so in the report" in out["hint"]
+    assert methods(requests) == ["get_bridge_capabilities"] and server._ledger.recent() == []
+    # an add-in without any dry run says so first
+    replies, _ = dry(dry_addin(caps=CAPS), revit_env, {"code": CALL, "include": [str(core)]})
+    assert replies[0]["error"] == "no_dry_run"
+    # a refused snippet is refused before its files are read
+    replies, requests = dry(dry_addin(caps=SRC_CAPS), revit_env,
+                            {"code": "System.IO.File.Delete(\"x\");", "include": [str(tmp_path / "Missing.cs")]})
+    assert replies[0]["error"] == "blocked" and requests == []
+
+
+def test_capabilities_can_dry_run_sources():
+    assert Capabilities("supported", info=SRC_CAPS).can_dry_run_sources is True
+    assert Capabilities("supported", info=DRY_CAPS).can_dry_run_sources is False
+    assert not Capabilities("supported", info=dict(SRC_CAPS, features={"dry_run": False,
+                                                                        "dry_run_sources": True})).can_dry_run_sources
+    assert not Capabilities("supported", info=dict(SRC_CAPS, features={"dry_run": True,
+                                                                        "dry_run_sources": "yes"})).can_dry_run_sources
+    assert not Capabilities("unknown", info=SRC_CAPS).can_dry_run_sources
