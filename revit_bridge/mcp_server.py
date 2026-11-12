@@ -21,6 +21,7 @@ Tools:
     - reconcile            : a draft TaskSpec against a snapshot
     - confirm_spec         : validate a TaskSpec, issue a confirmation token
     - check_code        : compile C# in Revit without running it (no gate)
+    - dry_run_code      : run C# in Revit and always roll it back (no gate)
     - execute_code      : send C# code to Revit (confirmation token)
     - solidify_tool     : save successful code as a reusable named tool
     - list_tools        : list all solidified tools
@@ -49,7 +50,7 @@ from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
 from revit_bridge import __version__
-from revit_bridge import checking, cli_output, guidance_cli, skills_cli
+from revit_bridge import checking, cli_output, dry_run, guidance_cli, skills_cli
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
@@ -334,6 +335,24 @@ async def check_code(code: str, parameters: list | None = None) -> str:
     except Exception as e:                            # refused, timed out, bad settings: not checked
         return _dumps(checking.not_checked(Capabilities.from_exception(e)))
     return _dumps(await checking.check_code(client, code, parameters, library=guidance_library))
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def dry_run_code(code: str, parameters: list | None = None) -> str:
+    """Run C# in the open Revit model and always roll it back: nothing is kept, the undo
+    stack is untouched. Needs no confirmation and no token. Use it to find out whether
+    code works on this model before delivering it or before asking the designer to
+    confirm the real run. Returns what the code returned, what it would have added,
+    modified and deleted (counts by category), and every Revit warning or error it
+    raised. It does not replace execute_code: a dry run changes nothing."""
+    refused = dry_run.blocked_reply(code)             # the sandbox needs no Revit
+    if refused is not None:
+        return _dumps(refused)
+    try:
+        client = await RevitClientPool.get_client()
+    except Exception as e:                            # refused, timed out, bad settings: nothing ran
+        return _dumps(dry_run.not_asked(Capabilities.from_exception(e)))
+    return _dumps(await dry_run.dry_run_code(client, code, parameters, ledger=_ledger, host="mcp"))
 
 
 @mcp.tool(annotations=_MUTATING)

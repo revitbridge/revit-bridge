@@ -1,0 +1,457 @@
+"""dry_run_code: run C# in Revit and always roll it back - no token, no gate, one ledger line.
+
+A fake add-in that offers ``dry_run_code_in_revit`` answers with the reply the
+add-in returns (work plan 2026-11-12, 4.2); the tests check what the bridge
+makes of it: passed through when ``rolled_back`` is true, never a success
+otherwise, ``no_dry_run`` for an add-in without it, and nothing sent to Revit
+for code the sandbox refuses.
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+import revit_bridge.execution as execution
+import revit_bridge.mcp_server as server
+from revit_bridge import dry_run
+from revit_bridge.evidence.ledger import RECORD_FIELDS, Ledger
+from revit_bridge.execution import EXCEPTION_HINT, failure_hint
+from revit_bridge.revit.capabilities import Capabilities
+from revit_bridge.revit.pool import RevitClientPool
+
+from tests.fake_revit import FakeRevit
+from tests.test_check_code import CAPS, CS1061, _tool, _with_client, revit_env  # noqa: F401
+
+ROOT = Path(__file__).resolve().parents[1]
+DRY_CAPS = dict(CAPS, methods=CAPS["methods"] + ["dry_run_code_in_revit"],
+                features={**CAPS["features"], "dry_run": True})
+CODE = ("var line = Line.CreateBound(XYZ.Zero, new XYZ(10, 0, 0));\n"
+        "var wall = Wall.Create(document, line, new ElementId(311L), false);\n"
+        "return new { ElementId = wall.Id.Value };")
+CHANGES = {
+    "added": {"count": 3, "by_category": {"OST_Walls": 1, "OST_Doors": 2}, "ids": [9001, 9002, 9003]},
+    "modified": {"count": 1, "by_category": {"OST_Walls": 1}, "ids": [311]},
+    "deleted": {"count": 0, "ids": []},
+}
+FAILURES = [{"severity": "Warning", "text": "Highlighted walls overlap.", "element_ids": [9001, 311]}]
+OK_REPLY = {"success": True, "rolled_back": True, "result": json.dumps({"ElementId": 9001}), "error": "",
+            "diagnostics": [], "changes": CHANGES, "failures": FAILURES, "fingerprint": "sha256:abc"}
+REPLY_KEYS = {"success", "rolled_back", "result", "error", "diagnostics", "changes", "failures", "fingerprint",
+              "evidence_id", "hint", "warnings"}
+# Work plan 2026-11-12, 5.2: the tool description, verbatim.
+DESCRIPTION = """\
+Run C# in the open Revit model and always roll it back: nothing is kept, the undo
+stack is untouched. Needs no confirmation and no token. Use it to find out whether
+code works on this model before delivering it or before asking the designer to
+confirm the real run. Returns what the code returned, what it would have added,
+modified and deleted (counts by category), and every Revit warning or error it
+raised. It does not replace execute_code: a dry run changes nothing."""
+THROWN = "Autodesk.Revit.Exceptions.ArgumentException: The curve is too short."
+
+
+def dry_addin(answer=OK_REPLY, caps=DRY_CAPS, respond=None):
+    """A handler for an add-in with ``dry_run_code_in_revit``: ``answer`` as its reply, or ``respond(request)``."""
+    def handler(request):
+        method, rid = request["method"], request["id"]
+        if method == "get_bridge_capabilities":
+            return FakeRevit.ok(rid, caps)
+        if method == "dry_run_code_in_revit":
+            return respond(request) if respond is not None else FakeRevit.ok(rid, answer)
+        return FakeRevit.default_handler(request)
+    return handler
+
+
+def dry(handler, revit_env, *calls) -> tuple[list[dict], list[dict]]:
+    """``dry_run_code`` through the MCP server, once per ``calls`` item (its arguments)."""
+    return asyncio.run(_tool(handler, revit_env, [("dry_run_code", args) for args in calls]))
+
+
+def methods(requests) -> list[str]:
+    return [r["method"] for r in requests]
+
+
+# -- the happy path: no token, the reply as the add-in sent it -----------------------------------
+
+def test_dry_run_code_needs_no_token_and_passes_the_reply_through(revit_env, monkeypatch):
+    monkeypatch.delenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", raising=False)
+    replies, requests = dry(dry_addin(), revit_env, {"code": CODE, "parameters": [1, "a"]})
+    out = replies[0]
+    assert set(out) == REPLY_KEYS
+    assert out["success"] is True and out["rolled_back"] is True and out["error"] == ""
+    assert out["result"] == {"ElementId": 9001}                     # decoded, as execute_code's result is
+    assert out["changes"] == CHANGES and out["failures"] == FAILURES and out["diagnostics"] == []
+    assert out["fingerprint"] == "sha256:abc" and out["hint"] is None and out["warnings"] == []
+    assert out["evidence_id"].startswith("ev_")
+    # the capability once, then the dry run: no confirm field, no document probe through
+    # send_code_to_revit (its committed transaction would leave an undo entry)
+    assert methods(requests) == ["get_bridge_capabilities", "dry_run_code_in_revit"]
+    assert requests[1]["params"] == {"code": CODE, "parameters": [1, "a"]}
+    assert "token" not in requests[1]
+
+
+def test_any_other_key_of_the_reply_passes_through_and_json_text_is_read(revit_env):
+    extra = dict(OK_REPLY, note="added ids are gone after the rollback", result=json.dumps("text"))
+    replies, _ = dry(dry_addin(extra), revit_env, {"code": "return \"text\";"})
+    assert replies[0]["note"] == extra["note"] and set(replies[0]) == REPLY_KEYS | {"note"}
+    assert replies[0]["result"] == "text" and replies[0]["success"] is True
+    # a reply sent as JSON text, and a result that is not JSON, are taken as they come
+    as_text = dry_addin(respond=lambda request: FakeRevit.ok(request["id"], json.dumps(dict(OK_REPLY, result="n/a"))))
+    replies, _ = dry(as_text, revit_env, {"code": "return 1;"})
+    assert replies[0]["success"] is True and replies[0]["result"] == "n/a" and replies[0]["changes"] == CHANGES
+
+
+def test_the_gate_takes_no_part(revit_env, monkeypatch):
+    """No gate_refusal, no Gate, and REVIT_BRIDGE_ALLOW_UNCONFIRMED changes nothing."""
+    class NoGate:
+        def __getattr__(self, name):
+            raise AssertionError(f"the gate was asked for {name}")
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("gate_refusal was called")
+
+    monkeypatch.setattr(server, "_gate", NoGate())
+    for module in (server, execution):
+        monkeypatch.setattr(module, "gate_refusal", refuse)
+        monkeypatch.setattr(module, "unconfirmed_allowed", refuse)
+    outcomes = []
+    for flag in (None, "1", "0"):
+        if flag is None:
+            monkeypatch.delenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", raising=False)
+        else:
+            monkeypatch.setenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", flag)
+        replies, _ = dry(dry_addin(), revit_env, {"code": CODE})
+        outcomes.append({k: v for k, v in replies[0].items() if k != "evidence_id"})
+    assert outcomes[0]["success"] is True and outcomes[0] == outcomes[1] == outcomes[2]
+    # and the module's code names none of it (its docstring may)
+    import ast
+
+    tree = ast.parse((ROOT / "revit_bridge" / "dry_run.py").read_text(encoding="utf-8"))
+    docstring = tree.body[0].value
+    used, texts = set(), []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            used.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            used.add(node.attr)
+        elif isinstance(node, ast.ImportFrom):
+            used.add(node.module or "")
+            used.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node is not docstring:
+            texts.append(node.value)
+    for name in ("gate_refusal", "unconfirmed_allowed", "ENV_ALLOW_UNCONFIRMED", "env_flag", "Gate",
+                 "revit_bridge.spec.gate", "revit_bridge.revit.settings", "environ", "getenv"):
+        assert name not in used, name
+    assert not any("ALLOW_UNCONFIRMED" in text for text in texts)
+
+
+def test_the_tool_schema_has_no_token_and_the_planned_description():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    tool = tools["dry_run_code"]
+    assert set(tool.input_schema["properties"]) == {"code", "parameters"}
+    assert tool.input_schema["required"] == ["code"]
+    assert tool.description == DESCRIPTION
+    assert tool.annotations.model_dump(by_alias=True)["readOnlyHint"] is True
+
+
+# -- the sandbox: refused code never reaches Revit -----------------------------------------------
+
+class _Untouchable:
+    """A client that must not be used."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def ensure_connected(self):
+        self.calls += 1
+        raise AssertionError("ensure_connected must not be reached")
+
+    async def send_command(self, method, params=None):
+        self.calls += 1
+        raise AssertionError("send_command must not be reached")
+
+
+def test_code_the_sandbox_refuses_never_reaches_the_client(revit_env, tmp_path, monkeypatch):
+    code = 'return System.IO.File.ReadAllText("c:/secret.txt");'
+    replies, requests = dry(dry_addin(), revit_env, {"code": code})
+    out = replies[0]
+    assert set(out) == REPLY_KEYS and out["success"] is False and out["error"] == "blocked"
+    assert any("System.IO" in w for w in out["warnings"]) and out["evidence_id"] is None
+    assert out["rolled_back"] is None and out["changes"] is None           # nothing ran
+    assert requests == [] and server._ledger.recent() == []
+    # the package API refuses before it touches the client
+    client = _Untouchable()
+    ledger = Ledger(tmp_path / "evidence")
+    out = asyncio.run(dry_run.dry_run_code(client, code, ledger=ledger))
+    assert out["error"] == "blocked" and client.calls == 0 and ledger.recent() == []
+    # the very review execute_code uses: what it refuses, the dry run refuses
+    monkeypatch.setattr(execution.sandbox, "review", lambda code: (False, ["Blocked pattern: test"]))
+    out = asyncio.run(dry_run.dry_run_code(client, "return 1;", ledger=ledger))
+    assert out == dry_run.reply(error="blocked", warnings=["Blocked pattern: test"]) and client.calls == 0
+
+
+# -- an add-in without the dry run ----------------------------------------------------------------
+
+@pytest.mark.parametrize("caps", [
+    CAPS,                                                                  # check_code only
+    dict(DRY_CAPS, features={**DRY_CAPS["features"], "dry_run": False}),   # it says no, whatever its methods
+], ids=["no_feature_no_method", "feature_false"])
+def test_an_addin_without_the_dry_run_answers_no_dry_run(revit_env, caps):
+    replies, requests = dry(dry_addin(caps=caps), revit_env, {"code": "return 1;"})
+    out = replies[0]
+    assert out == dry_run.reply(error="no_dry_run", hint=dry_run.NO_DRY_RUN_HINT) and set(out) == REPLY_KEYS
+    assert "check_code" in out["hint"] and "not dry-run" in out["hint"]
+    assert methods(requests) == ["get_bridge_capabilities"]
+    assert server._ledger.recent() == []
+
+
+def test_an_old_addin_is_no_dry_run_and_the_method_list_is_the_fallback(revit_env):
+    replies, requests = dry(FakeRevit.default_handler, revit_env, {"code": "return 1;"})   # -32601 for everything new
+    assert replies[0]["error"] == "no_dry_run" and methods(requests) == ["get_bridge_capabilities"]
+    # no `dry_run` feature, but the method is listed: it is asked
+    listed = dict(DRY_CAPS, features={k: v for k, v in DRY_CAPS["features"].items() if k != "dry_run"})
+    replies, requests = dry(dry_addin(caps=listed), revit_env, {"code": "return 1;"})
+    assert replies[0]["success"] is True and methods(requests)[-1] == "dry_run_code_in_revit"
+
+
+def test_a_method_the_capability_promised_but_the_addin_lacks_is_no_dry_run_and_asked_again(revit_env):
+    missing = dry_addin(respond=lambda request: FakeRevit.error(
+        request["id"], -32601, "Method 'dry_run_code_in_revit' not found"))
+    replies, requests = dry(missing, revit_env, {"code": "return 1;"}, {"code": "return 1;"})
+    assert [r["error"] for r in replies] == ["no_dry_run", "no_dry_run"]
+    assert all(r["evidence_id"] is None for r in replies) and server._ledger.recent() == []
+    assert methods(requests) == ["get_bridge_capabilities", "dry_run_code_in_revit"] * 2   # the cache was dropped
+
+
+def test_capabilities_can_dry_run():
+    assert Capabilities("supported", info=DRY_CAPS).can_dry_run is True
+    assert Capabilities("supported", info=CAPS).can_dry_run is False
+    assert Capabilities("supported", info=dict(CAPS, features={}, methods=["dry_run_code_in_revit"])).can_dry_run
+    assert not Capabilities("supported", info=dict(DRY_CAPS, features={"dry_run": "yes"})).can_dry_run
+    assert not Capabilities("unsupported", reason="Method not found").can_dry_run
+    assert not Capabilities("unknown", info=DRY_CAPS).can_dry_run
+
+
+# -- rolled_back must be true ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("answer", [
+    dict(OK_REPLY, rolled_back=False),
+    {k: v for k, v in OK_REPLY.items() if k != "rolled_back"},
+    dict(OK_REPLY, rolled_back=None),
+    dict(OK_REPLY, rolled_back="true"),
+], ids=["false", "missing", "null", "text"])
+def test_a_reply_without_rolled_back_true_is_never_a_success(revit_env, answer):
+    replies, _ = dry(dry_addin(answer), revit_env, {"code": CODE})
+    out = replies[0]
+    assert set(out) == REPLY_KEYS
+    assert out["success"] is False and out["error"] == "dry_run_not_rolled_back"
+    assert out["hint"] == dry_run.NOT_ROLLED_BACK_HINT and "defect" in out["hint"]
+    # the add-in's reply comes along: its keys as sent, its own verdict in the warnings
+    assert out["rolled_back"] == answer.get("rolled_back")
+    assert out["changes"] == CHANGES and out["failures"] == FAILURES and out["result"] == {"ElementId": 9001}
+    rolled = json.dumps(answer.get("rolled_back"))
+    assert out["warnings"] == [f'add-in reply: success true, rolled_back {rolled}, error ""']
+    record = server._ledger.get(out["evidence_id"])
+    assert record["action"] == "dry_run" and record["success"] is False
+    assert record["error"] == "dry_run_not_rolled_back" and record["result_summary"]["rolled_back"] is False
+
+
+@pytest.mark.parametrize("raw", ["garbage", [1, 2], None, 7])
+def test_a_reply_that_is_not_an_object_is_not_rolled_back(revit_env, raw):
+    replies, _ = dry(dry_addin(respond=lambda request: FakeRevit.ok(request["id"], raw)), revit_env, {"code": CODE})
+    out = replies[0]
+    assert set(out) == REPLY_KEYS and out["success"] is False and out["error"] == "dry_run_not_rolled_back"
+    assert out["warnings"] == [f"unexpected reply to dry_run_code_in_revit: {raw}"]
+    record = server._ledger.get(out["evidence_id"])
+    assert record["error"] == "dry_run_not_rolled_back" and record["result_summary"]["rolled_back"] is None
+
+
+# -- failures in Revit -----------------------------------------------------------------------------
+
+def test_a_dry_run_that_threw_points_at_the_fix_lessons(revit_env):
+    empty = {"added": {"count": 0, "by_category": {}, "ids": []},
+             "modified": {"count": 0, "by_category": {}, "ids": []}, "deleted": {"count": 0, "ids": []}}
+    answer = dict(OK_REPLY, success=False, result=None, error=THROWN, changes=empty, failures=[])
+    replies, _ = dry(dry_addin(answer), revit_env, {"code": CODE})
+    out = replies[0]
+    assert set(out) == REPLY_KEYS and out["success"] is False and out["rolled_back"] is True
+    assert out["error"] == THROWN and out["changes"] == empty and out["result"] is None
+    names = json.dumps(["Autodesk.Revit.Exceptions.ArgumentException"])
+    assert out["hint"] == failure_hint(THROWN) == EXCEPTION_HINT.format(exceptions=names)
+    assert out["hint"].startswith('call get_guidance(stage="fix", exceptions=')
+    record = server._ledger.get(out["evidence_id"])
+    assert record["success"] is False and record["error"] == THROWN
+    assert record["result_summary"]["changes"] == {"added": 0, "modified": 0, "deleted": 0}
+
+
+def test_a_compile_failure_is_reported_as_the_addin_sent_it(revit_env):
+    answer = {"success": False, "rolled_back": True, "result": None, "error": "", "diagnostics": [CS1061],
+              "fingerprint": "sha256:abc"}                       # no changes, no failures: nothing ran
+    replies, _ = dry(dry_addin(answer), revit_env, {"code": CODE})
+    out = replies[0]
+    assert set(out) == REPLY_KEYS and out["success"] is False and out["diagnostics"] == [CS1061]
+    assert out["changes"] is None and out["failures"] == [] and out["hint"] is None and out["error"] == ""
+    summary = server._ledger.get(out["evidence_id"])["result_summary"]
+    # no value is not zero: the counts the add-in did not give stay null
+    assert summary == {"ids": [], "rolled_back": True, "changes": {"added": None, "modified": None, "deleted": None},
+                       "failures": None, "diagnostics": 1}
+
+
+@pytest.mark.parametrize("respond,error", [
+    (lambda request: FakeRevit.DROP, "Revit add-in closed connection"),
+    (lambda request: [], "Timeout after 0.5s"),
+    (lambda request: FakeRevit.error(request["id"], -32603, "Internal error: System.NullReferenceException: x"),
+     "Internal error: System.NullReferenceException: x"),
+], ids=["dropped", "silent", "rpc_error"])
+def test_no_dry_run_reply_is_recorded_with_the_rollback_unconfirmed(tmp_path, respond, error):
+    ledger = Ledger(tmp_path / "evidence")
+
+    async def scenario(client, fake):
+        return await dry_run.dry_run_code(client, CODE, [3], ledger=ledger, host="web")
+
+    out = asyncio.run(_with_client(dry_addin(respond=respond), scenario, timeout=0.5))
+    assert set(out) == REPLY_KEYS and out["success"] is False and out["error"] == error
+    assert out["rolled_back"] is None and out["hint"] == failure_hint(error, dry_run.NO_REPLY_HINT)
+    assert out["hint"].endswith(dry_run.NO_REPLY_HINT)
+    record = ledger.get(out["evidence_id"])                   # it may have reached Revit: recorded
+    assert record["action"] == "dry_run" and record["host"] == "web" and record["error"] == error
+    assert record["params"] == {"parameters": [3]} and record["result_summary"]["rolled_back"] is None
+
+
+def test_without_revit_nothing_runs_and_nothing_is_recorded(monkeypatch, tmp_path):
+    monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")
+    monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "1")
+    out = json.loads(asyncio.run(server.mcp.call_tool("dry_run_code", {"code": "return 1;"})).content[0].text)
+    assert set(out) == REPLY_KEYS and out["success"] is False and out["error"].startswith("unreachable: ")
+    assert out["evidence_id"] is None and server._ledger.recent() == []
+    # a refused token on the add-in side is no "no_dry_run" either
+    ledger = Ledger(tmp_path / "evidence")
+
+    async def scenario(client, fake):
+        return await dry_run.dry_run_code(client, "return 1;", ledger=ledger)
+
+    out = asyncio.run(_with_client(dry_addin(), scenario, token="pre-shared"))
+    assert out["error"].startswith("auth: Unauthorized") and ledger.recent() == []
+
+
+# -- the ledger --------------------------------------------------------------------------------------
+
+def test_the_dry_run_leaves_a_ledger_line_without_any_confirmation(revit_env, isolated_data_dir):
+    replies, _ = dry(dry_addin(), revit_env, {"code": CODE, "parameters": [7]})
+    out = replies[0]
+    record = server._ledger.get(out["evidence_id"])
+    assert list(record) == list(RECORD_FIELDS)
+    assert record["action"] == "dry_run" and record["host"] == "mcp" and record["scope"] == "local"
+    for field in ("tool", "tool_version", "spec_hash", "projection_hash", "token_prefix", "confirmed_by",
+                  "channel", "validation"):
+        assert record[field] is None, field
+    assert record["code_sha256"] == hashlib.sha256(CODE.encode("utf-8")).hexdigest() and record["code_head"] == CODE
+    assert record["params"] == {"parameters": [7]}
+    assert record["document"] == {"title": None, "revit_version": "2026", "fingerprint": None}
+    assert record["success"] is True and record["error"] is None
+    assert record["result_summary"] == {"ids": [9001], "rolled_back": True,
+                                        "changes": {"added": 3, "modified": 1, "deleted": 0},
+                                        "failures": 1, "diagnostics": 0}
+    assert record["preconditions_failed"] == [] and record["warnings"] == []
+    assert [r["id"] for r in json.loads(asyncio.run(server.mcp.call_tool("evidence", {})).content[0].text)] == [
+        out["evidence_id"]]
+    # no token was issued or spent, and a dry run is not an execution to verify or validate
+    assert list((isolated_data_dir / "evidence" / "pending").glob("*.json")) == []
+
+    def call(name, **args):
+        return json.loads(asyncio.run(server.mcp.call_tool(name, args)).content[0].text)
+
+    assert call("verify_execution", evidence_id=out["evidence_id"],
+                verification_id="v_0000000000000000")["error"] == "unknown_evidence"
+    assert call("validate", evidence_id=out["evidence_id"])["error"] == "no_validator"
+
+
+def test_another_host_records_its_own_host_and_scope(tmp_path):
+    ledger = Ledger(tmp_path / "evidence")
+
+    async def scenario(client, fake):
+        return await dry_run.dry_run_code(client, CODE, None, ledger=ledger, host="web", scope="dev_abcdefghijkl")
+
+    out = asyncio.run(_with_client(dry_addin(), scenario))
+    assert out["success"] is True
+    record = ledger.get(out["evidence_id"])
+    assert record["host"] == "web" and record["scope"] == "dev_abcdefghijkl" and record["params"] == {"parameters": []}
+
+
+def test_a_ledger_that_cannot_be_written_costs_a_warning(tmp_path):
+    class Full(Ledger):
+        def append(self, record):
+            raise OSError(28, "No space left on device")
+
+    async def scenario(client, fake):
+        return await dry_run.dry_run_code(client, CODE, ledger=Full(tmp_path / "evidence"))
+
+    out = asyncio.run(_with_client(dry_addin(), scenario))
+    assert out["success"] is True and out["evidence_id"] is None
+    assert out["warnings"] == ["evidence not recorded: [Errno 28] No space left on device"]
+
+
+# -- regression: execute_code and the hook ---------------------------------------------------------
+
+def test_execute_code_without_a_token_is_still_refused_where_a_dry_run_is_offered(revit_env, monkeypatch):
+    monkeypatch.delenv("REVIT_BRIDGE_ALLOW_UNCONFIRMED", raising=False)
+
+    async def scenario():
+        async with FakeRevit(dry_addin()) as fake:
+            revit_env(fake.port)
+            try:
+                result = await server.mcp.call_tool("execute_code", {"code": CODE})
+                return json.loads(result.content[0].text), fake.requests
+            finally:
+                await RevitClientPool.disconnect()
+
+    out, requests = asyncio.run(scenario())
+    assert out["success"] is False and out["error"] == "confirmation_required" and requests == []
+
+
+def _hook():
+    import importlib.util
+
+    path = ROOT / "plugin" / "hooks" / "spec_gate.py"
+    module_spec = importlib.util.spec_from_file_location("spec_gate", path)
+    hook = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(hook)
+    return hook
+
+
+DRY_NAMES = ("mcp__revit-bridge__dry_run_code", "mcp__plugin_revit-bridge_revit-bridge__dry_run_code")
+GATED = ("mcp__revit-bridge__execute_code", "mcp__plugin_revit-bridge_revit-bridge__execute_code",
+         "mcp__revit-bridge__run_tool", "mcp__plugin_revit-bridge_revit-bridge__run_tool")
+
+
+def test_the_hook_denies_execute_code_without_a_token_and_lets_dry_run_code_pass():
+    hook = _hook()
+    for name in GATED:
+        assert hook.decide(name, {"code": CODE}) == hook.REASON, name
+    for name in DRY_NAMES:
+        assert hook.decide(name, {"code": CODE}) is None, name
+        assert hook.decide(name, {}) is None, name
+    matcher = json.loads((ROOT / "plugin" / "hooks" / "hooks.json").read_text(encoding="utf-8"))[
+        "hooks"]["PreToolUse"][0]["matcher"]
+    assert all(re.search(matcher, name) is None for name in DRY_NAMES)       # the hook is not even started
+    assert all(re.search(matcher, name) for name in GATED)
+
+
+@pytest.mark.parametrize("name,denied", [(DRY_NAMES[0], False), (DRY_NAMES[1], False),
+                                         (GATED[0], True), (GATED[1], True)])
+def test_the_hook_script_itself(name, denied):
+    """The script as the host runs it: JSON on stdin, a deny decision on stdout or nothing."""
+    event = {"hook_event_name": "PreToolUse", "tool_name": name, "tool_input": {"code": CODE}}
+    run = subprocess.run([sys.executable, "-I", str(ROOT / "plugin" / "hooks" / "spec_gate.py")],
+                         input=json.dumps(event).encode("utf-8"), capture_output=True, check=True)
+    if denied:
+        decision = json.loads(run.stdout)["hookSpecificOutput"]
+        assert decision["permissionDecision"] == "deny" and "confirm_spec" in decision["permissionDecisionReason"]
+    else:
+        assert run.stdout == b"" and run.stderr == b""

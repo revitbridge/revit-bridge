@@ -662,9 +662,10 @@ def test_tool_names_and_the_check_code_schema():
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
     assert set(tools) == {
         "get_project_snapshot", "query", "missing_params", "reconcile", "confirm_spec", "check_code",
-        "execute_code", "solidify_tool", "list_tools", "get_tool_choices", "run_tool", "evidence", "validate",
-        "get_guidance", "plan_verification", "verify_execution",
+        "dry_run_code", "execute_code", "solidify_tool", "list_tools", "get_tool_choices", "run_tool", "evidence",
+        "validate", "get_guidance", "plan_verification", "verify_execution",
     }
+    assert len(tools) == 17
     check = tools["check_code"]
     assert check.annotations.model_dump(by_alias=True)["readOnlyHint"] is True
     assert set(check.input_schema["properties"]) == {"code", "parameters"} and check.input_schema["required"] == ["code"]

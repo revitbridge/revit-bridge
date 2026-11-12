@@ -26,6 +26,9 @@ uvx --from . revit-bridge check   # read the open document's title through the a
   (`server_instructions()` / `host_instructions()` from one text).
 - `revit_bridge/checking.py` — `check_code`: compile C# in Revit without running it (local `sandbox.review`
   first, then the add-in's `check_code_in_revit`); the reply adds `hints` and `guidance` lessons.
+- `revit_bridge/dry_run.py` - `dry_run_code`: run C# in Revit and always roll it back (`sandbox.review`, the
+  add-in's `dry_run_code_in_revit`, `rolled_back` must be true, a ledger line `action: "dry_run"`); no token,
+  no gate.
 - `revit_bridge/revit/` — TCP JSON-RPC client, connection pool, settings from `REVIT_BRIDGE_*`, sandbox,
   `probe.py` (`check_connection`, `PING_PROBE`).
 - `revit_bridge/snapshot/` — query atoms, model queries (`query.py`, incl. the `query` tool kinds),

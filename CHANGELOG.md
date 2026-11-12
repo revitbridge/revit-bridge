@@ -6,6 +6,20 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `dry_run_code(code, parameters)`, the 17th MCP tool: runs C# in the open
+  model through the add-in's `dry_run_code_in_revit` and always rolls it
+  back, so it needs no confirmation and no token. The reply carries the
+  add-in's keys (`success`, `rolled_back`, `result`, `error`, `diagnostics`,
+  `changes` with counts by category, `failures`, `fingerprint`) plus
+  `evidence_id`, `hint` and `warnings`, every key always present. Code the
+  sandbox refuses never reaches Revit (`blocked`); an add-in without the dry
+  run answers `no_dry_run`; a reply whose `rolled_back` is not true is never
+  a success (`dry_run_not_rolled_back`). Each dry run leaves a ledger line
+  with `action: "dry_run"` and no confirmation. The gate, `execute_code`,
+  `run_tool` and the hook are unchanged; the hook does not match the new tool.
+
 ## [0.6.1] - 2026-11-09
 
 Fixes for a server that outlives Revit, for Chinese-language Windows, and for the files the package keeps on disk. No tool, pack format, TaskSpec or wire-format change. The `websockets` dependency is gone (nothing imported it). Hosts: `DeviceStore` update methods now raise `OSError` when `devices.json` cannot be read, instead of treating it as empty.
