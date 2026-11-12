@@ -34,7 +34,7 @@ Kind: <standalone IExternalCommand add-in | ribbon command | bridge snippet>. Tr
 - Known environment: <an open Revit with ..., reachable tools, ...>.
 
 ## Verification
-- Implementer: build; <bridge prototype of ... on the open model>; <check_code of ...>. If the prototype needs a confirmation nobody can give, the report says so.
+- Implementer: build; <bridge prototype of ... on the open model, dry-run with dry_run_code (no confirmation)>; <check_code of ...>. If no bridge reaches a Revit or the add-in has no dry run, the report says "not verified in Revit".
 - Only in Revit by a person: <picks, dialog, visual result, ...>.
 - Report: build command and result; each step above with verified / not verified and how.
 

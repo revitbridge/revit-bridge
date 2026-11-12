@@ -2,7 +2,8 @@
 
 Intent bridge between designers and AI for Autodesk Revit: an MCP server that
 executes code in a running Revit, keeps a library of reusable capability
-packs, and refuses to run anything the designer has not confirmed.
+packs, and refuses to run anything the designer has not confirmed - except a
+dry run, which is always rolled back and keeps nothing.
 
 The package contains no model SDK, no vector store and no web framework. Your
 MCP host (Claude Desktop, Claude Code, any MCP client) brings the model; the

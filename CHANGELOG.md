@@ -19,9 +19,10 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   a success (`dry_run_not_rolled_back`). Each dry run leaves a ledger line
   with `action: "dry_run"` and no confirmation. The gate, `execute_code`,
   `run_tool` and the hook are unchanged; the hook does not match the new tool.
-- The `revit-bridge` skill has a section on dry runs; `revit-addin-dev`
-  dry-runs the core logic before delivery instead of reporting "not verified
-  in Revit" when nobody is there to confirm.
+- The `revit-bridge` skill has a section on dry runs and says what they
+  need; `revit-addin-dev` and `revit-task-brief` dry-run the core logic
+  before delivery instead of reporting "not verified in Revit" when nobody
+  is there to confirm.
 
 ## [0.6.1] - 2026-11-09
 

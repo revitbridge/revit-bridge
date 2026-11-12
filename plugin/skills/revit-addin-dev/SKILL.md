@@ -31,7 +31,7 @@ Without the bridge every step below is still available; the table says what the 
 
 | Without revit-bridge | With revit-bridge components |
 | --- | --- |
-| The default. Source, the target release's API references and a local build carry every section of this skill, the starter generator included. Checks that need a running Revit go into the hand-over for the `revit-addin-test` skill. | **MCP server + `revit-bridge` skill**: read the selected elements, parameter identity and loaded types from the open model; compile a snippet with `check_code` and run a confirmed prototype before porting it. **revit-bridge-addin**: the Revit side the server talks to; without it the server reads nothing. **`revit-api-docs`**: look up members and samples of the target release instead of recalling them. |
+| The default. Source, the target release's API references and a local build carry every section of this skill, the starter generator included. Checks that need a running Revit go into the hand-over for the `revit-addin-test` skill. | **MCP server + `revit-bridge` skill**: read the selected elements, parameter identity and loaded types from the open model; compile a snippet with `check_code` and dry-run it with `dry_run_code` (no confirmation, always rolled back) before porting it. **revit-bridge-addin**: the Revit side the server talks to; without it the server reads nothing. **`revit-api-docs`**: look up members and samples of the target release instead of recalling them. |
 
 Choose the next step by the development need:
 

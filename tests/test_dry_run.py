@@ -505,3 +505,37 @@ def test_the_addin_dev_skill_dry_runs_the_core_logic():
         "For trying logic, use `dry_run_code` first: it runs in the open model and rolls back, with no TaskSpec, "
         "no confirmation and no token. The contract below is for a run whose result must stay in the model.\n\n"
         "A normal source/build task needs neither a TaskSpec nor a live prototype.")
+
+
+# The rule every text now follows: dry-run with dry_run_code (no confirmation); "not verified in Revit" only
+# when no bridge reaches a Revit or the add-in has no dry run; a run whose result must stay is confirmed.
+NOT_VERIFIED_ONLY = "no bridge reaches a Revit or the add-in has no dry run"
+
+
+@pytest.mark.parametrize("path,old,new", [
+    ("revit-task-brief/SKILL.md", 'needs a human and nobody is present, the report says "not verified in Revit: '
+     'no confirmation available"', "names the prototype to dry-run there with `dry_run_code`, which needs no "
+     "confirmation; a run whose result must stay still needs the designer's confirmation"),
+    ("revit-task-brief/references/brief-template.md", "If the prototype needs a confirmation nobody can give",
+     "dry-run with dry_run_code (no confirmation)"),
+    ("revit-addin-dev/references/addin-development.md", "a prototype through the confirmation protocol) before",
+     "then a dry run with `dry_run_code`, which needs no confirmation; a run whose result must stay goes through "
+     "the confirmation protocol"),
+    ("revit-addin-dev/SKILL.md", "run a confirmed prototype before porting it",
+     "dry-run it with `dry_run_code` (no confirmation, always rolled back) before porting it"),
+])
+def test_no_skill_text_still_waits_for_a_confirmation_to_verify(path, old, new):
+    text = (SKILLS / path).read_text(encoding="utf-8")
+    assert old not in text and new in text
+    if path != "revit-addin-dev/SKILL.md":
+        assert NOT_VERIFIED_ONLY in text
+
+
+def test_the_bridge_skill_says_what_the_dry_run_needs_and_the_readme_stays_true():
+    text = (SKILLS / "revit-bridge" / "SKILL.md").read_text(encoding="utf-8")
+    intro = text[text.index("# revit-bridge"):text.index("## The bridge flow")]
+    assert ("`dry_run_code` needs a server that has the tool and an add-in that reports `features.dry_run`; "
+            "without them, go on without a dry run and say so)") in intro
+    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+    assert ("refuses to run anything the designer has not confirmed - except a dry run, which is always rolled "
+            "back and keeps nothing.") in readme
