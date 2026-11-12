@@ -498,10 +498,16 @@ def test_the_addin_dev_skill_dry_runs_the_core_logic():
     assert ("| Try an algorithm in the current model | Run the core logic with dry_run_code: it executes in the open "
             "model and rolls back, so it needs no confirmation. Read what it would change and what Revit warned "
             "about. Keep the confirmation protocol for runs that must stay. |") in text
-    assert ('5. **Core logic runs in the open model before delivery** when a bridge reaches a Revit: dry-run it '
-            '(dry_run_code needs no confirmation) on the real elements the command will meet, and fix what it '
-            'shows. Say "not verified in Revit" only when no bridge reaches a Revit or the add-in has no dry run.'
-            ) in text
+    assert ('5. **Core logic lives in its own file and runs in the open model before delivery.** Put the work in '
+            'one source file that takes plain values (the document, element ids, numbers, names) and touches no '
+            'dialog, no pick and no file. When a bridge reaches a Revit, dry-run that file as it is (`dry_run_code` '
+            'with `include`, no confirmation) on the real elements the command will meet, read what it would '
+            'change, and fix what it shows; then build the same file into the add-in without retyping it. The '
+            'file needs its own `using` lines and syntax the Revit-side compiler accepts (C# 12). Say "not '
+            'verified in Revit" only when no bridge reaches a Revit or the add-in has no dry run.') in text
+    assert "5. **Core logic runs in the open model before delivery**" not in text
+    section = text[text.index("## Non-negotiables in every command"):text.index("## Verify and hand over")]
+    assert [line[:3] for line in section.splitlines() if line[:1].isdigit()] == ["1. ", "2. ", "3. ", "4. ", "5. "]
     assert "within the existing confirmation protocol" not in text and "who is not there" not in text
     reference = (SKILLS / "revit-addin-dev" / "references" / "bridge-development.md").read_text(encoding="utf-8")
     heading = "## Prototype with the existing contract\n\n"
@@ -546,14 +552,29 @@ def test_the_bridge_skill_says_what_the_dry_run_needs_and_the_readme_stays_true(
             "back and keeps nothing.") in readme
 
 
+def test_the_bridge_skill_dry_runs_an_addin_file_through_include():
+    text = (SKILLS / "revit-bridge" / "SKILL.md").read_text(encoding="utf-8")
+    heading = "## Dry run: try it without changing anything"
+    section = text[text.index(heading):text.index("## Parameter source protocol")]
+    bullets = [line for line in section.splitlines() if line.startswith("- ")]
+    assert bullets[0].startswith("- Use it after `check_code` passes and before you show the card")
+    assert bullets[1] == (
+        "- When the code belongs to an add-in, do not paste it: keep the logic in its own source file and pass "
+        "that file in `include`, with a snippet that only calls it on real element ids (`return "
+        "MyAddin.Core.Run(document, new ElementId(long.Parse(parameters[0].ToString())));`). The file you "
+        "dry-run is then the file you build.")
+    assert bullets[2].startswith("- Use it when nobody is there to confirm.") and len(bullets) == 6
+
+
 # -- include: the add-in's own source files, dry-run as they are ---------------------------------------
 
 SRC_CAPS = dict(DRY_CAPS, features={**DRY_CAPS["features"], "dry_run_sources": True})
 CORE = ("using Autodesk.Revit.DB;\n\nnamespace MyAddin\n{\n    public static class Core\n    {\n"
         "        public static object Run(Document document, ElementId id) => new { ElementId = Geometry.Id(id) };\n"
         "    }\n}\n")
+WALL_CHAR = chr(0x5899)                         # a Chinese character: 3 bytes in UTF-8, the source file stays ASCII
 HELPERS = ("using Autodesk.Revit.DB;\n\nnamespace MyAddin\n{\n    public static class Geometry\n    {\n"
-           "        public static long Id(ElementId id) => id.Value; // 墙\n    }\n}\n")
+           f"        public static long Id(ElementId id) => id.Value; // {WALL_CHAR}\n    }}\n}}\n")
 CALL = "return MyAddin.Core.Run(document, new ElementId(long.Parse(parameters[0].ToString())));"
 
 
@@ -649,7 +670,7 @@ def test_the_size_limit_is_inclusive_and_counts_utf8_bytes(tmp_path):
     exact = write(tmp_path / "Exact.cs", "// " + "x" * (dry_run.MAX_SOURCE_BYTES - 3))
     refused, sources = dry_run.read_sources([str(exact)])
     assert refused is None and len(sources[0]["text"].encode("utf-8")) == dry_run.MAX_SOURCE_BYTES
-    wide = write(tmp_path / "Wide.cs", "// " + "墙" * ((dry_run.MAX_SOURCE_BYTES - 3) // 3 + 1))   # 3 bytes each
+    wide = write(tmp_path / "Wide.cs", "// " + WALL_CHAR * ((dry_run.MAX_SOURCE_BYTES - 3) // 3 + 1))
     assert dry_run.read_sources([str(wide)])[0]["error"] == "include_too_large"
     assert dry_run.read_sources(None) == (None, []) and dry_run.read_sources([]) == (None, [])
     assert dry_run.read_sources([str(exact)] * 2)[0]["error"] == "include_duplicate_name"   # the same file twice

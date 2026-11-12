@@ -78,7 +78,7 @@ Hand-tested batches of generated add-ins (36 builds, 2026-10) failed on the same
 2. **Inserts never overlap**: check every planned door, window or opening against the host's `FindInserts` and against each other before the first placement; refuse or move with a message.
 3. **Rebuilt elements keep their properties**: diameter, system, level, type and connections are copied from the original; split MEP curves in place (`BreakCurve`) rather than delete-and-recreate.
 4. **The UI tells the truth**: inputs are validated with the reason shown; OK acts or explains; Cancel and Escape return `Result.Cancelled`; no silent `catch`; a closing summary.
-5. **Core logic runs in the open model before delivery** when a bridge reaches a Revit: dry-run it (dry_run_code needs no confirmation) on the real elements the command will meet, and fix what it shows. Say "not verified in Revit" only when no bridge reaches a Revit or the add-in has no dry run.
+5. **Core logic lives in its own file and runs in the open model before delivery.** Put the work in one source file that takes plain values (the document, element ids, numbers, names) and touches no dialog, no pick and no file. When a bridge reaches a Revit, dry-run that file as it is (`dry_run_code` with `include`, no confirmation) on the real elements the command will meet, read what it would change, and fix what it shows; then build the same file into the add-in without retyping it. The file needs its own `using` lines and syntax the Revit-side compiler accepts (C# 12). Say "not verified in Revit" only when no bridge reaches a Revit or the add-in has no dry run.
 
 ## Verify and hand over
 

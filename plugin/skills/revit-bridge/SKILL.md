@@ -31,6 +31,7 @@ Always in this order. Do not skip a step because the task looks simple.
 `dry_run_code(code, parameters)` runs the code in the open model and always rolls it back. It needs no confirmation and no token, because it keeps nothing. It returns what the code returned, what it would have added, modified and deleted, and every warning or error Revit raised.
 
 - Use it after `check_code` passes and before you show the card: a card for code that has already run cleanly on this model is a better card. Put its outcome on the card as one line (`Dry run: +1 OST_Walls, +2 OST_Doors, no warnings`).
+- When the code belongs to an add-in, do not paste it: keep the logic in its own source file and pass that file in `include`, with a snippet that only calls it on real element ids (`return MyAddin.Core.Run(document, new ElementId(long.Parse(parameters[0].ToString())));`). The file you dry-run is then the file you build.
 - Use it when nobody is there to confirm. The real run still needs the designer; the dry run does not. Report "dry run passed, not applied" - never "done".
 - Read `changes` before you trust the code. More `modified` elements than the designer named means the code reaches further than the request (editing a type changes every instance of it).
 - A dry run is not an execution. Ids it returns are gone after the rollback; nothing it created exists.

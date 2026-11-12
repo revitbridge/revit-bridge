@@ -30,7 +30,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 - The `revit-bridge` skill has a section on dry runs and says what they
   need; `revit-addin-dev` and `revit-task-brief` dry-run the core logic
   before delivery instead of reporting "not verified in Revit" when nobody
-  is there to confirm.
+  is there to confirm. `revit-addin-dev` keeps the core logic in its own
+  file, the one that is dry-run and built.
 
 ## [0.6.1] - 2026-11-09
 
