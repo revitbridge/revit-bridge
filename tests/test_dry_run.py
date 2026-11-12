@@ -479,7 +479,8 @@ def test_the_bridge_skill_has_the_dry_run_section_after_the_flow():
     assert text.count(heading) == 1
     assert text.index("**A run that threw.**") < text.index(heading) < text.index("## Parameter source protocol")
     section = text[text.index(heading):text.index("## Parameter source protocol")]
-    for phrase in ("`dry_run_code(code, parameters)` runs the code in the open model and always rolls it back.",
+    for phrase in ("`dry_run_code(code, parameters, include)` runs the code in the open model and always rolls it "
+                   "back.",
                    "It needs no confirmation and no token, because it keeps nothing.",
                    "Use it after `check_code` passes and before you show the card",
                    "(`Dry run: +1 OST_Walls, +2 OST_Doors, no warnings`)",
@@ -503,8 +504,12 @@ def test_the_addin_dev_skill_dry_runs_the_core_logic():
             'dialog, no pick and no file. When a bridge reaches a Revit, dry-run that file as it is (`dry_run_code` '
             'with `include`, no confirmation) on the real elements the command will meet, read what it would '
             'change, and fix what it shows; then build the same file into the add-in without retyping it. The '
-            'file needs its own `using` lines and syntax the Revit-side compiler accepts (C# 12). Say "not '
-            'verified in Revit" only when no bridge reaches a Revit or the add-in has no dry run.') in text
+            'file is compiled inside Revit, so it needs its own `using` lines, C# 12 syntax at most, and nothing '
+            'beyond the .NET base library and the Revit API (no regular expressions, no JSON library, no NuGet '
+            'package); it must not name `File`, `IO`, `Process`, `Assembly`, `DllImport` or `Registry`. What '
+            'needs those stays in the command file, outside the core file. Say "not verified in Revit" only when '
+            'no bridge reaches a Revit or the add-in has no dry run.') in text
+    assert "Revit-side compiler accepts" not in text
     assert "5. **Core logic runs in the open model before delivery**" not in text
     section = text[text.index("## Non-negotiables in every command"):text.index("## Verify and hand over")]
     assert [line[:3] for line in section.splitlines() if line[:1].isdigit()] == ["1. ", "2. ", "3. ", "4. ", "5. "]
@@ -545,8 +550,9 @@ def test_no_skill_text_still_waits_for_a_confirmation_to_verify(path, old, new):
 def test_the_bridge_skill_says_what_the_dry_run_needs_and_the_readme_stays_true():
     text = (SKILLS / "revit-bridge" / "SKILL.md").read_text(encoding="utf-8")
     intro = text[text.index("# revit-bridge"):text.index("## The bridge flow")]
-    assert ("`dry_run_code` needs a server that has the tool and an add-in that reports `features.dry_run`; "
-            "without them, go on without a dry run and say so)") in intro
+    assert ("`dry_run_code` needs a server that has the tool and an add-in that reports `features.dry_run` "
+            "(`features.dry_run_sources` for `include`); without them, go on without a dry run and say so). "
+            "You are not the designer.") in intro
     readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
     assert ("refuses to run anything the designer has not confirmed - except a dry run, which is always rolled "
             "back and keeps nothing.") in readme
@@ -562,7 +568,8 @@ def test_the_bridge_skill_dry_runs_an_addin_file_through_include():
         "- When the code belongs to an add-in, do not paste it: keep the logic in its own source file and pass "
         "that file in `include`, with a snippet that only calls it on real element ids (`return "
         "MyAddin.Core.Run(document, new ElementId(long.Parse(parameters[0].ToString())));`). The file you "
-        "dry-run is then the file you build.")
+        "dry-run is then the file you build. A file the dry run refuses to compile is a file to simplify, not a "
+        "reason to skip the dry run.")
     assert bullets[2].startswith("- Use it when nobody is there to confirm.") and len(bullets) == 6
 
 
