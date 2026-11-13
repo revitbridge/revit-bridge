@@ -80,9 +80,19 @@ Hand-tested batches of generated add-ins (36 builds, 2026-10) failed on the same
 4. **The UI tells the truth**: inputs are validated with the reason shown; OK acts or explains; Cancel and Escape return `Result.Cancelled`; no silent `catch`; a closing summary.
 5. **Core logic lives in its own file and runs in the open model before delivery.** Put the work in one source file that takes plain values (the document, element ids, numbers, names) and touches no dialog, no pick and no file. When a bridge reaches a Revit, dry-run that file as it is (`dry_run_code` with `include`, no confirmation) on the real elements the command will meet, read what it would change, and fix what it shows; then build the same file into the add-in without retyping it. The file is compiled inside Revit, so it needs its own `using` lines, C# 12 syntax at most, and nothing beyond the .NET base library and the Revit API (no regular expressions, no JSON library, no NuGet package); it must not name `File`, `IO`, `Process`, `Assembly`, `DllImport` or `Registry`. What needs those stays in the command file, outside the core file. Say "not verified in Revit" only when no bridge reaches a Revit or the add-in has no dry run.
 
+## Make the command testable by script
+
+A command that can be run without a person can be tested on the real project before it is delivered. Unless the user's project says otherwise:
+
+- Keep the logic apart from the dialog: one method takes plain values (numbers, ids, names) and does the work; the dialog only collects those values.
+- When a file named `<AssemblyName>.input.json` sits next to the add-in DLL, read the values from it, show no dialog and no message box, and when the command ends write `<AssemblyName>.result.json` next to the DLL: `{"result": "Succeeded" | "Cancelled" | "Failed", "message": "..."}`. Without that file the command behaves as usual.
+- Picks stay real picks (`PickObject`, `PickPoint`): the test clicks them. Do not replace a pick with an id from the input file.
+- Write the result file on every path, the refusal and the exception included. A command that returns without it cannot be told from one that hung.
+- State in the hand-over which keys the input file takes and what each pick expects.
+
 ## Verify and hand over
 
-Build the target configuration and run meaningful tests already present or needed for new nontrivial logic. If an SDK or reference assembly is unavailable, report the missing prerequisite precisely; do not substitute another Revit year's API and claim compatibility.
+Build the target configuration and run meaningful tests already present or needed for new nontrivial logic. If an SDK or reference assembly is unavailable, report the missing prerequisite precisely; do not substitute another Revit year's API and claim compatibility. When a bridge reaches a Revit, run the built DLL there with `test_addin_command` on the real elements before you hand over (the core-logic file was already dry-run on its own; this run covers the picks, the input handling and the build), and report what it changed; a command that was never run on a model is reported as "built, not run".
 
 Distinguish source generated, build passed, bridge prototype checked, compiled add-in loaded, and feature verified. A bridge experiment cannot verify the compiled plugin's manifest, ribbon, dependency loading, or ExternalEvent lifecycle. When Revit testing is available and authorized, verify the compiled command on the intended scope, including cancellation and rollback for a modifying feature.
 

@@ -29,6 +29,9 @@ uvx --from . revit-bridge check   # read the open document's title through the a
 - `revit_bridge/dry_run.py` - `dry_run_code`: run C# in Revit and always roll it back (`sandbox.review`, the
   add-in's `dry_run_code_in_revit`, `rolled_back` must be true, a ledger line `action: "dry_run"`); no token,
   no gate.
+- `revit_bridge/addin_test.py` - `test_addin_command`, `zoom_view`, `capture_view`: run a built add-in DLL's
+  command in Revit and restore the model (`restored_clean` must be true), move and capture the view; no token,
+  no gate.
 - `revit_bridge/revit/` — TCP JSON-RPC client, connection pool, settings from `REVIT_BRIDGE_*`, sandbox,
   `probe.py` (`check_connection`, `PING_PROBE`).
 - `revit_bridge/snapshot/` — query atoms, model queries (`query.py`, incl. the `query` tool kinds),

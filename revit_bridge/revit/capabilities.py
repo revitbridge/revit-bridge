@@ -150,6 +150,13 @@ class Capabilities:
         since a parameter has no entry in the method list."""
         return self.can_dry_run and self.features.get("dry_run_sources") is True
 
+    @property
+    def can_addin_test(self) -> bool:
+        """The add-in runs a built DLL's command and restores the model, and moves and captures the view
+        (``test_addin_command_in_revit``, ``zoom_view_in_revit``, ``capture_view_in_revit``):
+        ``features.addin_test`` only."""
+        return self.supported and self.features.get("addin_test") is True
+
     def as_dict(self) -> dict:
         """The JSON shape the tools and ``revit-bridge check`` print."""
         return {

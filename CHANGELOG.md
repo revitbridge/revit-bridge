@@ -8,6 +8,19 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- `test_addin_command`, `zoom_view`, `capture_view` (20 MCP tools in all):
+  run a built add-in DLL's command in the open model without installing it -
+  picks clicked on elements by id, input from `<name>.input.json` - and
+  restore the model; move the view and save a picture of it. No token, no
+  gate; they need an add-in that reports `features.addin_test` (else
+  `no_addin_test`). The DLL must be a local file; the server's SHA-256 must
+  match the add-in's (`dll_hash_mismatch`); `readback_code` passes the
+  sandbox; the wait is `timeout_seconds` + 30 s; a reply whose
+  `restored_clean` is not true is `addin_test_not_restored`. Each call
+  leaves a ledger line (`action: "addin_test"`, `"zoom_view"`,
+  `"capture_view"`). The skills describe the input-file convention and when
+  to run a built DLL through the bridge.
+
 - `dry_run_code(code, parameters)`, the 17th MCP tool: runs C# in the open
   model through the add-in's `dry_run_code_in_revit` and always rolls it
   back, so it needs no confirmation and no token. The reply carries the

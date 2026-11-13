@@ -160,6 +160,15 @@ describes the starter generator; it does not install or launch the add-in.
      local `.cs` files compiled with the code (at most 20, 400 KB in all), so
      an add-in's core-logic file is dry-run as it is; it needs an add-in that
      reports `features.dry_run_sources` (else `no_dry_run_include`).
+   - `test_addin_command(dll, command_class, picks, input, readback_code,
+     zoom_to, timeout_seconds, restore)` - runs a built add-in DLL's command
+     in the open model without installing it: picks clicked on elements by
+     id, input from `<name>.input.json`, then the model is restored (no
+     token). Returns what the command returned, its result file, the changes
+     and warnings, and the read-back; `addin_test_not_restored` is a defect
+     to report at once. `zoom_view` and `capture_view` move the view and save
+     a picture of it. All three need an add-in that reports
+     `features.addin_test` (else `no_addin_test`).
    - `get_guidance(stage=...)` — lessons for writing Revit code (the snippet
      contract, units, API pitfalls), chosen by stage, API symbols, OST_*
      categories, compiler errors and run-time exceptions; read-only, no token.

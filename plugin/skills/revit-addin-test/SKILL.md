@@ -22,7 +22,7 @@ The output goes to the release phase (the `revit-addin-release` skill):
 
 | Without revit-bridge | With revit-bridge components |
 | --- | --- |
-| The default. A plain add-in is driven through its journal and window automation: readiness is `API_SUCCESS { Starting External Application` and its pushbutton in the journal, dialogs are found by window class, results come from the add-in's own log. The four `scripts/` are all the tooling: `revit_ps.ps1`, `window_list.ps1`, `journal_tail.py`, `addin_snapshot.py`. | **MCP server + `revit-bridge` skill, with revit-bridge-addin in the Revit under test**: the model state before and after each command (element counts, parameters, positions) is read through the bridge for the base and branch table instead of from screenshots or the add-in's own log; the bridge does not run the add-in's commands, those are still driven through Revit's UI. **When the add-in under test is itself a bridge-type add-in**, readiness is its port answering a ping, the calls go through its protocol (JSON lines on `127.0.0.1:<port>`) and every reply is appended to a JSONL file, so the same calls on base and branch diff line by line. |
+| The default. A plain add-in is driven through its journal and window automation: readiness is `API_SUCCESS { Starting External Application` and its pushbutton in the journal, dialogs are found by window class, results come from the add-in's own log. The four `scripts/` are all the tooling: `revit_ps.ps1`, `window_list.ps1`, `journal_tail.py`, `addin_snapshot.py`. | **MCP server + `revit-bridge` skill, with revit-bridge-addin in the Revit under test**: the model state before and after each command (element counts, parameters, positions) is read through the bridge for the base and branch table instead of from screenshots or the add-in's own log; `test_addin_command` runs a built DLL in that Revit without installing it: it clicks the command's picks on the elements you name by id, feeds `<name>.input.json`, returns the result file, what the model gained, changed and lost, and every warning, then restores the model. A command that does not follow the input-file convention can still be started and picked, but its dialog cannot be filled: test those through Revit's UI as in the left column. **When the add-in under test is itself a bridge-type add-in**, readiness is its port answering a ping, the calls go through its protocol (JSON lines on `127.0.0.1:<port>`) and every reply is appended to a JSONL file, so the same calls on base and branch diff line by line. |
 
 ## Shared-machine rules
 
@@ -31,6 +31,16 @@ The output goes to the release phase (the `revit-addin-release` skill):
 3. **When the user says pause**, stop your background tasks and the helpers they spawned, end your Revit, restore the installed add-in, note where you were and wait for an explicit go.
 4. **Never modify the user's files.** Copy sample models to a scratch directory and open the copy; hash originals and links before and after; the user's own add-in logs are not deleted on restore.
 5. **Never touch production** during a test: no release upload, no manifest change, no server.
+
+## Test through the bridge
+
+1. Take the elements from the open project with `query`: test on real elements, never on a model drawn for the test. Pick the ones that make the command work hardest: a type shared by many instances, a host that already has inserts, an element at the edge of the rules.
+2. For each command run at least: one normal input; one input the command must refuse; one cancel (`{"key": "Escape"}` as the pick).
+3. Call `test_addin_command` with the DLL, the class, the picks by element id and the input. It takes over the mouse and needs Revit in the foreground.
+4. Judge from the data: `returned`, `result_file`, `changes`, `failures`, and a `readback_code` that reads the values the request names. More `modified` elements than the request named is a finding, not noise.
+5. Only when the data cannot settle it, look: `capture_view` zoomed to the element.
+6. `restored_clean` must be true after every run. If it is not, stop and tell the user: the model may hold what the test did.
+7. Record per run: DLL hash, picks, input, the returned summary. A run that timed out is "not tested", with its picture.
 
 ## One session
 

@@ -37,6 +37,8 @@ Always in this order. Do not skip a step because the task looks simple.
 - A dry run is not an execution. Ids it returns are gone after the rollback; nothing it created exists.
 - If the add-in answers `no_dry_run`, go on without it and say so.
 
+`test_addin_command` does the same for a compiled add-in: it runs the DLL's command on the open model, clicks its picks on the elements you name, and restores the model. `zoom_view` and `capture_view` move the view and save a picture of it for when the data is not enough. None of the three needs a confirmation; none of them keeps anything in the model.
+
 ## Parameter source protocol
 
 Every value in a spec comes from exactly one source, written in `source` with its `evidence`:

@@ -32,6 +32,9 @@ Tools:
     - plan_verification : before an execute_code: pick a read-back template (no gate)
     - verify_execution  : after it: read the model back against the plan (no gate)
     - get_guidance      : lessons for writing Revit code, by stage (read-only)
+    - test_addin_command : run a built add-in DLL's command in Revit, then restore (no gate)
+    - zoom_view         : zoom the active view to an element or to fit (no gate)
+    - capture_view      : save a picture of the active view (no gate)
 
 The server never calls a model: the host does. Connection settings come from
 ``REVIT_BRIDGE_*`` environment variables (see README, Configure).
@@ -50,7 +53,7 @@ from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
 from revit_bridge import __version__
-from revit_bridge import checking, cli_output, dry_run, guidance_cli, skills_cli
+from revit_bridge import addin_test, checking, cli_output, dry_run, guidance_cli, skills_cli
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
@@ -567,6 +570,63 @@ def get_guidance(
         symbols=symbols, errors=errors, exceptions=exceptions, revit_version=revit_version, ids=ids,
         seen_hashes=seen_hashes,
     ))
+
+
+# -- Testing a built add-in (no gate: the model is restored) ------------------
+
+# They run a local DLL, take over the mouse, move the view or write a picture, but keep nothing in the model.
+_RESTORED = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+
+
+async def _pooled_or_refusal(reply):
+    try:
+        return await RevitClientPool.get_client(), None
+    except Exception as e:                            # refused, timed out, bad settings: nothing ran
+        caps = Capabilities.from_exception(e)
+        return None, reply(error=f"{caps.error_kind or 'unknown'}: {caps.reason}")
+
+
+@mcp.tool(annotations=_RESTORED)
+async def test_addin_command(dll: str, command_class: str, picks: list[dict] | None = None,
+                             input: dict | None = None, readback_code: str | None = None,  # noqa: A002
+                             zoom_to: int | None = None, timeout_seconds: int = 120,
+                             restore: str | None = None) -> str:
+    """Run a compiled add-in command in the open Revit model without installing it and
+    without keeping anything: the command runs on the real project, its picks are
+    clicked for it on the elements you name by id, its inputs come from
+    <name>.input.json, and when it returns the model is restored. Needs no
+    confirmation and no token. Returns what the command returned, the result file it
+    wrote, what it added, modified and deleted (counts by category), every Revit
+    warning or error, and what your read-back code saw before the restore. It takes
+    over the mouse and needs Revit in the foreground while it runs. Plan views only."""
+    refused, _, _ = addin_test.check_test_args(dll, command_class, readback_code, timeout_seconds, restore)
+    if refused is not None:                           # the DLL, the arguments and the sandbox need no Revit
+        return _dumps(refused)
+    client, refused = await _pooled_or_refusal(addin_test.test_reply)
+    if refused is not None:
+        return _dumps(refused)
+    return _dumps(await addin_test.test_addin_command(
+        client, dll, command_class, picks, input, readback_code, zoom_to, timeout_seconds, restore,
+        ledger=_ledger, host="mcp"))
+
+
+@mcp.tool(annotations=_RESTORED)
+async def zoom_view(element_id: int | None = None, margin_mm: float = 2500) -> str:
+    """Zoom the active view to an element (with a margin) or to fit. Changes only the view."""
+    client, refused = await _pooled_or_refusal(addin_test.view_reply)
+    if refused is not None:
+        return _dumps(refused)
+    return _dumps(await addin_test.zoom_view(client, element_id, margin_mm, ledger=_ledger, host="mcp"))
+
+
+@mcp.tool(annotations=_RESTORED)
+async def capture_view(element_id: int | None = None, margin_mm: float = 1500) -> str:
+    """Save a picture of the active view, optionally zoomed to an element first, and
+    return its path. Use it when the data cannot settle a question; it is not a test."""
+    client, refused = await _pooled_or_refusal(addin_test.capture_reply)
+    if refused is not None:
+        return _dumps(refused)
+    return _dumps(await addin_test.capture_view(client, element_id, margin_mm, ledger=_ledger, host="mcp"))
 
 
 # -- Resources ----------------------------------------------------------------
