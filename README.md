@@ -165,10 +165,10 @@ describes the starter generator; it does not install or launch the add-in.
      in the open model without installing it: picks clicked on elements by
      id, input from `<name>.input.json`, then the model is restored (no
      token). Returns what the command returned, its result file, the changes
-     and warnings, and the read-back; `addin_test_not_restored` is a defect
-     to report at once. `zoom_view` and `capture_view` move the view and save
-     a picture of it. All three need an add-in that reports
-     `features.addin_test` (else `no_addin_test`).
+     and every warning the command left to Revit, and the read-back;
+     `addin_test_not_restored` is a defect to report at once. `zoom_view` and
+     `capture_view` move the view and save a picture of it. All three need an
+     add-in that reports `features.addin_test` (else `no_addin_test`).
    - `get_guidance(stage=...)` — lessons for writing Revit code (the snippet
      contract, units, API pitfalls), chosen by stage, API symbols, OST_*
      categories, compiler errors and run-time exceptions; read-only, no token.

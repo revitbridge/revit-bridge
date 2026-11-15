@@ -597,7 +597,8 @@ async def test_addin_command(dll: str, command_class: str, picks: list[dict] | N
     <name>.input.json, and when it returns the model is restored. Needs no
     confirmation and no token. Returns what the command returned, the result file it
     wrote, what it added, modified and deleted (counts by category), every Revit
-    warning or error, and what your read-back code saw before the restore. It takes
+    warning or error the command left to Revit (one the command deleted or resolved
+    itself is not seen), and what your read-back code saw before the restore. It takes
     over the mouse and needs Revit in the foreground while it runs. Plan views only."""
     refused, _, _ = addin_test.check_test_args(dll, command_class, readback_code, timeout_seconds, restore)
     if refused is not None:                           # the DLL, the arguments and the sandbox need no Revit

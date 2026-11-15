@@ -260,7 +260,8 @@ def test_the_tools_have_no_token_and_the_planned_descriptions():
         "<name>.input.json, and when it returns the model is restored. Needs no\n"
         "confirmation and no token. Returns what the command returned, the result file it\n"
         "wrote, what it added, modified and deleted (counts by category), every Revit\n"
-        "warning or error, and what your read-back code saw before the restore. It takes\n"
+        "warning or error the command left to Revit (one the command deleted or resolved\n"
+        "itself is not seen), and what your read-back code saw before the restore. It takes\n"
         "over the mouse and needs Revit in the foreground while it runs. Plan views only.")
     assert tools["zoom_view"].description == (
         "Zoom the active view to an element (with a margin) or to fit. Changes only the view.")
