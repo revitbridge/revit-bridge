@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 
 CAPABILITIES_METHOD = "get_bridge_capabilities"
 CHECK_CODE_METHOD = "check_code_in_revit"
+DRY_RUN_METHOD = "dry_run_code_in_revit"
 METHOD_NOT_FOUND = -32601
 # The add-in answers from a cache on its socket thread; a reply that takes
 # longer than this is not coming.
@@ -132,6 +133,29 @@ class Capabilities:
         if "check_code" in features:
             return features["check_code"] is True
         return self.has_method(CHECK_CODE_METHOD)
+
+    @property
+    def can_dry_run(self) -> bool:
+        """The add-in runs code and always rolls it back: ``features.dry_run``, else the method list."""
+        if not self.supported:
+            return False
+        features = self.features
+        if "dry_run" in features:
+            return features["dry_run"] is True
+        return self.has_method(DRY_RUN_METHOD)
+
+    @property
+    def can_dry_run_sources(self) -> bool:
+        """The dry run also compiles extra source files (``sources``): ``features.dry_run_sources`` only,
+        since a parameter has no entry in the method list."""
+        return self.can_dry_run and self.features.get("dry_run_sources") is True
+
+    @property
+    def can_addin_test(self) -> bool:
+        """The add-in runs a built DLL's command and restores the model, and moves and captures the view
+        (``test_addin_command_in_revit``, ``zoom_view_in_revit``, ``capture_view_in_revit``):
+        ``features.addin_test`` only."""
+        return self.supported and self.features.get("addin_test") is True
 
     def as_dict(self) -> dict:
         """The JSON shape the tools and ``revit-bridge check`` print."""

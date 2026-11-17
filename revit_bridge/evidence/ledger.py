@@ -26,6 +26,14 @@ A read-back check (``verify_execution``) is a line of its own with
 (the execution it checked) and ``verification_id`` (the plan it used).
 Those ``OPTIONAL_FIELDS`` are written only when a record carries them, so
 every other line keeps exactly ``RECORD_FIELDS``.
+
+A dry run (``dry_run_code``, rolled back, no confirmation) is a line with
+``action: "dry_run"`` and ``RECORD_FIELDS`` only: ``tool`` and every
+confirmation field null, the code as its hash and head, and in
+``result_summary`` also ``rolled_back``, the ``changes`` counts (``added``,
+``modified``, ``deleted``), the numbers of ``failures`` and
+``diagnostics``, and ``sources``: the name and SHA-256 of each file the
+dry run included (see ``revit_bridge.dry_run``).
 """
 from __future__ import annotations
 

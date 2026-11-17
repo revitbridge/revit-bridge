@@ -5,7 +5,7 @@ description: Use whenever the designer wants something built, changed, queried o
 
 # revit-bridge
 
-You are connected to a live Revit model through the `revit-bridge` MCP server (**0.4 or newer**: `check_code`, `get_guidance` and `plan_verification` need 0.4. A 0.3 server lacks them - go on without them: the card says "not pre-compiled locally" and "Verification: none - will not be verified", there is no guidance to read, the report is **executed, not verified**, and suggest `uvx --refresh revit-bridge`. If `get_project_snapshot`, `query` or `confirm_spec` is missing too, the server is older than 0.3: tell the designer to update with `uvx --refresh revit-bridge` and stop). You are not the designer. Your job is to turn their words into a TaskSpec in which **every parameter has a source**, get that spec confirmed, run it with the token, and report what the validator found.
+You are connected to a live Revit model through the `revit-bridge` MCP server (**0.4 or newer**: `check_code`, `get_guidance` and `plan_verification` need 0.4. A 0.3 server lacks them - go on without them: the card says "not pre-compiled locally" and "Verification: none - will not be verified", there is no guidance to read, the report is **executed, not verified**, and suggest `uvx --refresh revit-bridge`. If `get_project_snapshot`, `query` or `confirm_spec` is missing too, the server is older than 0.3: tell the designer to update with `uvx --refresh revit-bridge` and stop. `dry_run_code` needs a server that has the tool and an add-in that reports `features.dry_run` (`features.dry_run_sources` for `include`); without them, go on without a dry run and say so). You are not the designer. Your job is to turn their words into a TaskSpec in which **every parameter has a source**, get that spec confirmed, run it with the token, and report what the validator found.
 
 Answer in the designer's language. Keep questions short; keep the spec card complete.
 
@@ -25,6 +25,19 @@ Always in this order. Do not skip a step because the task looks simple.
 8. **Verify and report** - read `success`, `error`, `validation` and `evidence_id`. `success` is true only when Revit succeeded **and** the pack's validator passed; `validation_failed` means the model did not change as claimed - say so. Quote ids, counts and `validation.checks`. After `execute_code`, call `verify_execution(evidence_id, verification_id)` and report exactly one of: **executed and verified** (`verified: true`), **executed but verification failed** (quote `checks[].detail`), **executed, not verified** (no template fitted, or an `error` such as `document_changed` or `verification_expired` - name it). `validate(evidence_id)` re-runs a pack's assertion later; `evidence()` lists past runs and checks.
 
    **A run that threw.** When `success` is false and `hint` begins `call get_guidance(stage="fix", exceptions=[...])`, Revit threw that exception while the code ran. Report the failure as it is, then make that call and read the lessons before you change anything. The changed code is new code: `check_code` until it compiles, plan the verification again, show the new card and get a new confirmation - the old token is spent. After a pack (`run_tool`) the hint goes on with its retry advice: write `execute_code` C# instead of retrying the pack.
+
+## Dry run: try it without changing anything
+
+`dry_run_code(code, parameters, include)` runs the code in the open model and always rolls it back. It needs no confirmation and no token, because it keeps nothing. It returns what the code returned, what it would have added, modified and deleted, and every warning or error Revit raised.
+
+- Use it after `check_code` passes and before you show the card: a card for code that has already run cleanly on this model is a better card. Put its outcome on the card as one line (`Dry run: +1 OST_Walls, +2 OST_Doors, no warnings`).
+- When the code belongs to an add-in, do not paste it: keep the logic in its own source file and pass that file in `include`, with a snippet that only calls it on real element ids (`return MyAddin.Core.Run(document, new ElementId(long.Parse(parameters[0].ToString())));`). The file you dry-run is then the file you build. A file the dry run refuses to compile is a file to simplify, not a reason to skip the dry run.
+- Use it when nobody is there to confirm. The real run still needs the designer; the dry run does not. Report "dry run passed, not applied" - never "done".
+- Read `changes` before you trust the code. More `modified` elements than the designer named means the code reaches further than the request (editing a type changes every instance of it).
+- A dry run is not an execution. Ids it returns are gone after the rollback; nothing it created exists.
+- If the add-in answers `no_dry_run`, go on without it and say so.
+
+`test_addin_command` does the same for a compiled add-in: it runs the DLL's command on the open model, clicks its picks on the elements you name, and restores the model. `zoom_view` and `capture_view` move the view and save a picture of it for when the data is not enough. None of the three needs a confirmation; none of them keeps anything in the model.
 
 ## Parameter source protocol
 

@@ -42,7 +42,7 @@ These come from hand-tested batches of generated add-ins (36 builds, 2026-10): t
 - **Inserts never overlap.** Before the first door or window is placed, every planned opening is compared with every insert already on the host (`FindInserts`) and with the other planned openings; an overlap is refused or moved with a message, never left to Revit's error dialog.
 - **Rebuilt elements keep their properties.** A pipe, duct or wall segment created to replace another copies diameter, system, level, type and connections from the original; for MEP prefer splitting in place (`PlumbingUtils.BreakCurve`) over delete-and-recreate.
 - **The UI tells the truth.** One dialog validates its inputs and says why a value is refused; OK either acts or explains; Cancel and Escape return `Result.Cancelled` with no change; no failure is swallowed by a silent `catch` - every failure reaches the user as a message with the reason; the command ends with a summary.
-- **The core logic is run in the open model before it is delivered.** When the bridge reaches a Revit, the brief's verification section names the prototype to run there. When the bridge's confirmation protocol needs a human and nobody is present, the report says "not verified in Revit: no confirmation available" instead of skipping the step silently.
+- **The core logic is run in the open model before it is delivered.** When the bridge reaches a Revit, the brief's verification section names the prototype to dry-run there with `dry_run_code`, which needs no confirmation; a run whose result must stay still needs the designer's confirmation. When no bridge reaches a Revit or the add-in has no dry run, the report says "not verified in Revit" instead of skipping the step silently.
 
 ## Components
 

@@ -234,7 +234,7 @@ def test_the_skill_says_what_to_do_after_a_run_that_threw():
 
     skill = (pathlib.Path(__file__).resolve().parents[1] / "plugin" / "skills" / "revit-bridge" / "SKILL.md")
     text = skill.read_text(encoding="utf-8")
-    step8 = text[text.index("8. **Verify and report**"):text.index("## Parameter source protocol")]
+    step8 = text[text.index("8. **Verify and report**"):text.index("## Dry run: try it without changing anything")]
     paragraph = step8[step8.index("**A run that threw.**"):]
     assert len(paragraph.strip().splitlines()) <= 5
     for phrase in ('`call get_guidance(stage="fix", exceptions=[...])`', "Report the failure as it is",
@@ -338,6 +338,27 @@ def test_the_tool_descriptions_carry_the_contract_summary():
     for name in ("check_code", "execute_code"):
         assert sentence in tools[name].description, name
         assert "<snippet contract>" not in tools[name].description
+
+
+def test_no_tool_description_carries_the_source_indentation(monkeypatch):
+    """A tool description is its docstring cleaned, on every Python version: 3.13+ strip the source
+    indentation from __doc__ when compiling, 3.11 and 3.12 keep it, and the SDK passes __doc__ on as is."""
+    import asyncio
+    import inspect
+
+    from mcp.server.mcpserver import MCPServer
+
+    for tool in asyncio.run(server.mcp.list_tools()):
+        assert tool.description and tool.description == inspect.cleandoc(tool.description), tool.name
+    # the registration cleans it, not only the compiler: a docstring as 3.11 keeps it
+    def probe() -> str:
+        return ""
+
+    probe.__doc__ = "First line,\n    second line,\n      indented once more."
+    monkeypatch.setattr(server, "mcp", MCPServer("probe"))
+    server._tool()(probe)
+    (tool,) = asyncio.run(server.mcp.list_tools())
+    assert tool.description == "First line,\nsecond line,\n  indented once more."
 
 
 def test_the_skill_carries_the_contract_block():

@@ -2,7 +2,8 @@
 
 Intent bridge between designers and AI for Autodesk Revit: an MCP server that
 executes code in a running Revit, keeps a library of reusable capability
-packs, and refuses to run anything the designer has not confirmed.
+packs, and refuses to run anything the designer has not confirmed - except a
+dry run, which is always rolled back and keeps nothing.
 
 The package contains no model SDK, no vector store and no web framework. Your
 MCP host (Claude Desktop, Claude Code, any MCP client) brings the model; the
@@ -151,6 +152,23 @@ describes the starter generator; it does not install or launch the add-in.
      without running it (no token): `diagnostics` with lines in your code,
      `hints`, and `guidance` (the lessons for those errors, or pointers once it
      compiles); `checked: false` when the add-in cannot (an older add-in).
+   - `dry_run_code(code, parameters, include)` - runs C# in Revit and always
+     rolls it back (no token): what the code returned, what it would have
+     added, modified and deleted (counts by category), and every Revit warning
+     or error; `no_dry_run` when the add-in has no dry run, and
+     `dry_run_not_rolled_back` is a defect to report at once. `include` names
+     local `.cs` files compiled with the code (at most 20, 400 KB in all), so
+     an add-in's core-logic file is dry-run as it is; it needs an add-in that
+     reports `features.dry_run_sources` (else `no_dry_run_include`).
+   - `test_addin_command(dll, command_class, picks, input, readback_code,
+     zoom_to, timeout_seconds, restore)` - runs a built add-in DLL's command
+     in the open model without installing it: picks clicked on elements by
+     id, input from `<name>.input.json`, then the model is restored (no
+     token). Returns what the command returned, its result file, the changes
+     and every warning the command left to Revit, and the read-back;
+     `addin_test_not_restored` is a defect to report at once. `zoom_view` and
+     `capture_view` move the view and save a picture of it. All three need an
+     add-in that reports `features.addin_test` (else `no_addin_test`).
    - `get_guidance(stage=...)` — lessons for writing Revit code (the snippet
      contract, units, API pitfalls), chosen by stage, API symbols, OST_*
      categories, compiler errors and run-time exceptions; read-only, no token.
@@ -195,6 +213,7 @@ and evidence; the server validates it and issues a one-time token bound to
 exactly that tool and those parameters (or that code). Running anything else
 with it, reusing it, or using it after 10 minutes fails with
 `confirmation_invalid`. `missing_params` and `reconcile` help build the spec.
+`dry_run_code` needs no token: the add-in rolls every dry run back.
 Hosts that run their own confirmation flow can set
 `REVIT_BRIDGE_ALLOW_UNCONFIRMED=1`.
 
@@ -289,4 +308,4 @@ dsh runs an agent that can talk to revit-bridge and revit-api-docs like any othe
 4. Start dsh in the project directory and give it the task in one or two designer sentences, plus the facts it cannot discover: "Revit 2026 with the test model is open on this machine", whether anyone will answer questions, and what the report must contain. With `--profile headless --json` it runs unattended and streams events; interactive mode lets you answer the bridge's confirmation requests, which is what lets the agent prototype in the open model (`check_code`, `confirm_spec`, `execute_code`) before it ports the logic into the add-in.
 5. Read the agent's report against the brief (what was built, what it verified in Revit, what it could not), then install the add-in and test the picks, dialogs and cancel paths yourself.
 
-An unattended run cannot confirm `execute_code`; the agent then verifies by compile checks and model reads only. Keep the project open on a copy of the model: a prototype that hangs inside Revit blocks the bridge until the request ends.
+An unattended run cannot confirm `execute_code`; the agent then verifies by compile checks, model reads and `dry_run_code` (the code runs in the open model and is rolled back; it needs an add-in with the dry run). Keep the project open on a copy of the model: a prototype that hangs inside Revit blocks the bridge until the request ends.
