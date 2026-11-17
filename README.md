@@ -15,7 +15,9 @@ Revit executes the code.
 Prerequisites: Python 3.11+ with [`uv`](https://docs.astral.sh/uv/) (for `uvx`),
 Revit 2020, 2021 or 2023-2026 with the add-in installed (one install per Revit
 year; see [revit-bridge-addin](https://github.com/revitbridge/revit-bridge-addin#supported-revit-years))
-and its local TCP listener on (default `127.0.0.1:18080`).
+and its local TCP listener on (default `127.0.0.1:18080`). `dry_run_code`,
+`test_addin_command`, `zoom_view` and `capture_view` need revit-bridge-addin
+0.5.0 or later.
 
 **Claude Desktop** — `claude_desktop_config.json`:
 

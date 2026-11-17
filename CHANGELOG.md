@@ -6,20 +6,19 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
-### Added
+## [0.7.0] - 2026-11-17
 
-- `test_addin_command`, `zoom_view`, `capture_view` (20 MCP tools in all):
-  run a built add-in DLL's command in the open model without installing it -
-  picks clicked on elements by id, input from `<name>.input.json` - and
-  restore the model; move the view and save a picture of it. No token, no
-  gate; they need an add-in that reports `features.addin_test` (else
-  `no_addin_test`). The DLL must be a local file; the server's SHA-256 must
-  match the add-in's (`dll_hash_mismatch`); `readback_code` passes the
-  sandbox; the wait is `timeout_seconds` + 30 s; a reply whose
-  `restored_clean` is not true is `addin_test_not_restored`. Each call
-  leaves a ledger line (`action: "addin_test"`, `"zoom_view"`,
-  `"capture_view"`). The skills describe the input-file convention and when
-  to run a built DLL through the bridge.
+Two kinds of run in Revit that need no confirmation token, because the model
+keeps nothing: `dry_run_code` runs C# in the open model and always rolls it
+back, and `test_addin_command` runs a built add-in command there and restores
+the model. No pack format, TaskSpec or gate change; `execute_code`,
+`run_tool` and the hook are unchanged.
+
+Upgrade: `uvx --refresh revit-bridge`, and revit-bridge-addin 0.5.0 in Revit
+for the new tools; with an older add-in they answer that it does not support
+them. The server instructions now say revit-bridge 0.7.
+
+### Added
 
 - `dry_run_code(code, parameters)`, the 17th MCP tool: runs C# in the open
   model through the add-in's `dry_run_code_in_revit` and always rolls it
@@ -28,23 +27,45 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   `changes` with counts by category, `failures`, `fingerprint`) plus
   `evidence_id`, `hint` and `warnings`, every key always present. Code the
   sandbox refuses never reaches Revit (`blocked`); an add-in without the dry
-  run answers `no_dry_run`; a reply whose `rolled_back` is not true is never
-  a success (`dry_run_not_rolled_back`). Each dry run leaves a ledger line
-  with `action: "dry_run"` and no confirmation. The gate, `execute_code`,
-  `run_tool` and the hook are unchanged; the hook does not match the new tool.
+  run (`features.dry_run`; revit-bridge-addin 0.5.0 is the first release
+  that reports it) answers `no_dry_run`; a reply whose `rolled_back` is not
+  true is never a success (`dry_run_not_rolled_back`). Each dry run leaves a
+  ledger line with `action: "dry_run"` and no confirmation. The gate,
+  `execute_code`, `run_tool` and the hook are unchanged; the hook does not
+  match the new tool.
 - `dry_run_code(..., include=[...])`: local `.cs` files compiled together
   with the code (sent as `sources`, named by their base names), so an
   add-in's core-logic file is dry-run unchanged and then built as it is.
   Refused before Revit is asked: a missing file, another extension, two
   files with the same name, more than 20 files or 400 KB, text that is not
   UTF-8, a file the sandbox refuses. An add-in without
-  `features.dry_run_sources` answers `no_dry_run_include`. The ledger line
-  records each file's name and SHA-256.
+  `features.dry_run_sources` (also first reported by revit-bridge-addin
+  0.5.0) answers `no_dry_run_include`. The ledger line records each file's
+  name and SHA-256.
+- `test_addin_command`, `zoom_view`, `capture_view` (20 MCP tools in all):
+  run a built add-in DLL's command in the open model without installing it -
+  picks clicked on elements by id, input from `<name>.input.json` - and
+  restore the model; move the view and save a picture of it. No token, no
+  gate; they need an add-in that reports `features.addin_test`,
+  revit-bridge-addin 0.5.0 or later (else `no_addin_test`). The DLL must be
+  a local file; the server's SHA-256 must match the add-in's
+  (`dll_hash_mismatch`); `readback_code` passes the sandbox; the wait is
+  `timeout_seconds` + 30 s; a reply whose `restored_clean` is not true is
+  `addin_test_not_restored`. Each call leaves a ledger line
+  (`action: "addin_test"`, `"zoom_view"`, `"capture_view"`). The skills
+  describe the input-file convention and when to run a built DLL through the
+  bridge.
 - The `revit-bridge` skill has a section on dry runs and says what they
   need; `revit-addin-dev` and `revit-task-brief` dry-run the core logic
   before delivery instead of reporting "not verified in Revit" when nobody
   is there to confirm. `revit-addin-dev` keeps the core logic in its own
   file, the one that is dry-run and built.
+
+### Fixed
+
+- Tool descriptions were sent with the source indentation of their
+  docstrings on Python 3.11 and 3.12 (19 of the 20 tools); they are now the
+  cleaned docstrings on every Python version.
 
 ## [0.6.1] - 2026-11-09
 
@@ -938,7 +959,9 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/revitbridge/revit-bridge/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/revitbridge/revit-bridge/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/revitbridge/revit-bridge/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/revitbridge/revit-bridge/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/revitbridge/revit-bridge/compare/v0.4.1...v0.4.2
