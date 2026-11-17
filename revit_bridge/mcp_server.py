@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import os
 import sys
@@ -162,13 +163,22 @@ _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 _MUTATING = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 
+def _tool(annotations: ToolAnnotations | None = None):
+    """``mcp.tool`` with the docstring cleaned (``inspect.cleandoc``) as the description. The SDK takes
+    ``__doc__`` as it is; Python 3.13+ strips the source indentation when compiling, 3.11 and 3.12 do not,
+    so without this the hosts on those versions would see every continuation line indented."""
+    def register(fn):
+        return mcp.tool(annotations=annotations, description=inspect.cleandoc(fn.__doc__ or ""))(fn)
+    return register
+
+
 def _dumps(payload) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 # -- Read-only tools (no gate) ------------------------------------------------
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 async def get_project_snapshot(categories: list[str] | None = None) -> str:
     """Read-only picture of the open Revit model: document, units, active view,
     levels, grids, selection, links, phases and the family types of the given
@@ -192,7 +202,7 @@ async def get_project_snapshot(categories: list[str] | None = None) -> str:
     return snapshot.model_dump_json(indent=2)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 async def query(kind: str, args: dict | None = None) -> str:
     """Read-only model query, no confirmation needed. kinds: levels, grids,
     family_types (args.categories), elements (args.category, args.limit<=200),
@@ -212,7 +222,7 @@ async def query(kind: str, args: dict | None = None) -> str:
 
 # -- TaskSpec tools (no gate) -------------------------------------------------
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 async def missing_params(tool: str, known: dict | str | None = None,
                          snapshot: dict | str | None = None, language: str = "zh") -> str:
     """The questions still open for a capability pack: one per required parameter
@@ -248,7 +258,7 @@ async def missing_params(tool: str, known: dict | str | None = None,
     return _dumps([q.model_dump() for q in _missing_params(pack, known_values, snap, language)])
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 async def reconcile(spec: dict | str, snapshot: dict | str | None = None) -> str:
     """Check a draft TaskSpec against the model: values that do not exist
     (levels, family types), missing parameters as questions, readings the
@@ -279,7 +289,7 @@ async def reconcile(spec: dict | str, snapshot: dict | str | None = None) -> str
     return _dumps(_reconcile(draft, snap, pack).model_dump())
 
 
-@mcp.tool()
+@_tool()
 def confirm_spec(spec: dict | str, confirmed_by: str = "designer", channel: str = "chat") -> str:
     """Turn a designer-confirmed TaskSpec into a one-time execution token.
     Call only after the designer has seen the spec card and said yes.
@@ -306,12 +316,14 @@ def confirm_spec(spec: dict | str, confirmed_by: str = "designer", channel: str 
 
 def _with_snippet_contract(fn):
     """Put the snippet contract sentence - the summary of the revit-core/snippet-contract
-    lesson, its one source - where the tool description says <snippet contract>."""
-    fn.__doc__ = fn.__doc__.replace("<snippet contract>", f"Snippet contract: {SNIPPET_CONTRACT_SUMMARY}.")
+    lesson, its one source - where the tool description says <snippet contract>. The docstring is
+    cleaned first, so the summary goes into the same text on every Python version."""
+    fn.__doc__ = inspect.cleandoc(fn.__doc__).replace(
+        "<snippet contract>", f"Snippet contract: {SNIPPET_CONTRACT_SUMMARY}.")
     return fn
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 @_with_snippet_contract
 async def check_code(code: str, parameters: list | None = None) -> str:
     """Compile C# for execute_code inside Revit WITHOUT running it: only
@@ -340,7 +352,7 @@ async def check_code(code: str, parameters: list | None = None) -> str:
     return _dumps(await checking.check_code(client, code, parameters, library=guidance_library))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 async def dry_run_code(code: str, parameters: list | None = None, include: list[str] | None = None) -> str:
     """Run C# in the open Revit model and always roll it back: nothing is kept, the undo
     stack is untouched. Needs no confirmation and no token. Use it to find out whether
@@ -361,7 +373,7 @@ async def dry_run_code(code: str, parameters: list | None = None, include: list[
                                              host="mcp"))
 
 
-@mcp.tool(annotations=_MUTATING)
+@_tool(annotations=_MUTATING)
 @_with_snippet_contract
 async def execute_code(code: str, parameters: list | None = None, token: str = "") -> str:
     """Send C# code to Revit for execution over the local TCP socket.
@@ -376,7 +388,7 @@ async def execute_code(code: str, parameters: list | None = None, token: str = "
 
 # -- Solidification Tools -----------------------------------------------------
 
-@mcp.tool()
+@_tool()
 def solidify_tool(
     name: str,
     code: str,
@@ -407,7 +419,7 @@ def solidify_tool(
     return _dumps({"name": tool.name, "path": str(_tool_store._tool_path(name)), "version": tool.version})
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 def list_tools() -> str:
     """The capability packs available to run_tool, as a JSON list of
     {name, description, version, parameters: [{name, type, source, required, unit?}],
@@ -430,7 +442,7 @@ def list_tools() -> str:
     ])
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 async def get_tool_choices(name: str) -> str:
     """Query Revit for dynamic parameter choices of a solidified tool.
     Call this BEFORE run_tool to discover available levels, family types, etc.
@@ -447,7 +459,7 @@ async def get_tool_choices(name: str) -> str:
         return _dumps({"success": False, "error": str(e)})
 
 
-@mcp.tool(annotations=_MUTATING)
+@_tool(annotations=_MUTATING)
 async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
     """Execute a solidified tool by name with given parameters.
     IMPORTANT: Call get_tool_choices first for parameters with choices_from / source: tool:*.
@@ -467,7 +479,7 @@ async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
 
 # -- Evidence tools -----------------------------------------------------------
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 def evidence(limit: int = 20, tool: str | None = None) -> str:
     """The most recent execution records from the evidence ledger, newest first
     (optionally for one tool): who confirmed what, what ran, what the validator said."""
@@ -475,7 +487,7 @@ def evidence(limit: int = 20, tool: str | None = None) -> str:
     return _dumps(_ledger.recent(limit, tool))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 async def validate(evidence_id: str) -> str:
     """Re-run the validator's assertion for a recorded execution against the model
     as it is now (for the designer's later check). Returns the ValidationReport,
@@ -489,7 +501,7 @@ async def validate(evidence_id: str) -> str:
 
 # -- Read-back verification (execute_code) ------------------------------------
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 async def plan_verification(template: str, params: dict | str) -> str:
     """Plan how the result of an execute_code will be read back, BEFORE confirm_spec.
     Runs only the bridge's own read-only probes, never your code; no token.
@@ -517,7 +529,7 @@ async def plan_verification(template: str, params: dict | str) -> str:
     return _dumps(await _plan_verification(_verifications, _PooledClient(), template, params_value))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 async def verify_execution(evidence_id: str, verification_id: str) -> str:
     """After execute_code: read the model back against the plan from plan_verification.
     Runs only the bridge's own read-only probes; no token. Returns {verified,
@@ -535,7 +547,7 @@ async def verify_execution(evidence_id: str, verification_id: str) -> str:
 
 # -- Guidance -----------------------------------------------------------------
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(annotations=_READ_ONLY)
 def get_guidance(
     mode: str = "recommend",
     stage: str | None = None,
@@ -586,7 +598,7 @@ async def _pooled_or_refusal(reply):
         return None, reply(error=f"{caps.error_kind or 'unknown'}: {caps.reason}")
 
 
-@mcp.tool(annotations=_RESTORED)
+@_tool(annotations=_RESTORED)
 async def test_addin_command(dll: str, command_class: str, picks: list[dict] | None = None,
                              input: dict | None = None, readback_code: str | None = None,  # noqa: A002
                              zoom_to: int | None = None, timeout_seconds: int = 120,
@@ -611,7 +623,7 @@ async def test_addin_command(dll: str, command_class: str, picks: list[dict] | N
         ledger=_ledger, host="mcp"))
 
 
-@mcp.tool(annotations=_RESTORED)
+@_tool(annotations=_RESTORED)
 async def zoom_view(element_id: int | None = None, margin_mm: float = 2500) -> str:
     """Zoom the active view to an element (with a margin) or to fit. Changes only the view."""
     client, refused = await _pooled_or_refusal(addin_test.view_reply)
@@ -620,7 +632,7 @@ async def zoom_view(element_id: int | None = None, margin_mm: float = 2500) -> s
     return _dumps(await addin_test.zoom_view(client, element_id, margin_mm, ledger=_ledger, host="mcp"))
 
 
-@mcp.tool(annotations=_RESTORED)
+@_tool(annotations=_RESTORED)
 async def capture_view(element_id: int | None = None, margin_mm: float = 1500) -> str:
     """Save a picture of the active view, optionally zoomed to an element first, and
     return its path. Use it when the data cannot settle a question; it is not a test."""

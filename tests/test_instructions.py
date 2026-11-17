@@ -340,6 +340,27 @@ def test_the_tool_descriptions_carry_the_contract_summary():
         assert "<snippet contract>" not in tools[name].description
 
 
+def test_no_tool_description_carries_the_source_indentation(monkeypatch):
+    """A tool description is its docstring cleaned, on every Python version: 3.13+ strip the source
+    indentation from __doc__ when compiling, 3.11 and 3.12 keep it, and the SDK passes __doc__ on as is."""
+    import asyncio
+    import inspect
+
+    from mcp.server.mcpserver import MCPServer
+
+    for tool in asyncio.run(server.mcp.list_tools()):
+        assert tool.description and tool.description == inspect.cleandoc(tool.description), tool.name
+    # the registration cleans it, not only the compiler: a docstring as 3.11 keeps it
+    def probe() -> str:
+        return ""
+
+    probe.__doc__ = "First line,\n    second line,\n      indented once more."
+    monkeypatch.setattr(server, "mcp", MCPServer("probe"))
+    server._tool()(probe)
+    (tool,) = asyncio.run(server.mcp.list_tools())
+    assert tool.description == "First line,\nsecond line,\n  indented once more."
+
+
 def test_the_skill_carries_the_contract_block():
     import pathlib
 
