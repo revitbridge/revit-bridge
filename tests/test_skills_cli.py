@@ -13,7 +13,8 @@ from revit_bridge import skills_cli
 from revit_bridge.paths import skills_dir
 
 NAMES = ["revit-addin-dev", "revit-addin-release", "revit-addin-test", "revit-bridge", "revit-core",
-         "revit-task-brief"]
+         "revit-journal-analysis", "revit-task-brief"]
+JOURNAL = "revit-journal-analysis"                 # in no profile but "all"; installable by name
 
 
 def run(capsys, *argv: str) -> tuple[int, str]:
@@ -187,9 +188,47 @@ def test_profile_all_equals_the_default(tmp_path, capsys):
     assert sorted(p.name for p in (tmp_path / "skills").iterdir()) == NAMES
 
 
-def test_profiles_partition_the_bundled_skills():
+def test_profiles_partition_the_bundled_skills_but_the_journal_skill():
     groups = list(skills_cli.PROFILES.values())
-    assert sorted(n for g in groups for n in g) == NAMES
+    members = [n for g in groups for n in g]
+    assert len(members) == len(set(members))                     # no skill in two profiles
+    assert sorted(members) == [n for n in NAMES if n != JOURNAL]
+    assert all(JOURNAL not in g for g in groups)
+
+
+def test_the_journal_skill_installs_by_name_alone(tmp_path, capsys):
+    target = tmp_path / "skills"
+    code, out = run(capsys, "install", JOURNAL, "--to", str(target))
+    assert code == 0
+    assert sorted(p.name for p in target.iterdir()) == [JOURNAL]
+    assert tree(target / JOURNAL) == tree(skills_dir() / JOURNAL)
+    assert {"SKILL.md", "references/journal-anatomy.md", "references/addin-records.md",
+            "references/crash-and-session-findings.md"} <= set(tree(target / JOURNAL))
+    assert out.strip().splitlines() == [f"{JOURNAL}: {len(tree(target / JOURNAL))} files -> {target / JOURNAL}"]
+
+
+@pytest.mark.parametrize("profile,has_journal", [("addin", False), ("bridge", False), ("all", True)])
+def test_only_profile_all_brings_the_journal_skill(tmp_path, capsys, profile, has_journal):
+    target = tmp_path / "skills"
+    code, _ = run(capsys, "install", "--profile", profile, "--to", str(target))
+    assert code == 0
+    assert (target / JOURNAL / "SKILL.md").is_file() is has_journal
+    if has_journal:
+        assert tree(target / JOURNAL) == tree(skills_dir() / JOURNAL)
+
+
+def test_the_journal_skill_and_a_profile_add_up(tmp_path, capsys):
+    code, out = run(capsys, "install", JOURNAL, "--profile", "bridge", "--to", str(tmp_path / "skills"))
+    assert code == 0
+    assert [line.split(":")[0] for line in out.strip().splitlines()] == ["revit-bridge", "revit-core", JOURNAL]
+
+
+def test_the_help_and_the_module_say_where_the_journal_skill_is(capsys):
+    assert JOURNAL in (skills_cli.__doc__ or "")
+    assert "neither" in skills_cli.__doc__ and "--profile all or its name installs it" in skills_cli.__doc__
+    with pytest.raises(SystemExit):
+        server.main(["skills", "install", "--help"])
+    assert JOURNAL in "".join(capsys.readouterr().out.split())          # argparse may wrap at its hyphens
 
 
 def test_unknown_profile_is_rejected():

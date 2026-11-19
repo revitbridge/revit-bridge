@@ -38,6 +38,8 @@ grep -a -i "<Name>" "$latest"
 | Was this session started after the install | compare the journal's modification time with the installed files' |
 | 2027 manifest in a refused folder | `won't be loaded` |
 
+The full procedure for reading a journal (how the session ended, crash and exception markers, licence and model-open errors, which add-ins loaded and from which vendor, dialogs, CER and Steel Connections logs) is the `revit-journal-analysis` skill.
+
 ## 3. Where the add-in is registered
 
 ```bash
