@@ -34,7 +34,7 @@ The output goes to the release phase (the `revit-addin-release` skill):
 
 1. **List running Revits before installing or launching** (`scripts/revit_ps.ps1 -RequireNone`). A Revit you did not start means: do not install, do not launch; wait, and if it stays, tell the user.
 2. **On an isolated test desktop, end only your unattended scratch Revit**, by the pid your launcher printed: `CloseMainWindow()` and "No" to the save prompt first, `taskkill /PID <pid> /T /F` only a minute later and only on your scratch copy.
-3. **When the user says pause**, stop your background tasks and the helpers they spawned, leave any Revit the designer is using open, note where you were and wait for an explicit go.
+3. **When the user says pause**, stop your background tasks and the helpers they spawned, end the scratch Revit you started on an isolated test desktop, leave any Revit the designer is using open, restore the installed add-in once no Revit holds its DLL, note where you were and wait for an explicit go.
 4. **Never modify the user's files.** Copy sample models to a scratch directory and open the copy; hash originals and links before and after; the user's own add-in logs are not deleted on restore.
 5. **Never touch production** during a test: no release upload, no manifest change, no server.
 
@@ -48,7 +48,9 @@ The output goes to the release phase (the `revit-addin-release` skill):
 6. `restored_clean` must be true after every run. If it is not, stop and tell the user: the model may hold what the test did.
 7. Record per run: DLL hash, picks, input, the returned summary. A run that timed out is "not tested", with its picture.
 
-## One unattended session on an isolated desktop
+## One session
+
+Run this unattended session only on an isolated test desktop.
 
 1. **Snapshot the installed add-in once**, before the first install: `scripts/addin_snapshot.py snapshot "<install dir>" <backup dir>`.
 2. **Install only the year under test** and check that the installed DLL's hash equals the build you mean to test.

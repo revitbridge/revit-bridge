@@ -20,7 +20,7 @@ The designer keeps the mouse, keyboard and focus on their working desktop, inclu
 
 1. **Before installing or launching, list the running Revits** (`revit_ps.ps1 -RequireNone`). Any Revit you did not start means: do not install, do not launch. Wait; if it stays, stop and tell the user. Another person's Revit locks that year's DLL, so an install half-succeeds (manifest replaced, DLL not), and every launch you add disturbs them.
 2. **On an isolated test desktop, end only your unattended scratch Revit**, by the pid your launcher printed, never by process name. Close it the way a user would first: `CloseMainWindow()`, then "No" to the save prompt ([diagnostics.md](diagnostics.md) section 1). Fall back to `taskkill /PID <pid> /T /F` (`/T` also ends its RevitWorker) only when the process is still there a minute later and the open document is your scratch copy, so nothing of value is unsaved; a scripted session that drove the add-in through its protocol is normally in that state.
-3. **When the user says pause**: stop your background tasks and every helper process they spawned (shells, Python, tails: they would start the next round); leave any Revit the designer is using open; restore the installed add-in when safe (section 4); write down where you were; wait for an explicit go.
+3. **When the user says pause**: stop your background tasks and every helper process they spawned (shells, Python, tails: they would start the next round); end the scratch Revit you started on an isolated test desktop (rule 2); leave any Revit the designer is using open; restore the installed add-in once no Revit holds its DLL (section 4); write down where you were; wait for an explicit go.
 4. **Never modify the user's files.** Copy sample models to a scratch directory before opening them, and open the copy; load linked files read-only from their original path; hash originals and links before and after; add-in logs written by the user's own Revit sessions are their data and are not deleted or overwritten on restore.
 5. **Never touch production** during a test: no release upload, no manifest change, no server.
 
@@ -32,9 +32,9 @@ The designer keeps the mouse, keyboard and focus on their working desktop, inclu
 - **Base-branch baseline**: install the base build the same way, from the main checkout.
 - Before each run, check that the installed DLL's hash equals the build you mean to test, and record it.
 
-## 3. One unattended session on an isolated desktop
+## 3. One session
 
-A session is: refuse if any Revit runs; start Revit; wait until the add-in is ready; run the calls; collect logs; end only your pid.
+Run this unattended session only on an isolated test desktop. A session is: refuse if any Revit runs; start Revit; wait until the add-in is ready; run the calls; collect logs; end only your pid.
 
 - **Readiness** is observed, not timed: for a bridge add-in, the TCP port answers a ping and the document is open (a .NET-year Revit may take 45 to 70 seconds to open its port); for a plain add-in, the journal shows `API_SUCCESS { Starting External Application` and the pushbutton. On the first start of a new build Revit asks about the unsigned add-in; leave the trust decision to the designer on a working desktop. On an isolated test desktop, load the verified test DLL once.
 - **Calls** go to the add-in's own protocol (for example JSON lines on `127.0.0.1:<port>`); append each reply to a JSONL file as it arrives; treat a socket timeout as "Revit is stuck", write one `timeout` line and stop the session. Put calls that can open a modal dialog (exports, dialogs) **last**, with their own timeout, because the session ends there.
