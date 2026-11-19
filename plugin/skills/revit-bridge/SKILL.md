@@ -9,6 +9,12 @@ You are connected to a live Revit model through the `revit-bridge` MCP server (*
 
 Answer in the designer's language. Keep questions short; keep the spec card complete.
 
+## Keep Revit interactive
+
+Keep requests short enough for the designer to continue clicking, navigating and cancelling. Avoid repeated model scans or UI-thread polling while waiting. Split large operations at valid transaction boundaries and recheck the active document before each batch. Keep a single queued request per operation and make subsequent batches cancellable.
+
+The designer keeps the mouse, keyboard and focus on their working desktop, including when watching a demonstration or using a separate Revit process on that desktop. Leave native picks and dialogs to the designer. Run simulated input only on a separate interactive desktop. When the designer intervenes, requests control, or reports unresponsive clicks, stop the input driver and its queued actions immediately. Preserve the open document and resume interactive tests only on the designer's explicit request.
+
 ## The bridge flow
 
 Always in this order. Do not skip a step because the task looks simple.
