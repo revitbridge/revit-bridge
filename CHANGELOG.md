@@ -6,6 +6,35 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-18
+
+Skill text only: the skills now tell an agent to keep Revit responsive and to
+leave the designer's mouse, keyboard and focus alone. No tool, pack format,
+TaskSpec, gate or wire-format change; no Python code change.
+
+Upgrade: `uvx --refresh revit-bridge`; for copied skill folders, run
+`revit-bridge skills install` again.
+
+### Changed
+
+- `revit-core`, `revit-addin-dev` and `revit-bridge` skills: a new "Keep
+  Revit interactive" section. Each Revit API callback does bounded model
+  reads or edits and returns; network, file and log I/O, waits and pure
+  computation run off the UI thread on copied values, never on live Revit
+  API objects. Large operations are split at transaction boundaries, with
+  the active document and cancellation rechecked before each batch.
+- `revit-addin-dev`, `revit-addin-test` and `revit-bridge` skills: the
+  designer keeps the mouse, keyboard and focus on the working desktop, also
+  while watching a demonstration. Native picks, dialogs and the
+  unsigned-add-in trust prompt are left to the designer. Simulated input
+  (`test_addin_command`, the scripted session) runs only on an isolated test
+  desktop. When the designer intervenes or reports unresponsive clicks, the
+  input driver and its queued actions stop, the open document is kept, and
+  interactive tests resume only on an explicit request.
+- `revit-addin-test`, "When the user says pause": end the scratch Revit you
+  started on an isolated test desktop, leave any Revit the designer is using
+  open, and restore the installed add-in once no Revit holds its DLL.
+
 ## [0.7.0] - 2026-11-17
 
 Two kinds of run in Revit that need no confirmation token, because the model
@@ -959,7 +988,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/revitbridge/revit-bridge/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/revitbridge/revit-bridge/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/revitbridge/revit-bridge/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/revitbridge/revit-bridge/compare/v0.5.0...v0.6.0
