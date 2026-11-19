@@ -9,6 +9,10 @@ What every snippet and every port has to respect: the shape of an `execute_code`
 
 Lessons in this category are chosen and ordered by the revit-bridge MCP server's `get_guidance` tool (by stage, API symbols, OST_* categories, compiler error codes and exceptions); `get_guidance(mode="read", ids=[...])` returns a lesson's full text.
 
+## Keep Revit interactive
+
+Keep Revit interactive while a command runs. Restrict each valid Revit API callback to bounded model reads or edits. Copy plain values out, return to Revit, and do network requests, file and log I/O, waits and pure computation off the UI thread. Never pass live Revit API objects to a background task. Coalesce pending ExternalEvents, finish each transaction before returning, and recheck the active document and cancellation before the next batch. An Idling handler must return promptly and unsubscribe when its work ends.
+
 ## Lessons
 
 - [snippet-contract](lessons/snippet-contract.md) - a method body with `document` and `parameters` in scope, already in a transaction (never open one); fixed usings and references; end with `return <object>;`

@@ -7,6 +7,12 @@ description: Create, continue, debug or migrate the code of a standalone Autodes
 
 Deliver an ordinary C# add-in that runs inside Revit. Use revit-bridge during development when real model facts or a focused experiment would help. The resulting DLL should work without Python, MCP, or an agent session unless the user explicitly requests those integrations.
 
+## Keep Revit interactive
+
+Keep Revit interactive while a command runs. Restrict each valid Revit API callback to bounded model reads or edits. Copy plain values out, return to Revit, and do network requests, file and log I/O, waits and pure computation off the UI thread. Never pass live Revit API objects to a background task. Coalesce pending ExternalEvents, finish each transaction before returning, and recheck the active document and cancellation before the next batch. An Idling handler must return promptly and unsubscribe when its work ends.
+
+The designer keeps the mouse, keyboard and focus on their working desktop, including when watching a demonstration or using a separate Revit process on that desktop. Leave native picks and dialogs to the designer. Run simulated input only on a separate interactive desktop. When the designer intervenes, requests control, or reports unresponsive clicks, stop the input driver and its queued actions immediately. Preserve the open document and resume interactive tests only on the designer's explicit request.
+
 ## Continue the user's project
 
 Read the project's instructions, Git changes, solution/project files, shared MSBuild properties, manifests, command entry points, and relevant tests first. Establish the exact Revit release (including its update), .NET target, API reference source, UI approach, build command, and any build targets that install files or start processes. Revit 2025.5/2026.5 use .NET 10; earlier 2025/2026 releases use .NET 8; Revit 2027 runs only on .NET 10. Check the installed API file version and `RevitAPI.runtimeconfig.json` when available rather than relying only on the year. Preserve existing work, add-in identity, dependencies, and architecture. When the repository keeps its own file of project names and numbers (helper classes, MSBuild properties, sample counts, branch names), read it before this skill's generic examples and use its names; `RibbonProfile`, `origin/main` and `<Name>` in the references are placeholders.

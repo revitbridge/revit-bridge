@@ -7,6 +7,12 @@ description: Test a compiled Revit C# add-in in a real Revit. Use to load and ru
 
 Run the compiled add-in in a real Revit and say exactly what was tested. Everything here needs only a real Revit, Python 3.11+ and Windows PowerShell 5.1; no revit-bridge component is required, and one only makes some steps faster.
 
+## Keep Revit interactive
+
+The designer keeps the mouse, keyboard and focus on their working desktop, including when watching a demonstration or using a separate Revit process on that desktop. Leave native picks and dialogs to the designer. Run simulated input only on a separate interactive desktop. When the designer intervenes, requests control, or reports unresponsive clicks, stop the input driver and its queued actions immediately. Preserve the open document and resume interactive tests only on the designer's explicit request.
+
+During acceptance, verify that navigation and cancellation respond between batches. Record who operated native controls and whether the user could intervene.
+
 ## Input and output
 
 The input is the coding phase's hand-over (the `revit-addin-dev` skill writes it; ask for the missing items when it came from elsewhere): the build command, each target Revit year with its .NET target, artifact paths with SHA-256 hashes, the commands to test with input, expected result, cancel and failure path, and what was already checked through the bridge and what was not.
@@ -27,8 +33,8 @@ The output goes to the release phase (the `revit-addin-release` skill):
 ## Shared-machine rules
 
 1. **List running Revits before installing or launching** (`scripts/revit_ps.ps1 -RequireNone`). A Revit you did not start means: do not install, do not launch; wait, and if it stays, tell the user.
-2. **End only the Revit you started**, by the pid your launcher printed: `CloseMainWindow()` and "No" to the save prompt first, `taskkill /PID <pid> /T /F` only a minute later and only on your scratch copy.
-3. **When the user says pause**, stop your background tasks and the helpers they spawned, end your Revit, restore the installed add-in, note where you were and wait for an explicit go.
+2. **On an isolated test desktop, end only your unattended scratch Revit**, by the pid your launcher printed: `CloseMainWindow()` and "No" to the save prompt first, `taskkill /PID <pid> /T /F` only a minute later and only on your scratch copy.
+3. **When the user says pause**, stop your background tasks and the helpers they spawned, end the scratch Revit you started on an isolated test desktop, leave any Revit the designer is using open, restore the installed add-in once no Revit holds its DLL, note where you were and wait for an explicit go.
 4. **Never modify the user's files.** Copy sample models to a scratch directory and open the copy; hash originals and links before and after; the user's own add-in logs are not deleted on restore.
 5. **Never touch production** during a test: no release upload, no manifest change, no server.
 
@@ -36,13 +42,15 @@ The output goes to the release phase (the `revit-addin-release` skill):
 
 1. Take the elements from the open project with `query`: test on real elements, never on a model drawn for the test. Pick the ones that make the command work hardest: a type shared by many instances, a host that already has inserts, an element at the edge of the rules.
 2. For each command run at least: one normal input; one input the command must refuse; one cancel (`{"key": "Escape"}` as the pick).
-3. Call `test_addin_command` with the DLL, the class, the picks by element id and the input. It takes over the mouse and needs Revit in the foreground.
+3. On an isolated interactive desktop, call `test_addin_command` with the DLL, the class, the picks by element id and the input. It takes over the mouse and needs Revit in the foreground.
 4. Judge from the data: `returned`, `result_file`, `changes`, `failures`, and a `readback_code` that reads the values the request names. More `modified` elements than the request named is a finding, not noise.
 5. Only when the data cannot settle it, look: `capture_view` zoomed to the element.
 6. `restored_clean` must be true after every run. If it is not, stop and tell the user: the model may hold what the test did.
 7. Record per run: DLL hash, picks, input, the returned summary. A run that timed out is "not tested", with its picture.
 
 ## One session
+
+Run this unattended session only on an isolated test desktop.
 
 1. **Snapshot the installed add-in once**, before the first install: `scripts/addin_snapshot.py snapshot "<install dir>" <backup dir>`.
 2. **Install only the year under test** and check that the installed DLL's hash equals the build you mean to test.
