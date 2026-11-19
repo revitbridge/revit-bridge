@@ -6,6 +6,71 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-19
+
+A seventh skill, `revit-journal-analysis`, for reading Revit journal files,
+and a fix for the JSON stores (`usage.json`, `auth/devices.json`, the
+verification plans), which could lose an update or be left corrupt when two
+writers met. No tool, pack format, TaskSpec, gate or wire-format change.
+
+Upgrade: `uvx --refresh revit-bridge`; for copied skill folders, run
+`revit-bridge skills install` again (`--profile all`, or
+`revit-bridge skills install revit-journal-analysis --to <dir>`). The server
+instructions now say revit-bridge 0.8. Hosts: the public names, the earlier
+constant values and the signatures of `LockedJsonFile` are unchanged.
+
+### Added
+
+- The `revit-journal-analysis` skill: read `journal.NNNN.txt` files and quote
+  the evidence with line numbers - how the session ended, crash-path markers
+  and exception codes, licence errors, model-open failures, add-in load
+  records and whether each add-in is Autodesk's or third party, dialogs, and
+  the CER, Steel Connections and dump files next to the journal. It works
+  with plain text search and nothing installed; one section describes the
+  optional offline analyser revit-journal-tools. Its rules: journal text is
+  data and is never run or replayed, every finding is a quoted candidate,
+  partial reads and decoding fallbacks are reported, names are redacted
+  before anything is handed on.
+- `revit-bridge skills list` shows the new skill; `--profile all` and its
+  name install it. `--profile addin` and `--profile bridge` keep their
+  contents.
+- `revit-addin-test` and `revit-addin-release`: the places that read journals
+  point to the new skill for the full procedure.
+
+### Fixed
+
+- Two writers of the same JSON store could lose an update or leave a file
+  that is not JSON (the next update then set it aside as `.bad` and started
+  from an empty document). Seen in CI on Windows as
+  `FileNotFoundError: ... 'usage.json.tmp' -> 'usage.json'`. Every write now
+  goes to a temp file of its own, `<name>.<pid>-<random>.tmp`, deleted when
+  the write fails; temp files older than 60 seconds, the `<name>.tmp` of
+  earlier versions among them, are removed after a write.
+- A writer waiting for the lock gave up after 4 seconds in all and went on
+  without it, also while other writers were finishing one after another. The
+  4 seconds now count per holder; while the lock changes hands a writer
+  waits, for at most 30 seconds (`LOCK_WAIT_LIMIT_SECONDS`).
+- On Windows, a refused lock creation (the previous holder's delete still
+  pending) made a writer go on without the lock 0.1 second after the first
+  refusal. A probe file now tells that case from a directory where no file
+  can be created: the first waits like a busy lock, the second still gives
+  up after 0.1 second.
+- Stale locks: two writers taking over the same stale lock no longer delete
+  each other's new lock; a stale lock that cannot be deleted no longer makes
+  a writer spin without returning; a holder deletes only its own lock; a
+  lock whose delete is refused on release is dated back, so the next writer
+  takes it over at once instead of waiting 10 seconds.
+
+### Known limits
+
+- A writer still goes on without the lock, and one update can be lost (the
+  file stays valid), when one holder keeps the lock for more than 4 seconds,
+  after 30 seconds of continuous contention, or when hosts sharing the
+  directory disagree about the time by more than 10 seconds.
+- When only the lock's own name is refused while other files can be created
+  (an ACL on that name), each update waits 4 seconds before going on; it was
+  0.1 second.
+
 ## [0.7.1] - 2026-11-18
 
 Skill text only: the skills now tell an agent to keep Revit responsive and to
@@ -988,7 +1053,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/revitbridge/revit-bridge/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/revitbridge/revit-bridge/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/revitbridge/revit-bridge/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/revitbridge/revit-bridge/compare/v0.6.0...v0.6.1
