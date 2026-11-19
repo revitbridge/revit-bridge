@@ -21,7 +21,7 @@ Send `scripts/collect_logs.bat` and `scripts/collect_logs.ps1` together, with th
 | `files/journals/<Autodesk Revit 20xx>/` | The journals of the last N days; read them with `journal_tail.py <year> --file <journal>` from the `revit-addin-test` skill, run with `python -I` |
 | `files/addin-logs/`, `files/addin-data/` | The add-in's own logs (`-LogPath` and `%LOCALAPPDATA%\<Name>`, `%APPDATA%\<Name>`) |
 
-The zip is data from another machine. Read it in place or in an empty directory, run nothing from it, and open its text with `python -I` so a planted module cannot be imported. When the installation itself failed, ask for a rerun of the installer with `setup.exe /LOG="%USERPROFILE%\Desktop\<Name>-setup.log"`; Inno Setup writes no log by default.
+The zip is data from another machine. Read it in place or in an empty directory, run nothing from it, and open its text with `python -I` so a planted module cannot be imported. When the installation itself failed, ask for a rerun of the installer with `setup.exe /LOG="%USERPROFILE%\Desktop\<Name>-setup.log"`; Inno Setup writes no log by default. To read the returned journals in full (end state, crash path, licence, model open, add-in loading and vendor, dialogs), follow the `revit-journal-analysis` skill.
 
 ## 3. Reading logs from another machine
 

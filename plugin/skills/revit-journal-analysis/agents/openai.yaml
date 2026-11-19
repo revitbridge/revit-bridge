@@ -1,0 +1,4 @@
+interface:
+  display_name: "Revit Journal Analysis"
+  short_description: "Read Revit journals for crash, licence, model-open and add-in evidence"
+  default_prompt: "Use $revit-journal-analysis to read my Revit journals and tell me how the session ended, what failed and which add-ins loaded, quoting every line you rely on with its line number."

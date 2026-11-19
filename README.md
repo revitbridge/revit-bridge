@@ -75,18 +75,20 @@ skill's `SKILL.md` has a table saying what they add.
 | Bridging | `revit-bridge` + `revit-core` | Builds, changes and queries the open model through the server: snapshot, reconcile, confirm, execute, verify. | Yes: the MCP server and the revit-bridge-addin |
 | Test | `revit-addin-test` | Runs the compiled add-in in a real Revit without disturbing others on the machine, reads journals, finds why Revit hangs, judges a build matrix, compares base and branch. | No; with the revit-bridge-addin calls go through its protocol |
 | Release | `revit-addin-release` | Multi-year release build, obfuscation, installer, acceptance on a real machine, the review record, logs from a user's machine. | No |
+| Diagnosis | `revit-journal-analysis` | Reads Revit journals (`journal.NNNN.txt`) by hand or with plain text search and quotes every line it rests on: how the session ended, crash and exception markers, licence and model-open errors, which add-ins loaded and from which vendor, dialogs, CER and Steel Connections logs. | No; the optional `revit-journal` analyser only makes it faster |
 
 ### Install the skills in another project
 
-The six skills (`revit-task-brief`, `revit-addin-dev`, `revit-addin-test`,
-`revit-addin-release`, `revit-bridge`, `revit-core`) are self-contained
+The seven skills (`revit-task-brief`, `revit-addin-dev`, `revit-addin-test`,
+`revit-addin-release`, `revit-journal-analysis`, `revit-bridge`, `revit-core`) are self-contained
 folders: a `SKILL.md` plus `references/`, `scripts/` and `assets/`. Any agent
 that reads skill folders can use them, with or without the MCP server. The
 four add-in phase skills need no bridge connection at all (testing and
-acceptance need a real Revit, not the server); `revit-bridge` and `revit-core` describe the bridge
+acceptance need a real Revit, not the server), and `revit-journal-analysis` needs
+only the journal files; `revit-bridge` and `revit-core` describe the bridge
 tools and are most useful with the server configured; in a repository without
 the server their descriptions only cost context, so install `--profile addin`
-there.
+there, and add `revit-journal-analysis` by name where you read journals.
 
 | Where you work | Install |
 | --- | --- |
@@ -95,7 +97,7 @@ there.
 | Claude Code, every project of this user (skills only) | `uvx revit-bridge skills install --to ~/.claude/skills` |
 | Codex, dsh and other agents reading `.agents/skills` | `uvx revit-bridge skills install --to .agents/skills` |
 | One skill only | add its name: `uvx revit-bridge skills install revit-addin-dev --to .claude/skills` |
-| An add-in repository that does not use the bridge | `uvx revit-bridge skills install --profile addin --to .claude/skills` (`revit-task-brief` + `revit-addin-dev` + `revit-addin-test` + `revit-addin-release`; `--profile bridge` is the other pair, `revit-bridge` + `revit-core`) |
+| An add-in repository that does not use the bridge | `uvx revit-bridge skills install --profile addin --to .claude/skills` (`revit-task-brief` + `revit-addin-dev` + `revit-addin-test` + `revit-addin-release`; `--profile bridge` is the other pair, `revit-bridge` + `revit-core`; `revit-journal-analysis` is in neither profile: name it, `skills install revit-journal-analysis --profile addin --to .claude/skills`, or use `--profile all`) |
 | Without `uv` | `pip install revit-bridge` then `revit-bridge skills install --to <dir>`; or copy the folder from `plugin/skills/` of a checkout, or `npx skills add revitbridge/revit-bridge` |
 | From a checkout, without copying | `claude --plugin-dir ./plugin` |
 
@@ -306,7 +308,7 @@ dsh runs an agent that can talk to revit-bridge and revit-api-docs like any othe
    ```
 
    Keys (`TYPESAFE_API_KEY`, `REVIT_API_DOCS_EMBEDDING_API_KEY`) and a proxy go into each server's `env`; dsh strips `KEY`/`TOKEN` variables from its own environment, so set them there, not globally.
-3. Put the skills where dsh finds them: copy `plugin/skills/revit-task-brief`, `revit-addin-dev`, `revit-addin-test`, `revit-addin-release`, `revit-core` and `revit-bridge` into `<project>/.agents/skills/`.
+3. Put the skills where dsh finds them: copy `plugin/skills/revit-task-brief`, `revit-addin-dev`, `revit-addin-test`, `revit-addin-release`, `revit-journal-analysis`, `revit-core` and `revit-bridge` into `<project>/.agents/skills/`.
 4. Start dsh in the project directory and give it the task in one or two designer sentences, plus the facts it cannot discover: "Revit 2026 with the test model is open on this machine", whether anyone will answer questions, and what the report must contain. With `--profile headless --json` it runs unattended and streams events; interactive mode lets you answer the bridge's confirmation requests, which is what lets the agent prototype in the open model (`check_code`, `confirm_spec`, `execute_code`) before it ports the logic into the add-in.
 5. Read the agent's report against the brief (what was built, what it verified in Revit, what it could not), then install the add-in and test the picks, dialogs and cancel paths yourself.
 

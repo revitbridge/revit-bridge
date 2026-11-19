@@ -9,7 +9,9 @@
                               the four add-in phases, revit-task-brief +
                               revit-addin-dev + revit-addin-test + revit-addin-release
                               (a plain add-in repository without the bridge server);
-                              --profile bridge is revit-bridge + revit-core. Names and
+                              --profile bridge is revit-bridge + revit-core.
+                              revit-journal-analysis (reading Revit journals) is in
+                              neither: --profile all or its name installs it. Names and
                               a profile add up; folders are copied in bundled
                               (alphabetical) order. An existing DIR/<name> is left
                               alone unless --force replaces it; a folder is copied in
@@ -38,6 +40,7 @@ PROFILES: dict[str, list[str]] = {
     "addin": ["revit-task-brief", "revit-addin-dev", "revit-addin-test", "revit-addin-release"],
     # An agent that drives Revit through the server.
     "bridge": ["revit-bridge", "revit-core"],
+    # revit-journal-analysis is in neither: only "all" or its name installs it.
 }
 
 
@@ -67,7 +70,8 @@ def add_parser(sub) -> None:
     install.add_argument("--profile", choices=[*PROFILES, "all"],
                          help="a set of skills: addin = %s (the add-in phases brief, coding, test and "
                               "release, for an add-in repository without the server), "
-                              "bridge = %s, all = every skill (the default without NAME)"
+                              "bridge = %s, all = every skill (the default without NAME; the only "
+                              "profile with revit-journal-analysis, which can also be named)"
                               % (" + ".join(PROFILES["addin"]), " + ".join(PROFILES["bridge"])))
     install.add_argument("--to", required=True, metavar="DIR",
                          help="destination skills directory, e.g. .claude/skills or .agents/skills")
