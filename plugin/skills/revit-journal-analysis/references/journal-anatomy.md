@@ -9,7 +9,7 @@ Revit writes to `%LOCALAPPDATA%\Autodesk\Revit\Autodesk Revit <year>\Journals\` 
 | File | Role | How to treat it |
 | --- | --- | --- |
 | `journal.NNNN.txt` | The main journal of one session | Read it |
-| `journal.NNNN.workerN.log` | A worker process of that session | Read it when the main journal points at background work |
+| `journal.NNNN.workerN.log` | A worker process of that session | Read it when the main journal points at background work. It mostly covers the worker's start-up; its `ExternalDBApplication <Class> (...) was not loaded in RevitWorker` lines are normal in every session |
 | `journal.NNNN.NNNN.dmp` | A crash dump of that session | Binary: count and size it, never read it as text |
 | `journal.NNNN.txt.copy.txt` | A copy of the main journal | Compare it with the main file before reading both |
 | `journal.NNNN.txt.abbrev`, `journal.NNNN.txt.copy.txt.abbrev` | An abbreviated journal | Read it only when the main file is missing; it is not the whole session |
@@ -61,7 +61,7 @@ What the lines hold:
 - **API records**: `API_SUCCESS { ... }`, `API_ERROR { ... }` and `API_INFO`: what the Revit API did for an add-in. The braces can span lines; a record ends at its closing `}`.
 - **Resource samples**: `Delta VM:` lines with their RAM figures and `GUI Resource Usage`, written after operations. A sample, not an event.
 - **Debug markers**: `DBG_INFO` and `DBG_WARN:` (both common in healthy sessions), `DBG_ERROR:`, `Assertion failed:`.
-- **Dialogs**: `TaskDialog "<text>"` is the message the user saw, `Id : TaskDialog_<Name>` its id (the same in every UI language), and a `Jrn.Data` record with `"TaskDialogResult"`, often on its continuation line, is the answer.
+- **Dialogs**: `TaskDialog "<text>"` is the message the user saw, `Id : TaskDialog_<Name>` its id when the dialog has one (the same in every UI language; some dialogs record only their buttons, as `CommonButtons :` or numbered `Command Links:`), and a `Jrn.Data` record with `"TaskDialogResult"`, often on its continuation line, is the answer.
 - **Repeats**: a line that ends with ` - N times` stands for N identical lines. It is one hit line.
 
 ## 4. How lines group into records

@@ -6,6 +6,24 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `revit-journal-analysis` skill: a section on cloud models (Autodesk Docs,
+  BIM 360), written from a real journal in which the same cloud model failed
+  to open three times. How to count open attempts, the download records and
+  their HTTP response codes, why `Model missing bundle from S3` is Revit's
+  conclusion and the response code is the evidence, how to compare a signed
+  link's `Expires` with the request's `start_time` in UTC, which repeated
+  lines are routine, and what else a cloud journal holds that must be
+  redacted (guids, project and model names, request headers, signed links,
+  host addresses).
+
+### Changed
+
+- `revit-journal-analysis` skill: a dialog's `Id : TaskDialog_` line is read
+  when the dialog has one; `was not loaded in RevitWorker` lines of a worker
+  log are normal.
+
 ### Fixed
 
 - `revit-addin-test` and `revit-addin-release`: statements about Revit
