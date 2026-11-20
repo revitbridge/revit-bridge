@@ -14,6 +14,18 @@
       "license": "MIT",
       "keywords": ["revit", "bim", "mcp", "autodesk"],
       "category": "productivity"
+    },
+    {
+      "name": "revit-journal-analysis",
+      "source": "./plugin/skills/revit-journal-analysis",
+      "version": "0.8.0",
+      "description": "One skill, nothing else: read Autodesk Revit journal files and quote the evidence with line numbers - how a session ended, crash markers and dumps, licence and model-open errors, add-in loading. No MCP server, no hooks. The revit-bridge plugin already includes it.",
+      "author": { "name": "revitbridge", "url": "https://github.com/revitbridge" },
+      "homepage": "https://github.com/revitbridge/revit-bridge",
+      "repository": "https://github.com/revitbridge/revit-bridge",
+      "license": "MIT",
+      "keywords": ["revit", "journal", "crash", "diagnostics", "autodesk"],
+      "category": "productivity"
     }
   ]
 }

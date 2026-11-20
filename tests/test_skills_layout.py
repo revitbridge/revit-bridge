@@ -180,3 +180,26 @@ def test_the_journal_skill_names_other_skills_without_paths_into_them():
                          ("revit-addin-release/references/diagnostics.md",
                           "the full procedure for reading the journals is the `revit-journal-analysis` skill.")):
         assert needle in (SKILLS / name).read_text(encoding="utf-8"), name
+
+
+def test_the_marketplace_offers_the_journal_skill_as_a_plugin_of_its_own():
+    """Two plugins in one marketplace: revit-bridge (everything) and revit-journal-analysis, whose source
+    is the skill's folder itself - SKILL.md at the plugin root loads as a single skill - so nothing is
+    copied in the repository and no MCP server, hook or manifest comes with it."""
+    import json
+
+    root = SKILLS.parents[1]
+    plugins = {p["name"]: p for p in json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))["plugins"]}
+    assert sorted(plugins) == ["revit-bridge", "revit-journal-analysis"]
+    assert plugins["revit-bridge"]["source"] == "./plugin"
+    entry = plugins["revit-journal-analysis"]
+    assert entry["source"] == "./plugin/skills/revit-journal-analysis" and ".." not in entry["source"]
+    assert "strict" not in entry and "skills" not in entry and "mcpServers" not in entry and "hooks" not in entry
+    source = root / entry["source"]
+    assert source == JOURNAL and (source / "SKILL.md").is_file()
+    for absent in (".claude-plugin", ".mcp.json", "hooks", "skills"):
+        assert not (source / absent).exists(), absent
+    for path in source.rglob("*.md"):                                  # the folder is copied alone
+        for target in LINK.findall(path.read_text(encoding="utf-8")):
+            if not target.startswith(("http://", "https://", "#")):
+                assert (path.parent / target.split("#", 1)[0]).resolve().is_relative_to(source.resolve()), (path, target)

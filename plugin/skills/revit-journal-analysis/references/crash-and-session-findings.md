@@ -11,7 +11,9 @@ What to look for once the right journal is open, what each marker means, and how
 | Live | No end marker yet, and Revit still writes the file (its process runs, the file grows) | Not a finding; read a fresh copy later |
 
 - The last timestamp (`'C DD-Mon-YYYY hh:mm:ss.mmm;`) is the last moment the session is known to have been alive. Quote it as written: it is in that machine's local time.
-- The user's last action is the last `Jrn.Command`, `Jrn.RibbonEvent` or dialog input above the end, not the last line: Revit goes on writing resource samples and API records after it.
+- The user's last action is the last `Jrn.Command`, `Jrn.Close`, `Jrn.RibbonEvent` or dialog input above the end, not the last line: Revit goes on writing resource samples and API records after it. Skip the records Revit writes itself ([journal-anatomy.md](journal-anatomy.md) section 3): after the last document closes, the last `Jrn.Command` is Revit's own `ID_REVIT_MODEL_BROWSER_OPEN`, and the user's last action is the `Jrn.Close` and the save-prompt answer above it.
+- **Was the user quitting?** `ID_APP_EXIT` says so. A clean exit without it was started some other way (another program or a script closed Revit); say that the journal does not name who. Without it, a session that ends with no clean exit after `[Jrn.CloseDocumentFile]` ended while a document was closing, not while Revit was exiting. Worker and queue tear-down lines (`Revit worker N closed cleanly`, `Terminating RevitWorker Processes`) follow a normal exit and a crash alike and say nothing about which it was.
+- **No exception marker and no dump.** The journal cannot tell apart a process ended by force, a hang the user ended, a power loss and a process that died without a record. Name what Revit was doing in the last records, list those causes without ranking them, and say what would tell them apart (the user's own account, the Windows event log, a CER log for that process id).
 
 ## 2. The crash path
 
@@ -21,6 +23,7 @@ Markers Revit writes on its way down:
 | --- | --- |
 | `Exception occurred` | Revit's crash protection caught an exception; the next record holds `ExceptionCode=0x... ExceptionFlags=0x... ExceptionAddress=...` |
 | `ExceptionCode=0x<code>` | The kind of exception (section 3). A code of zero is no exception |
+| `captureTryCrash 0x<code>` | Revit caught an exception inside a guarded operation and wrote a crash dump for it; the code is the kind of exception (section 3). The session usually goes on and can end cleanly, so this is the marker behind a `.dmp` file in a session nobody saw crash. Read what follows it: often a failed model open (section 5) and the dialog that reported it |
 | `System exception in` | A native exception report |
 | `Exception occurred during Revit crash protection` | A second failure while Revit tried to recover |
 | `unhandledExceptionFilter is executed` | Nothing handled the exception; the process normally ends after it |
@@ -57,7 +60,9 @@ A code names the kind of failure, never its cause.
 
 ## 5. Opening a model
 
-- Every model opened: `openFromModelPath [<path>]`. Count distinct paths, not lines.
+- Every model loaded: `openFromModelPath [<path>]`, for the model the user opened and for every linked model loaded with it. Count distinct paths, not lines.
+- **Which one the user opened**: the `"File Name"` value in the `Jrn.Data` record right after `ID_REVIT_FILE_OPEN` (it can be a relative path). The other paths are its links: say "loaded the link", not "opened the model". The `File: Open` line that follows the command marks the start of the open, not its end.
+- The `openFromModelPath` line starts with the seconds the load took and is written when the attempt to load that file ends, whether it worked or not, so linked models appear before the model that hosts them. A failed attempt is followed by `openFromModelPath did not complete`; the line alone does not mean the model opened. In a journal that stops during an open, a host with no `openFromModelPath` line of its own had not finished opening: report the open as unfinished, not as completed, and name the link or import the last records were working on.
 - Failures: `Load exception "<text>"`, `openFromModelPath did not complete`, `exceptionsInOnOpenDocument`. One failed open usually writes several of them: one incident. The reason is in the exception text (a damaged file, disk space, a cancel, a file from a newer release).
 - `Missing ESSchema`: an Extensible Storage schema the model refers to is missing. Autodesk has documented a related error for one release; check the release before you suggest any fix.
 - The dialogs around the opening tell the rest, for example `TaskDialog_Unresolved_References` (linked files not found).
@@ -78,7 +83,7 @@ A code names the kind of failure, never its cause.
 
 | Log | Where | Linked to a session by |
 | --- | --- | --- |
-| Crash dumps | `journal.NNNN.NNNN.dmp` in the `Journals` folder | The session number in the name. Binary: count and size them, never read them as text. A dump usually means an exception |
+| Crash dumps | `journal.NNNN.NNNN.dmp` in the `Journals` folder | The session number in the name. Binary: count and size them, never read them as text. A dump means an exception was captured, not that the session crashed: look for `captureTryCrash` or `ExceptionCode=` near the dump's time, then at the end state |
 | Customer Error Reporting | `%LOCALAPPDATA%\Autodesk\CER\<id>\cer.log`, one folder per reported process, other Autodesk products included | Its head names the process, as in `"pid":<n>,"product":"RVT","release":"<year>"`: the same pid as the journal's `Session<pid>_P0MainQueue`. Without a pid, an overlapping time span. A running process keeps its log open: copy it first |
 | Steel Connections | `%ProgramData%\Autodesk\Revit Steel Connections <year>\<lang>\DatabaseConnectionErrors.log`, UTF-16 with a byte-order mark; entries `[n][HH:MM:SS] text` | The year, then the time. Entries carry only a time of day, so the date comes from the file's modification time; a match on the time of day alone is weak |
 
@@ -101,5 +106,5 @@ journal.NNNN.txt  <size> bytes, sha256 <first 12 hex>, read as <encoding> [<n> l
 ```
 
 - Quote short: the marker and enough of the line to find it again; never paste whole journals into a report.
-- Replace the user, domain and machine names (`<user>`, `<domain>`, `<machine>`) and personal paths in anything you hand on.
+- Replace the user, domain and machine names (`<user>`, `<domain>`, `<machine>`), IP addresses (`<ip>`) and personal paths in anything you hand on. Look for them where the journal writes them: the profile folder name under the `Users` directory of any drive, UNC paths `\\<host>\`, `Additional IP address/name found for host <host>: <ip>`, printer lines such as `PortName : <ip>`, and server names in central-model paths. A four-part number after `version` is an assembly version, not an address.
 - End with one sentence on what is most likely and the one step that would confirm it: a reproduction, the dump, the CER log, or the user's own account of the last action.

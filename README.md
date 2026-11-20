@@ -93,6 +93,7 @@ there, and add `revit-journal-analysis` by name where you read journals.
 | Where you work | Install |
 | --- | --- |
 | Claude Code, everything (skills + MCP server + confirmation hook) | `/plugin marketplace add revitbridge/revit-bridge` then `/plugin install revit-bridge@revit-bridge` |
+| Claude Code, only the journal skill (no MCP server, no hook) | `/plugin marketplace add revitbridge/revit-bridge` then `/plugin install revit-journal-analysis@revit-bridge`; the `revit-bridge` plugin already includes this skill, so install one of the two |
 | Claude Code, one project (skills only) | `uvx revit-bridge skills install --to .claude/skills` in the project |
 | Claude Code, every project of this user (skills only) | `uvx revit-bridge skills install --to ~/.claude/skills` |
 | Codex, dsh and other agents reading `.agents/skills` | `uvx revit-bridge skills install --to .agents/skills` |

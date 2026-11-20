@@ -20,7 +20,10 @@ Revit writes one record for each external application it starts:
 ```bash
 grep -a -n -E "(Starting|Creating|Created|Loading|Loaded) (an? )?(External (DB )?Application|Add-?in) *:" "$f"
 grep -a -n -E "API_ERROR \{ *Starting External" "$f"
+grep -a -o -E "Vendor *: *[^(]*\([^)]*\)" "$f" | sort | uniq -c
 ```
+
+The last line lists every vendor field with its count. The text in the parentheses contains commas (`Vendor : <id>(<company>, <website>)`): match up to the closing parenthesis and never split a load record at commas, or every vendor with a description is lost.
 
 ## 2. The other add-in records
 
@@ -29,14 +32,15 @@ Each kind is the stage of an add-in's life the record belongs to.
 | Kind | Records, as the journal writes them |
 | --- | --- |
 | load | `[Jrn.AddInManifest]` with `Rvt.Attr.AddInName:`, `Rvt.Attr.AddInId:`, `Rvt.Attr.CommandClassName:`, `Rvt.Attr.CommandVendorId:`, `Rvt.Attr.CommandVendorDescription:`, `Rvt.Attr.AddInCodeSigningStatus:` and `Rvt.Attr.AddInLoadFailureMessage:` (newer releases; seen in 2026 and 2027 journals). `Registered an external service: Name(...); VendorId(...)`, `Registered an external server: Name(...)`, `[Jrn.RegisterExternalServer]`. `API registering command ... by application <X>`, `Replacing command id '...' ... from application '<X>'`, `Registering <Event> event by application <X> (<add-in id>)`. `Third Party Updater '<X>: <updater>' registered`. `The add-in folder '...'`, `The requested assembly '...' was loaded to the context` |
-| button | `Added pushbutton Id: N, name: <button>, text: ..., class: ..., assembly: <path>, parentId: ...` |
+| button | `Added pushbutton Id: N, name: <button>, text: ..., class: ..., assembly: <path>, parentId: ...`; also `Added Pushbutton <id>, Name <button>, Class <class>, VendorId <id> (<description>), Assembly <path>` (search without regard to case) |
 | unload | `Unregistering <Event> event by application <X>`, `API unregistering command`, `Third Party Updater '...' has been unregistered`, `Forcibly unregistering Updater`, `Forcibly removing all update triggers`, `Unregistering all external services` |
 | run | `[Jrn.ExternalEventExecution]` and `[Jrn.AddInDynamicUpdate]` with `Rvt.Attr.AddInName:` and `Rvt.Attr.VendorId:`, `[Jrn.ExternalServerExecution]`, `[Jrn.ExternalResourceLoad]`; a click on the add-in's button is `Jrn.RibbonEvent "Execute external command:` |
 | not loaded | `ExternalDBApplication <Class> was not loaded`; `Add-in manifest file <path> won't be loaded` (Revit 2027 refusing an all-users manifest under `ProgramData`) |
 | UI | `Jrn.AddInEvent` (an add-in's own window, `WpfWindow(...)`), `AddInJournalClient` |
 
-- `Rvt.Attr.AddInLoadFailureMessage:` is in every manifest record. `NoError` means the add-in loaded; any other value (for example `WrongAssembly` or `LoadCancelled`) is why it did not. A search for the field name alone hits every add-in; read the value.
-- `Rvt.Attr.AddInCodeSigningStatus:` is `Signed` or `Unsigned`. An unsigned add-in raises the security dialog `TaskDialog_Security_Unsigned_File_Loading` the first time a new DLL loads; read the answer that follows it.
+- `Rvt.Attr.AddInLoadFailureMessage:` is in every manifest record. `NoError` means Revit accepted the manifest and its assembly, not that the application started: an application whose load record is under `API_ERROR {` can still have `NoError` here. Any other value (for example `WrongAssembly` or `LoadCancelled`) is why the add-in was not loaded at all. A search for the field name alone hits every add-in; read the value, and judge "did it start" from the load record of the same class.
+- `Rvt.Attr.AddInCodeSigningStatus:` is `Signed` or `Unsigned`. An unsigned add-in raises the security dialog `TaskDialog_Security_Unsigned_File_Loading` (`Always Load`, `Load Once`, `Do Not Load`) the first time a new DLL loads. The journal often records neither which add-in the prompt was for nor the button chosen; the outcome is in the manifest record: `Unsigned` with `LoadCancelled` and no load record is an add-in that was not loaded at that prompt.
+- Two applications can share a display name and differ in `Class:`. Match a load record, its manifest record and its buttons by class, not by name.
 
 ## 3. Where the name comes from
 
@@ -53,16 +57,20 @@ A record without a name of its own takes the owner it names; otherwise it stays 
 
 ## 4. Autodesk or third party
 
-Decide the origin from the `Vendor` and `VendorId` fields of the same record, and from nothing else:
+Decide the origin from the `Vendor` and `VendorId` fields of the same record, and from nothing else. Go down the table and take the first row that fits:
 
-| Evidence in the record | Origin |
-| --- | --- |
-| Vendor id `ADSK`, as in `Vendor : ADSK(<description>)` | Autodesk |
-| A declared `VendorId(Autodesk)` or `VendorId(Autodesk <product>)` | Autodesk |
-| A website in the vendor text whose host is `autodesk.com` or ends with `.autodesk.com` | Autodesk |
-| Any other vendor id, or any other website | Third party |
-| No vendor; an empty or placeholder one (`none`, `unknown`, `n/a`, `null`, `?`); a vendor text cut off (a parenthesis left open); vendor fields in one record that disagree | Unknown |
+| # | Evidence in the record | Origin |
+| --- | --- | --- |
+| 1 | No vendor; an empty or placeholder one (`none`, `unknown`, `n/a`, `null`, `?`); a vendor text cut off (a parenthesis left open) | Unknown |
+| 2 | The vendor fields of the record name Autodesk and another company or another company's website | Unknown |
+| 3 | Vendor id `ADSK`, as in `Vendor : ADSK(<description>)` | Autodesk |
+| 4 | A declared `VendorId(Autodesk)` or `VendorId(Autodesk <product>)` | Autodesk |
+| 5 | A website in the vendor text whose host is `autodesk.com` or ends with `.autodesk.com`, whatever the vendor id | Autodesk |
+| 6 | Any other vendor id, or any other website | Third party |
 
+- A vendor id that is not `ADSK` is not a disagreement: it is often the product's own code. `Vendor : RPCA(Autodesk, www.autodesk.com)` is Autodesk by row 5; `Vendor : ACME(Acme Software, www.example.com)` is third party by row 6.
+
+- The vendor field is what the add-in's own manifest declares, so the origin is a declared one: write "declares Autodesk", not "is Autodesk's". A third-party tool can declare `ADSK`. Keep the classification the table gives; when the class or the assembly's location makes you doubt the declaration, add that as a separate candidate with its line.
 - Never carry a vendor over from the previous record; each record stands on its own.
 - Never decide from the word "Autodesk" elsewhere in the line, from the add-in's name or from the DLL path: `Program Files\Autodesk\...` and `ProgramData\Autodesk\ApplicationPlugins` hold third-party add-ins too.
 - Quote the vendor field with its line number as the evidence, and for "unknown" say which case applies.
