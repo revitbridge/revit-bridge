@@ -6,6 +6,14 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A second plugin in the marketplace, `revit-journal-analysis`: only the
+  journal skill, with no MCP server and no hook
+  (`/plugin install revit-journal-analysis@revit-bridge`). Its source is the
+  skill's own folder, so nothing is duplicated. The `revit-bridge` plugin
+  still includes the skill; install one of the two.
+
 ### Changed
 
 - `revit-journal-analysis` skill, revised after reading real journals with two
