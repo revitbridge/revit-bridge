@@ -19,7 +19,7 @@ $p = Get-Process -Id <PID>; [void]$p.CloseMainWindow(); Start-Sleep 8
 
 ## 2. Revit journals
 
-`%LOCALAPPDATA%\Autodesk\Revit\Autodesk Revit <year>\Journals\journal.NNNN.txt`. The highest number is not always the newest; sort by modification time. Journals are mixed-encoding text, so grep with `-a`.
+`%LOCALAPPDATA%\Autodesk\Revit\Autodesk Revit <year>\Journals\journal.NNNN.txt`. The highest number is not always the newest; sort by modification time. A journal is written in one encoding, usually the Windows code page of that machine (GBK on a Chinese Windows whatever Revit's UI language is), so grep with `-a` or it is taken for a binary file. Most lines are indented: do not anchor a pattern at column 0.
 
 ```bash
 J="$LOCALAPPDATA/Autodesk/Revit/Autodesk Revit 2026/Journals"
@@ -29,12 +29,12 @@ grep -a -i "<Name>" "$latest"
 
 | Question | Pattern |
 | --- | --- |
-| Did the add-in start, from which DLL | `API_SUCCESS { Starting External Application` and `Added pushbutton .* assembly:` |
+| Did the add-in start, from which DLL | `API_SUCCESS { Starting External Application` (`Starting External DB Application` for an `IExternalDBApplication`) and `Added pushbutton .* assembly:`; the same record under `API_ERROR {` is a start that failed |
 | Registered twice | `Duplicate addins` / `in bundle folder is duplicated` |
-| Why it failed to load | `AddInLoadFailureMessage` |
+| Why it was not loaded | the value after `AddInLoadFailureMessage:` in the add-in's `[Jrn.AddInManifest]` record (2026 and later). Every manifest record has the field; `NoError` means the manifest was accepted, not that the application started; `LoadCancelled`, `WrongAssembly` and other values say why it was not loaded |
 | Which file the user picked in a file dialog | `AFileNavDialog::OnFileNameOK` |
 | What a pick returned | `SEL RESULT:` |
-| Crash or non-UI-thread API call | `native0x80000003` / `non-main-thread` |
+| Crash, and on which thread | `Exception occurred` with `ExceptionCode=0x...` on the next line (`0x80000003` is a breakpoint or internal assertion), `captureTryCrash 0x...` (an exception Revit caught and dumped; the session may go on), `unhandledExceptionFilter is executed in a non-main thread` (the exception was on a background thread: check for Revit API calls made off the UI thread) |
 | Was this session started after the install | compare the journal's modification time with the installed files' |
 | 2027 manifest in a refused folder | `won't be loaded` |
 

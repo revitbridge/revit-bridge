@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -188,6 +189,68 @@ def test_journal_tail_keeps_reading_utf16_and_whole_files(tmp_path):
         out = run.stdout.decode("utf-8")
         expected = "caf\xe9 TaskDialog" if codec == "cp1252" else "still writing \u672b\u5c3e"
         assert run.returncode == 0 and expected in out, (codec, out)
+
+
+MANIFEST = ("' [Jrn.AddInManifest] Rvt.Attr.AddInManifest: {name}.addin Rvt.Attr.AddInType: ExternalApplication "
+            "Rvt.Attr.AddInName: {name} Rvt.Attr.AddInId: 0f6e2a1c Rvt.Attr.CommandClassName: {name}.App "
+            "Rvt.Attr.AddInVersion:  Rvt.Attr.CommandVendorId: ACME Rvt.Attr.CommandVendorDescription: https://example.com "
+            "Rvt.Attr.AddInCodeSigningStatus: {signing} 0Rvt.Attr.AddInLoadFailureMessage: {message}  , 0.000000 , 2 , 1\n")
+LOAD_JOURNAL = ("' Build: 20260731_1210(x64)\n"
+                "  ' 0:< API_SUCCESS { Starting External DB Application: Good DB, Class: Good.Db, Vendor : ACME(Acme, www.example.com), Assembly: a.dll }\n"
+                "  ' 0:< API_ERROR { Starting External Application: Bad App, Class: Bad.App, Vendor : ACME(Acme, www.example.com), Assembly: b.dll }\n"
+                + MANIFEST.format(name="Accepted", signing="Signed", message="NoError")
+                + MANIFEST.format(name="Refused", signing="Unsigned", message="LoadCancelled")
+                + "'C 19-Nov-2026 00:58:59.793;  captureTryCrash 0xe06d7363\n"
+                "' 0:< resource sample, nothing to keep\n"
+                "'C 19-Nov-2026 00:59:29.416;  finished recording journal file\n")
+
+
+def test_journal_tail_keeps_db_applications_and_only_the_manifests_that_were_refused(tmp_path):
+    """Read from real journals: an IExternalDBApplication is "Starting External DB Application"; every
+    add-in has a manifest record whose AddInLoadFailureMessage is NoError when it was accepted, at the
+    far end of a long line; a caught exception is captureTryCrash."""
+    journal = tmp_path / "journal.0001.txt"
+    journal.write_bytes(LOAD_JOURNAL.encode("gbk"))
+    run = subprocess.run([*PYTHON_CHILD, str(JOURNAL_TAIL), "2026", "--lines", "1000", "--file", str(journal)],
+                         env=child_env(tmp_path), capture_output=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    out = run.stdout.decode("utf-8")
+    assert "Starting External DB Application: Good DB" in out and "API_ERROR { Starting External Application: Bad App" in out
+    assert ("[Jrn.AddInManifest] AddInName: Refused CommandClassName: Refused.App AddInCodeSigningStatus: Unsigned "
+            "AddInLoadFailureMessage: LoadCancelled") in out, out
+    assert "Accepted" not in out and "NoError" not in out, out
+    assert "captureTryCrash 0xe06d7363" in out and "finished recording journal file" in out
+    assert "resource sample" not in out
+    whole = subprocess.run([*PYTHON_CHILD, str(JOURNAL_TAIL), "2026", "--all", "--lines", "1000", "--file", str(journal)],
+                           env=child_env(tmp_path), capture_output=True, timeout=60).stdout.decode("utf-8")
+    assert "Rvt.Attr.AddInName: Accepted" in whole and "resource sample" in whole     # --all changes nothing
+
+
+def test_collect_logs_counts_what_a_journal_really_writes():
+    """The journal counts of collect_logs.ps1 are a table of label = regular expression; the patterns are
+    plain enough to mean the same in .NET and in Python, so they are checked here against lines as Revit
+    writes them (the script itself runs only where PowerShell 7 is installed)."""
+    text = COLLECT_LOGS.read_text(encoding="ascii")
+    table = text.split("$journalKeys = [ordered]@{", 1)[1].split("\n}", 1)[0]
+    keys = {}
+    for label, quote, pattern in re.findall(r"""^\s*(['"].*?['"])\s*=\s*(['"])(.*)\2\s*$""", table, re.M):
+        keys[label[1:-1]] = re.compile(pattern, re.I)
+    assert list(keys) == ["Starting External (DB) Application", "failed start (API_ERROR)", "Duplicate addins",
+                          "AddInLoadFailureMessage not NoError", "Assembly version conflict", "won't be loaded",
+                          "exception markers", "clean exit marker"]
+    assert "$journalKeys[$Name] = [regex]::Escape($Name)" in text and "-SimpleMatch -Pattern $key" not in text
+
+    def count(label):
+        return sum(1 for line in LOAD_JOURNAL.splitlines() if keys[label].search(line))
+
+    assert count("Starting External (DB) Application") == 2         # the DB application counts
+    assert count("failed start (API_ERROR)") == 1
+    assert count("AddInLoadFailureMessage not NoError") == 1        # not the accepted manifest
+    assert count("exception markers") == 1 and count("clean exit marker") == 1
+    assert keys["Assembly version conflict"].search(
+        "' 0:< API_ERROR { : Assembly version conflict in some references in Some.dll assembly")
+    assert keys["exception markers"].search("'C 05-Nov-2026 18:15:41.081;   0:< ExceptionCode=0x80000003 ExceptionFlags=0x00000000")
+    assert keys["exception markers"].search("' 0:< unhandledExceptionFilter is executed in a non-main thread (id = 1)")
 
 
 # -- addin_snapshot.py ------------------------------------------------------------------------
