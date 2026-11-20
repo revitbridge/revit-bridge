@@ -81,7 +81,7 @@ Upgrade: `uvx --refresh revit-bridge`; for copied skill folders, run
   - The first paragraph says where the journals, worker logs, crash dumps and
     CER logs are stored.
   - Most journal lines are indented: searches must not be anchored at column
-    0 (`^Jrn\.` found 829 of 23421 action lines in one journal).
+    0 (`^Jrn\.` finds only a small part of the action lines).
   - `captureTryCrash 0x<code>` is a crash-path marker: an exception Revit
     caught and dumped in a session that can still end cleanly. A `.dmp` file
     does not mean the session crashed.

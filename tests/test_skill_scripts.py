@@ -195,14 +195,14 @@ MANIFEST = ("' [Jrn.AddInManifest] Rvt.Attr.AddInManifest: {name}.addin Rvt.Attr
             "Rvt.Attr.AddInName: {name} Rvt.Attr.AddInId: 0f6e2a1c Rvt.Attr.CommandClassName: {name}.App "
             "Rvt.Attr.AddInVersion:  Rvt.Attr.CommandVendorId: ACME Rvt.Attr.CommandVendorDescription: https://example.com "
             "Rvt.Attr.AddInCodeSigningStatus: {signing} 0Rvt.Attr.AddInLoadFailureMessage: {message}  , 0.000000 , 2 , 1\n")
-LOAD_JOURNAL = ("' Build: 20260731_1210(x64)\n"
+LOAD_JOURNAL = ("' Build: 20260101_0000(x64)\n"
                 "  ' 0:< API_SUCCESS { Starting External DB Application: Good DB, Class: Good.Db, Vendor : ACME(Acme, www.example.com), Assembly: a.dll }\n"
                 "  ' 0:< API_ERROR { Starting External Application: Bad App, Class: Bad.App, Vendor : ACME(Acme, www.example.com), Assembly: b.dll }\n"
                 + MANIFEST.format(name="Accepted", signing="Signed", message="NoError")
                 + MANIFEST.format(name="Refused", signing="Unsigned", message="LoadCancelled")
-                + "'C 19-Nov-2026 00:58:59.793;  captureTryCrash 0xe06d7363\n"
+                + "'C 01-Jan-2026 10:00:01.000;  captureTryCrash 0xe06d7363\n"
                 "' 0:< resource sample, nothing to keep\n"
-                "'C 19-Nov-2026 00:59:29.416;  finished recording journal file\n")
+                "'C 01-Jan-2026 10:00:09.000;  finished recording journal file\n")
 
 
 def test_journal_tail_keeps_db_applications_and_only_the_manifests_that_were_refused(tmp_path):
@@ -249,7 +249,7 @@ def test_collect_logs_counts_what_a_journal_really_writes():
     assert count("exception markers") == 1 and count("clean exit marker") == 1
     assert keys["Assembly version conflict"].search(
         "' 0:< API_ERROR { : Assembly version conflict in some references in Some.dll assembly")
-    assert keys["exception markers"].search("'C 05-Nov-2026 18:15:41.081;   0:< ExceptionCode=0x80000003 ExceptionFlags=0x00000000")
+    assert keys["exception markers"].search("'C 01-Jan-2026 10:00:02.000;   0:< ExceptionCode=0x80000003 ExceptionFlags=0x00000000")
     assert keys["exception markers"].search("' 0:< unhandledExceptionFilter is executed in a non-main thread (id = 1)")
 
 
