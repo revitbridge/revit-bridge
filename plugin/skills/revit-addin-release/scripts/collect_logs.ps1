@@ -286,8 +286,21 @@ if (-not $anyBundle) { Say "  (no bundle naming $Name in any ApplicationPlugins 
 
 # --- journals ---------------------------------------------------------------
 Section 'journals'
-$journalKeys = @('Starting External Application', 'Duplicate addins', 'AddInLoadFailureMessage',
-                 'Assembly version conflict', "won't be loaded", $Name)
+# label = regular expression (ASCII, matched without regard to case). An IExternalDBApplication is
+# written as "Starting External DB Application"; every manifest record carries AddInLoadFailureMessage,
+# so only a value other than NoError is counted; captureTryCrash / ExceptionCode= mark a caught or a
+# fatal exception.
+$journalKeys = [ordered]@{
+    'Starting External (DB) Application'  = 'Starting External (DB )?Application'
+    'failed start (API_ERROR)'            = 'API_ERROR \{ *Starting External'
+    'Duplicate addins'                    = 'Duplicate addins'
+    'AddInLoadFailureMessage not NoError' = 'AddInLoadFailureMessage: *(?!NoError)[A-Za-z]'
+    'Assembly version conflict'           = 'Assembly version conflict'
+    "won't be loaded"                     = "won't be loaded"
+    'exception markers'                   = 'captureTryCrash|ExceptionCode=|unhandledExceptionFilter'
+    'clean exit marker'                   = 'finished recording journal file'
+}
+$journalKeys[$Name] = [regex]::Escape($Name)
 $revitLocal = Join-Path $env:LOCALAPPDATA 'Autodesk\Revit'
 if (Test-Path -LiteralPath $revitLocal) {
     Get-ChildItem -LiteralPath $revitLocal -Directory -Filter 'Autodesk Revit 20*' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -313,8 +326,8 @@ if (Test-Path -LiteralPath $revitLocal) {
             Grab $j.FullName ("journals\" + $label)
             if ($j.Extension -ne '.txt') { continue }
             Try-Do {
-                $counts = foreach ($key in $journalKeys) {
-                    $n = (Select-String -LiteralPath $j.FullName -SimpleMatch -Pattern $key -ErrorAction SilentlyContinue | Measure-Object).Count
+                $counts = foreach ($key in $journalKeys.Keys) {
+                    $n = (Select-String -LiteralPath $j.FullName -Pattern $journalKeys[$key] -ErrorAction SilentlyContinue | Measure-Object).Count
                     "$key=$n"
                 }
                 Say "    $($j.Name): $($counts -join ', ')"

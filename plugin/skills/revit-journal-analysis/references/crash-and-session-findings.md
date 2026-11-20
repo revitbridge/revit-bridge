@@ -7,6 +7,7 @@ What to look for once the right journal is open, what each marker means, and how
 | End state | Evidence | Read next |
 | --- | --- | --- |
 | Clean | `finished recording journal file` as the last line, after `ExitManagedInstance`, `Journal Exit` and `License shutdown starting` | Whatever the user reports, before the exit |
+| Ended by Revit after a fatal error | `program terminated` as the last line, no `finished recording journal file` | The crash path (section 2) just above it: the exception, the fatal-error box and its answer |
 | No clean exit | No `finished recording journal file` | Revit crashed, was ended by force (Task Manager, `taskkill`), lost power, or the copy was cut short: read the crash path (section 2), the last 20 lines, the last `Jrn.Command`, the last dialog and the last timestamp |
 | Live | No end marker yet, and Revit still writes the file (its process runs, the file grows) | Not a finding; read a fresh copy later |
 
@@ -23,6 +24,9 @@ Markers Revit writes on its way down:
 | --- | --- |
 | `Exception occurred` | Revit's crash protection caught an exception; the next record holds `ExceptionCode=0x... ExceptionFlags=0x... ExceptionAddress=...` |
 | `ExceptionCode=0x<code>` | The kind of exception (section 3). A code of zero is no exception |
+| `Managed exception occurred:` | A .NET exception reached Revit's top level. The next line is its message, then `WPF RenderMode at time of exception was: ...`, then `ExceptionCode=0xe0434352`; there is no `Exception occurred` line in this form. The message is the best lead in the journal: it often names the component (a web view, a WPF control, a library) and so the kind of add-in to look at |
+| `Unconverted MessageBox "<text>"`, then `Jrn.Data "MessageBox"` with the answer, then `[Jrn.AutoConvertedMessageBox] Rvt.Attr.MessageId: IDS_UNRECOVERABLE_ERROR Rvt.Attr.MessageAnswer: <IDYES, IDNO or IDOK>` | The fatal-error message box where it is not a task dialog (seen in a 2019 journal). The text is in the UI language; `IDS_UNRECOVERABLE_ERROR` is the same in all of them, though not every such box writes that line. When the box offers to save recovery files, the answer says whether any were written |
+| `program terminated` as the last line | Revit ended the process itself after a fatal error |
 | `captureTryCrash 0x<code>` | Revit caught an exception inside a guarded operation and wrote a crash dump for it; the code is the kind of exception (section 3). The session usually goes on and can end cleanly, so this is the marker behind a `.dmp` file in a session nobody saw crash. Read what follows it: often a failed model open (section 5) and the dialog that reported it |
 | `System exception in` | A native exception report |
 | `Exception occurred during Revit crash protection` | A second failure while Revit tried to recover |
@@ -34,6 +38,7 @@ Markers Revit writes on its way down:
 - **Exception markers followed by** the fatal-error dialog, the unhandled-exception filter, a failure in crash protection, an `SLOG ... >Crash` record or no clean exit: Revit most likely crashed there. Exception markers in a session that ended cleanly were caught and survived; list them all the same.
 - **The last command before the first exception** is the last `Jrn.Command` above it: the user's last action, a candidate trigger, not the cause.
 - One crash leaves several of these lines in two or three records: it is one incident.
+- **Compare the sessions of one folder.** When some sessions crashed and others ended cleanly, list the load records of each ([addin-records.md](addin-records.md)) and what the user did last. An add-in that started in every crashed session and in no clean one, or the same message, the same exception address and the same last action in every crash, is a strong candidate; one that is in all of them is not. State it as a correlation with the line numbers of both lists; the dump or a run without that add-in confirms it.
 - Then look for `.dmp` files and a CER log of the same session (section 8), and note the phase the exception fell in ([journal-anatomy.md](journal-anatomy.md) section 5).
 
 ## 3. Exception codes
@@ -64,6 +69,7 @@ A code names the kind of failure, never its cause.
 - **Which one the user opened**: the `"File Name"` value in the `Jrn.Data` record right after `ID_REVIT_FILE_OPEN` (it can be a relative path). The other paths are its links: say "loaded the link", not "opened the model". The `File: Open` line that follows the command marks the start of the open, not its end.
 - The `openFromModelPath` line starts with the seconds the load took and is written when the attempt to load that file ends, whether it worked or not, so linked models appear before the model that hosts them. A failed attempt is followed by `openFromModelPath did not complete`; the line alone does not mean the model opened. In a journal that stops during an open, a host with no `openFromModelPath` line of its own had not finished opening: report the open as unfinished, not as completed, and name the link or import the last records were working on.
 - Failures: `Load exception "<text>"`, `openFromModelPath did not complete`, `exceptionsInOnOpenDocument`. One failed open usually writes several of them: one incident. The reason is in the exception text (a damaged file, disk space, a cancel, a file from a newer release).
+- A model opened from the cloud (Autodesk Docs, BIM 360) fails in other words and writes none of the strings above: section 10.
 - `Missing ESSchema`: an Extensible Storage schema the model refers to is missing. Autodesk has documented a related error for one release; check the release before you suggest any fix.
 - The dialogs around the opening tell the rest, for example `TaskDialog_Unresolved_References` (linked files not found).
 
@@ -108,3 +114,25 @@ journal.NNNN.txt  <size> bytes, sha256 <first 12 hex>, read as <encoding> [<n> l
 - Quote short: the marker and enough of the line to find it again; never paste whole journals into a report.
 - Replace the user, domain and machine names (`<user>`, `<domain>`, `<machine>`), IP addresses (`<ip>`) and personal paths in anything you hand on. Look for them where the journal writes them: the profile folder name under the `Users` directory of any drive, UNC paths `\\<host>\`, `Additional IP address/name found for host <host>: <ip>`, printer lines such as `PortName : <ip>`, and server names in central-model paths. A four-part number after `version` is an assembly version, not an address.
 - End with one sentence on what is most likely and the one step that would confirm it: a reproduction, the dump, the CER log, or the user's own account of the last action.
+
+## 10. Cloud models
+
+A model opened from Autodesk Docs or BIM 360 is downloaded piece by piece, and the journal records each request. Described from Revit 2026 journals; treat other releases as likely similar and check the strings.
+
+| Record | What it says |
+| --- | --- |
+| `Jrn.RibbonEvent "ModelBrowserOpenDocumentEvent:<method>:{...}` | The user's click on a cloud model in Home; `<method>` is `open`, `openAndAuditPreviousCloudVersion` and so on |
+| `Open Cloud Model Method: <method>, Region: <r>, Model Guid: <g>, Project Guid: <g>` | One open attempt starts. Count these lines for the attempts; the same model guid is the same model |
+| `ModelPath Created: ... Path = "CLD:\\<region>\{<project guid>}<project>\{<model guid>}<model>.rvt"` | Which project and model |
+| A `GetFileAsync (HTTP)` line holding `{"start_time":"<UTC>","http_method":"GET","http_url":"...","http_response_code":<code>}` | One download. `200` is normal. Any other code is followed by `Status code on HEADER retrieval = <reason>` and `HTTP Request Exception Error encountered.` |
+| `Exception Model missing bundle from S3]`, `Model missing bundle from S3`, `Thread "RevitSrvToolDownloader_<n>" terminating due to ...` | A download failed for good and its thread stopped |
+| `status: ERROR` or `status: ERROR : Cannot connect to central model`, one line of an analytics block (`logAnalyticsRequest_`, then `context_call:`, `duration:`, `status:` lines) | The outcome Revit reported for that step; the block is one record |
+| `CentralModelException "<text>"` | The open gave up with that reason |
+| `<seconds>== ... [Cloud]standardOpenDocumentFile` | How long the whole open took |
+| `Reading BasicFileInfo from "<model>" failed. The local model has to be recreated.` | The cached local copy is not usable and is fetched again: the start of a repeated open, not the failure |
+
+- **Incidents.** One failed open is one incident: the click, the `Open Cloud Model Method` line, a failed request and its retry (two lines with the same code), the `missing bundle` lines, the `status: ERROR` block and perhaps a `CentralModelException`. Three attempts on one model are three incidents with one cause to look for.
+- **Read the HTTP code, not only the message.** `Model missing bundle from S3` is what Revit concludes; the response code above it is the evidence. For `403`, compare `Expires=<Unix seconds>` in that request's URL with the `"start_time"` of the same line, both in UTC: a request made after `Expires` was refused because its download link had run out, which points at an open that took too long, not at missing data or missing permission. An earlier request with the same `Expires` and code `200` confirms it. Do the arithmetic and write both times down: `Expires` is seconds since 1970-01-01 in UTC (`date -u -d @<n>`, or `python -c "import datetime; print(datetime.datetime.fromtimestamp(<n>, datetime.timezone.utc))"`), and it is compared with the `"start_time"` inside the JSON, which ends in `Z`, never with the journal's own time stamp at the start of the line, which is the machine's local time and can be many hours away. A real gap is seconds to minutes. What the server decided stays unverified from the journal.
+- **Not program faults.** `File not found exception: cld://...` followed by a file-name syntax message, repeated in passes over every linked cloud model (hundreds of lines), is also written at start-up before anything is opened: count passes and distinct models, not lines. `[Jrn.OnLineHelpData] ... HID_MODEL_CORRUPTED` names the help topic of the window Revit showed; it does not show that the model is corrupt. The window itself is a `WpfWindow(<name>,<title>)` action in a `Jrn.AddInEvent` line; its message text is not recorded.
+- **A session that ends after a failed cloud open** with no exception marker and no dump is still the case of section 1: the failed open is what Revit was doing, not a recorded cause of the end.
+- **Redact more.** A cloud journal also holds project and model guids, project and model names (`CLD:` paths, `Project Name:`, `""displayName""`), the values of `x-ads-*` request headers, `CFID` values, signed download links (`Signature=`, `Key-Pair-Id=`), and `SLOG host=` / `server=` lines with the machine's full name and address, next to `User's Name` and `User's Machine Name`. Keep a guid's identity when you replace it (the same placeholder for the same guid), or the attempts can no longer be told apart.

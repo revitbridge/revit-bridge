@@ -203,3 +203,46 @@ def test_the_marketplace_offers_the_journal_skill_as_a_plugin_of_its_own():
         for target in LINK.findall(path.read_text(encoding="utf-8")):
             if not target.startswith(("http://", "https://", "#")):
                 assert (path.parent / target.split("#", 1)[0]).resolve().is_relative_to(source.resolve()), (path, target)
+
+
+# Shapes that only content taken from a real journal has; the skill describes journals with
+# placeholders and with the marker strings Revit writes on every machine (repository CLAUDE.md).
+REAL_CONTENT = {
+    "a guid": r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+    "a time stamp other than the made-up one": r"\b(?!01-Jan-2026 10:00:0\d\.000)\d\d-[A-Z][a-z]{2}-\d{4} \d\d:\d\d:\d\d\.\d{3}",
+    "a build id": r"\b20\d{6}_\d{4}\b",
+    "a process id in a queue name": r"Session\d+_P0MainQueue",
+    "an exception address": r"ExceptionAddress=[0-9A-Fa-f]{8,}",
+    "a private or link-local address": r"(?<![\d.])(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01])|169\.254)\.\d{1,3}\.\d{1,3}\.\d{1,3}(?![\d.])|\bfe80:",
+    "an internal host name": r"\b[A-Za-z0-9-]+\.(?:local|lan|corp|internal|intranet)\b",
+    "a machine name": r"\b(?:DESKTOP|LAPTOP)-[A-Z0-9]{5,}\b",
+    "an e-mail address": r"[\w.+-]+@[\w-]+\.[a-z]{2,}",
+    "a signed link value": r"(?:Signature|Key-Pair-Id|Policy|X-Amz-[A-Za-z-]+)=(?!<)[A-Za-z0-9_~+/%-]{6,}",
+    "a link expiry value": r"Expires=\d{6,}",
+    "a request header or token value": r"(?:x-ads-[a-z-]+|CFID|Authorization|Bearer|access_token)\s*[=:]\s*(?![<`*.])[A-Za-z0-9_+/=-]{8,}",
+    "a storage or service host": r"(?i)\b[a-z0-9.-]+\.(?:amazonaws\.com|cloudfront\.net|aliyuncs\.com|blob\.core\.windows\.net|skyscraper\.autodesk\.com)\b",
+    "a URL outside the allowed hosts": r"https?://(?!(?:www\.)?(?:example\.com|github\.com/imkcrevit/revit-journal-tools|github\.com/revitbridge)\b)[A-Za-z0-9.-]+",
+    "a model file name": r"(?<![<*])\b[\w-]{3,}\.(?:rvt|rte|rfa)\b",
+    "a named user profile": r"(?i)\\Users\\(?!<)[^\\<\s`]+",
+}
+
+
+def test_the_journal_skill_holds_no_real_log_content():
+    for path in journal_files():
+        text = path.read_text(encoding="ascii")
+        for what, pattern in REAL_CONTENT.items():
+            found = re.search(pattern, text)
+            assert not found, (path.name, what, found.group(0))
+
+
+def test_the_journal_skill_says_a_journal_is_confidential():
+    text = " ".join((JOURNAL / "SKILL.md").read_text(encoding="utf-8").split())
+    rules = text.split("## Rules that always hold", 1)[1].split(" ## ", 1)[0]
+    for rule in ("**A journal is confidential.**", "the quotes you give are for that person only",
+                 "Never put journal content into anything that outlives or leaves the task",
+                 "a skill, a prompt, an example, a test or fixture, a commit or pull-request text",
+                 "storage or download addresses (signed links, bucket, CDN and service hosts, request headers, tokens)",
+                 "made-up examples with placeholders",
+                 "Never send a journal, or lines from it, to another model, an online tool or any outside service unless its owner asked",
+                 "quote the marker and the line number, not the line"):
+        assert rule in rules, rule

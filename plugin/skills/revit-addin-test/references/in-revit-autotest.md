@@ -54,7 +54,7 @@ Reinstall the base build for the years you replaced, then `python SK/addin_snaps
 
 ## 6. When Revit hangs or answers strangely
 
-Signs: the call's socket times out; `revit_ps.ps1` shows `responding=False`; the add-in log stops at one command. Then `window_list.ps1 -ProcessId <pid>` shows the dialog it waits on and `journal_tail.py <year>` shows what it was doing. Journals of a Chinese Revit are GBK, not UTF-16; the script decodes by content.
+Signs: the call's socket times out; `revit_ps.ps1` shows `responding=False`; the add-in log stops at one command. Then `window_list.ps1 -ProcessId <pid>` shows the dialog it waits on and `journal_tail.py <year>` shows what it was doing. Journals on a Chinese Windows are GBK whatever Revit's UI language is, not UTF-16; the script decodes by content.
 
 Dialogs met in practice and their causes:
 

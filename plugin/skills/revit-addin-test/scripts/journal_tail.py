@@ -61,11 +61,31 @@ def read(path):
 lines = read(journal).splitlines()
 print("journal: %s (%d lines)" % (journal, len(lines)))
 KEEP = re.compile(r"TaskDialog|Id : TaskDialog_|Transaction|ExternalEvent|NOBLE|Wait mode|Error|Exception|"
-                  r"Jrn\.Data|Jrn\.Command|DialogBox|Export with|Document\.Export|Starting External Application|Added pushbutton|"
-                  r"Duplicate addins|AddInLoadFailureMessage|won't be loaded", re.I)
-picked = lines if args.all else [l for l in lines if KEEP.search(l)]
+                  r"Jrn\.Data|Jrn\.Command|DialogBox|Export with|Document\.Export|Starting External (?:DB )?Application|Added pushbutton|"
+                  r"Duplicate addins|AddInLoadFailureMessage: *(?!NoError)|won't be loaded|captureTryCrash|"
+                  r"finished recording journal file", re.I)
+# Every add-in has a [Jrn.AddInManifest] record (2026 and later) with AddInLoadFailureMessage at its
+# far end: NoError means the manifest was accepted and is left out here; any other value is why the
+# add-in was not loaded, and the record is shown shortened to the fields that say which and why.
+MANIFEST_FIELD = re.compile(r"Rvt\.Attr\.(AddInName|CommandClassName|AddInCodeSigningStatus|AddInLoadFailureMessage): *"
+                            r"(.*?)(?=\s*\d*Rvt\.Attr\.|\s+,|$)")
+
+
+def shown(line):
+    if "[Jrn.AddInManifest]" not in line:
+        return line.rstrip()[:300]
+    fields = dict(MANIFEST_FIELD.findall(line))
+    if fields.get("AddInLoadFailureMessage", "NoError") == "NoError":
+        return None
+    return "[Jrn.AddInManifest] " + " ".join("%s: %s" % item for item in fields.items())
+
+
+if args.all:
+    picked = [l.rstrip()[:300] for l in lines]
+else:
+    picked = [s for s in (shown(l) for l in lines if KEEP.search(l)) if s is not None]
 for line in picked[-args.lines:]:
-    print(line.rstrip()[:300])
+    print(line)
 workers = sorted(folder.glob(journal.stem + ".worker*.log"))
 for w in workers:
     text = read(w)

@@ -6,6 +6,56 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `revit-journal-analysis` skill: a section on cloud models (Autodesk Docs,
+  BIM 360), written from a real journal in which the same cloud model failed
+  to open three times. How to count open attempts, the download records and
+  their HTTP response codes, why `Model missing bundle from S3` is Revit's
+  conclusion and the response code is the evidence, how to compare a signed
+  link's `Expires` with the request's `start_time` in UTC, which repeated
+  lines are routine, and what else a cloud journal holds that must be
+  redacted (guids, project and model names, request headers, signed links,
+  host addresses).
+
+- `revit-journal-analysis` skill, from real Revit 2019 journals of three
+  crashes: the crash-path markers `Managed exception occurred:` (the next
+  line is the .NET message), the fatal-error message box (`Unconverted
+  MessageBox`, `IDS_UNRECOVERABLE_ERROR` and its answer) and `program
+  terminated` as the last line; comparing the add-ins of crashed and clean
+  sessions of one folder; what an older release's journal does not write
+  (no `Release:`, no language code, no process id).
+
+### Changed
+
+- `revit-journal-analysis` skill: a dialog's `Id : TaskDialog_` line is read
+  when the dialog has one; `was not loaded in RevitWorker` lines of a worker
+  log are normal.
+
+### Fixed
+
+- `revit-addin-test` and `revit-addin-release`: statements about Revit
+  journals that did not match real journals.
+  - An `IExternalDBApplication` is written as `Starting External DB
+    Application`; a search for `Starting External Application` alone missed
+    it. The diagnostics table, the support notes, `journal_tail.py` and the
+    journal counts of `collect_logs.ps1` now cover both.
+  - Every `[Jrn.AddInManifest]` record (2026 and later) carries
+    `AddInLoadFailureMessage`, `NoError` when the manifest was accepted.
+    `collect_logs.ps1` counted the field name, that is, every add-in; it now
+    counts values other than `NoError`. `journal_tail.py` leaves accepted
+    manifests out and shows a refused one shortened to its name, class,
+    signing status and reason (the reason was cut off at 300 characters).
+  - The crash row named two strings no journal contains; it now names
+    `ExceptionCode=`, `captureTryCrash` and `unhandledExceptionFilter is
+    executed in a non-main thread`. `collect_logs.ps1` also counts failed
+    starts, exception markers and the clean-exit marker per journal.
+  - An unsigned add-in answered "Do not load" does leave a trace in a 2026
+    or later journal: its manifest record with `LoadCancelled`.
+  - The assembly version conflict line is quoted as the journal writes it.
+  - A journal's encoding follows the Windows code page of the machine, not
+    Revit's UI language; it is one encoding per file, not mixed.
+
 ## [0.8.1] - 2026-11-19
 
 The journal skill, revised against real journals, and a way to install it
@@ -31,7 +81,7 @@ Upgrade: `uvx --refresh revit-bridge`; for copied skill folders, run
   - The first paragraph says where the journals, worker logs, crash dumps and
     CER logs are stored.
   - Most journal lines are indented: searches must not be anchored at column
-    0 (`^Jrn\.` found 829 of 23421 action lines in one journal).
+    0 (`^Jrn\.` finds only a small part of the action lines).
   - `captureTryCrash 0x<code>` is a crash-path marker: an exception Revit
     caught and dumped in a session that can still end cleanly. A `.dmp` file
     does not mean the session crashed.

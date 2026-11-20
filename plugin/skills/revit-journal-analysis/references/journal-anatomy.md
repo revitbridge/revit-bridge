@@ -9,7 +9,7 @@ Revit writes to `%LOCALAPPDATA%\Autodesk\Revit\Autodesk Revit <year>\Journals\` 
 | File | Role | How to treat it |
 | --- | --- | --- |
 | `journal.NNNN.txt` | The main journal of one session | Read it |
-| `journal.NNNN.workerN.log` | A worker process of that session | Read it when the main journal points at background work |
+| `journal.NNNN.workerN.log` | A worker process of that session | Read it when the main journal points at background work. It mostly covers the worker's start-up; its `ExternalDBApplication <Class> (...) was not loaded in RevitWorker` lines are normal in every session |
 | `journal.NNNN.NNNN.dmp` | A crash dump of that session | Binary: count and size it, never read it as text |
 | `journal.NNNN.txt.copy.txt` | A copy of the main journal | Compare it with the main file before reading both |
 | `journal.NNNN.txt.abbrev`, `journal.NNNN.txt.copy.txt.abbrev` | An abbreviated journal | Read it only when the main file is missing; it is not the whole session |
@@ -56,12 +56,13 @@ What the lines hold:
 
 - **Header**, in the first thirty or so lines: `started recording journal file`, `' Build:`, `' Branch:`, `' Release:` (not every release writes `Release:`) and `Actual language code=`. The very first line is a memory sample (`Initial VM:`).
 - **Process id**: `Session<pid>_P0MainQueue`, a little further down; used to match a CER log.
+- **Older releases** write less: a Revit 2019 header has `Build:` and `Branch: RELEASE_2019` but no `Release:` and no `Actual language code=`, the journal has no `Session<pid>` line (the process id is then unknown from the journal) and no `[Jrn.AddInManifest]` records, and worker shutdown reads `Terminating Slave Processes`. Report a missing field as missing; do not infer it.
 - **User actions**: `Jrn.Command` (a ribbon command, a shortcut or an internal command id such as `ID_REVIT_FILE_OPEN`; `ID_APP_EXIT` is the user quitting Revit), `Jrn.Close "[<document>]" , "<view>"` (the user closing a view; closing a document's last view closes the document, followed by `[Jrn.CloseDocumentFile]`), `Jrn.RibbonEvent`, view and keyboard input (`Jrn.MouseMove`, `Jrn.LButtonDown`, `Jrn.Wheel`, `Jrn.Key`), dialog input (`Jrn.PushButton`, `Jrn.ComboBox`, `Jrn.Edit`, `Jrn.TreeCtrl` and similar control names). `Jrn.RibbonEvent "Execute external command:` is a click on an add-in's button; the rest of the line names the control and often the command class.
 - **Not user actions**: `Jrn.Directive` (settings Revit writes itself), `Jrn.Data` (values recorded for replay, dialog answers included), `Jrn.AddInEvent` (an add-in's own window) the automatic `Jrn.RibbonEvent "TabActivated:` at start-up, and `Jrn.Command "Internal" , " , ID_REVIT_MODEL_BROWSER_OPEN"`, which Revit writes itself when the last document closes and the Home screen comes back. The word `"Internal"` alone decides nothing: `ID_REVIT_FILE_OPEN` and `ID_APP_EXIT` are written as `"Internal"` too and are the user's.
 - **API records**: `API_SUCCESS { ... }`, `API_ERROR { ... }` and `API_INFO`: what the Revit API did for an add-in. The braces can span lines; a record ends at its closing `}`.
 - **Resource samples**: `Delta VM:` lines with their RAM figures and `GUI Resource Usage`, written after operations. A sample, not an event.
 - **Debug markers**: `DBG_INFO` and `DBG_WARN:` (both common in healthy sessions), `DBG_ERROR:`, `Assertion failed:`.
-- **Dialogs**: `TaskDialog "<text>"` is the message the user saw, `Id : TaskDialog_<Name>` its id (the same in every UI language), and a `Jrn.Data` record with `"TaskDialogResult"`, often on its continuation line, is the answer.
+- **Dialogs**: `TaskDialog "<text>"` is the message the user saw, `Id : TaskDialog_<Name>` its id when the dialog has one (the same in every UI language; some dialogs record only their buttons, as `CommonButtons :` or numbered `Command Links:`), and a `Jrn.Data` record with `"TaskDialogResult"`, often on its continuation line, is the answer.
 - **Repeats**: a line that ends with ` - N times` stands for N identical lines. It is one hit line.
 
 ## 4. How lines group into records

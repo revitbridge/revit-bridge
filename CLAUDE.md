@@ -74,6 +74,16 @@ uvx --from . revit-bridge check   # read the open document's title through the a
 - Capability pack format, TaskSpec structure and the plugin `SKILL.md` structure are
   defined by planning. If a change needs them, stop and record `BLOCKED` in the notes log.
 - Scripts and workflow files are ASCII only.
+- No content from a real log, journal, model or user machine anywhere in this repository or in
+  its commit and pull-request texts: no original lines or numbers taken from them, no personal,
+  account, project, model or folder names, no host names, addresses or guids, no storage or
+  download addresses (signed links, bucket or CDN hosts, request headers, tokens), no real time
+  stamps, build or process ids. Skills, tests and fixtures use made-up examples with
+  placeholders (`<user>`, `<model>.rvt`, `www.example.com`, `01-Jan-2026 10:00:00.000`); only the
+  marker strings Revit writes on every machine are quoted. Real data used to check a skill stays
+  outside the repository and is not sent to another model or service without the owner's
+  consent and a redacted copy. `tests/test_skills_layout.py` checks the journal skill for the
+  shapes of such content.
 
 ## Commits
 

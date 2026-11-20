@@ -47,9 +47,9 @@ Check in this order; do not guess:
 1. **Was Revit restarted after the install?** The newest journal of that year must be newer than the installed files. A journal from before the install means the session predates it.
 2. **Is it registered twice?** Search the journal for `Duplicate addins`. If yes, remove the stale registration (classic manifest pointing at a Debug directory is the usual culprit).
 3. **Which DLL did Revit load?** The journal line `Added pushbutton ... assembly: <path>` names it.
-4. Only then read `AddInLoadFailureMessage` and the add-in's own log.
+4. Only then read the value after `AddInLoadFailureMessage:` in the add-in's `[Jrn.AddInManifest]` record (2026 and later; every manifest record has the field, and `NoError` means only that the manifest was accepted) and the add-in's own log.
 
-When the journal mentions the add-in nowhere, it was never registered for the Windows account that runs Revit (an elevated installer may have written the per-user files into the administrator's profile), or the unsigned-add-in prompt was once answered "Do not load"; both leave no trace beyond the absence. [user-machine-support.md](user-machine-support.md) covers the same question on a user's machine.
+When the journal mentions the add-in nowhere, it was never registered for the Windows account that runs Revit (an elevated installer may have written the per-user files into the administrator's profile); that leaves no trace beyond the absence. When the unsigned-add-in prompt was answered "Do not load", a 2026 or later journal still has the add-in's manifest record, with `AddInLoadFailureMessage: LoadCancelled` and no start record; earlier journals show only the absence. [user-machine-support.md](user-machine-support.md) covers the same question on a user's machine.
 
 On first start Revit asks whether to load an unsigned add-in; choose "Always Load". Automation answers that dialog by window class, never by closing Revit.
 
@@ -65,7 +65,7 @@ Minimum: one `net48` year (2024) and one .NET year (2025 or 2026) each get the f
 6. Failure paths once each: Escape, an unsupported pick, a timeout, Cancel.
 7. Write the result into the four-cell table (below). Anything not run is "not tested" and goes to open items. Never write "passed" for a step that did not run.
 
-**A `.5` release on the test machine.** Revit 2025.5 and 2026.5 run on .NET 10, and a `net8.0` DLL built for 2025/2026 still loads and runs there; the journal then logs `API_ERROR Assembly version conflict in some references in <Name>.dll` (RevitAPI 26.0 against 26.5, `System.Runtime` 8 against 10) at every load and every command, as it does for Autodesk's own bundled add-ins. Default position: the `net8.0` build is accepted for that machine when every shipped command passes the list above on it; the review record names the journal's `Release:` line, the conflict count and the decision as a known item. Build a dedicated `.5` configuration (`net10.0-windows`) when any command fails there or the add-in uses an API that changed in the `.5` release, and never report the `.5` release as tested from a pre-`.5` run.
+**A `.5` release on the test machine.** Revit 2025.5 and 2026.5 run on .NET 10, and a `net8.0` DLL built for 2025/2026 still loads and runs there; the journal then logs `API_ERROR { : Assembly version conflict in some references in <Name>.dll assembly` (search for `Assembly version conflict`; RevitAPI 26.0 against 26.5, `System.Runtime` 8 against 10) at every load and every command, as it does for Autodesk's own bundled add-ins. Default position: the `net8.0` build is accepted for that machine when every shipped command passes the list above on it; the review record names the journal's `Release:` line, the conflict count and the decision as a known item. Build a dedicated `.5` configuration (`net10.0-windows`) when any command fails there or the add-in uses an API that changed in the `.5` release, and never report the `.5` release as tested from a pre-`.5` run.
 
 ## A shared test machine
 
