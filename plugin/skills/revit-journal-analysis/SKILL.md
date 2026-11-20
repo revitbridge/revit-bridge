@@ -24,7 +24,7 @@ Journals are in `%LOCALAPPDATA%\Autodesk\Revit\Autodesk Revit <year>\Journals\`:
 ## Triage order
 
 1. **How did the session end?** `finished recording journal file` as the last line means a clean exit. Without it the session crashed, was ended by force, lost power or is still running. Note the last timestamp, the user's last action (`Jrn.Command`, `Jrn.Close` or a dialog answer; not a record Revit writes itself) and the last dialog before the end. `ID_APP_EXIT` means the user chose to quit; without it, do not assume they did.
-2. **The crash path.** Search `Exception occurred`, `ExceptionCode=`, `captureTryCrash` (an exception Revit caught and dumped; the session may still end cleanly), `unhandledExceptionFilter is executed`, `Exception occurred during Revit crash protection`, `TaskDialog_Fatal_Error_Occured`, `>Crash` and `CEF failed to initialize`. Translate the exception code into its kind, find the last `Jrn.Command` above the first exception, and look for `.dmp` files and a CER log of the same session.
+2. **The crash path.** Search `Exception occurred`, `Managed exception occurred` (the next line is the .NET message), `ExceptionCode=`, `IDS_UNRECOVERABLE_ERROR`, `program terminated`, `captureTryCrash` (an exception Revit caught and dumped; the session may still end cleanly), `unhandledExceptionFilter is executed`, `Exception occurred during Revit crash protection`, `TaskDialog_Fatal_Error_Occured`, `>Crash` and `CEF failed to initialize`. Translate the exception code into its kind, find the last `Jrn.Command` above the first exception, and look for `.dmp` files and a CER log of the same session.
 3. **Licence, model open, add-ins.** `Adlsdk Error` and `LicenseUpd(` lines with `Error`; `Load exception "`, `openFromModelPath did not complete`, `exceptionsInOnOpenDocument`; for a cloud model `Open Cloud Model Method`, `"http_response_code":` other than 200, `missing bundle`, `CentralModelException`; `API_ERROR { Starting External Application` (a failed load), `won't be loaded` (a refused manifest), `AddInLoadFailureMessage:` with a value other than `NoError`. `Assembly version conflict` lines are usually harmless: count them per assembly.
 4. **Dialogs.** The last `TaskDialog "` lines (what the user saw), their `Id : TaskDialog_` names and the `"TaskDialogResult"` answers.
 5. **Back to the source.** For every candidate, read the whole record around its line (the full braces, the continuation lines, the lines before it) before you write a sentence about it. Modelling messages that start with `ERROR:` and routine `DBG_WARN:` lines are not program faults.
@@ -37,7 +37,7 @@ The markers, the exception-code table, sidecar logs and the write-up are in [cra
 ```bash
 J="$LOCALAPPDATA/Autodesk/Revit/Autodesk Revit 2026/Journals"
 f=$(ls -t "$J"/journal.*.txt | head -1)
-grep -a -n -E "finished recording journal file|Exception occurred|ExceptionCode=|captureTryCrash|unhandledExceptionFilter|TaskDialog_Fatal_Error_Occured|>Crash|CEF failed" "$f"
+grep -a -n -i -E "finished recording journal file|program terminated|exception occurred|ExceptionCode=|captureTryCrash|IDS_UNRECOVERABLE_ERROR|unhandledExceptionFilter|TaskDialog_Fatal_Error_Occured|>Crash|CEF failed" "$f"
 tail -n 40 "$f"
 ```
 

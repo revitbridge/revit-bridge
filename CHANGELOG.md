@@ -18,6 +18,14 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   redacted (guids, project and model names, request headers, signed links,
   host addresses).
 
+- `revit-journal-analysis` skill, from real Revit 2019 journals of three
+  crashes: the crash-path markers `Managed exception occurred:` (the next
+  line is the .NET message), the fatal-error message box (`Unconverted
+  MessageBox`, `IDS_UNRECOVERABLE_ERROR` and its answer) and `program
+  terminated` as the last line; comparing the add-ins of crashed and clean
+  sessions of one folder; what an older release's journal does not write
+  (no `Release:`, no language code, no process id).
+
 ### Changed
 
 - `revit-journal-analysis` skill: a dialog's `Id : TaskDialog_` line is read

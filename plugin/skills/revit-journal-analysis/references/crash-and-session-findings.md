@@ -7,6 +7,7 @@ What to look for once the right journal is open, what each marker means, and how
 | End state | Evidence | Read next |
 | --- | --- | --- |
 | Clean | `finished recording journal file` as the last line, after `ExitManagedInstance`, `Journal Exit` and `License shutdown starting` | Whatever the user reports, before the exit |
+| Ended by Revit after a fatal error | `program terminated` as the last line, no `finished recording journal file` | The crash path (section 2) just above it: the exception, the fatal-error box and its answer |
 | No clean exit | No `finished recording journal file` | Revit crashed, was ended by force (Task Manager, `taskkill`), lost power, or the copy was cut short: read the crash path (section 2), the last 20 lines, the last `Jrn.Command`, the last dialog and the last timestamp |
 | Live | No end marker yet, and Revit still writes the file (its process runs, the file grows) | Not a finding; read a fresh copy later |
 
@@ -23,6 +24,9 @@ Markers Revit writes on its way down:
 | --- | --- |
 | `Exception occurred` | Revit's crash protection caught an exception; the next record holds `ExceptionCode=0x... ExceptionFlags=0x... ExceptionAddress=...` |
 | `ExceptionCode=0x<code>` | The kind of exception (section 3). A code of zero is no exception |
+| `Managed exception occurred:` | A .NET exception reached Revit's top level. The next line is its message, then `WPF RenderMode at time of exception was: ...`, then `ExceptionCode=0xe0434352`; there is no `Exception occurred` line in this form. The message is the best lead in the journal: it often names the component (a web view, a WPF control, a library) and so the kind of add-in to look at |
+| `Unconverted MessageBox "<text>"`, then `Jrn.Data "MessageBox"` with the answer, then `[Jrn.AutoConvertedMessageBox] Rvt.Attr.MessageId: IDS_UNRECOVERABLE_ERROR Rvt.Attr.MessageAnswer: <IDYES, IDNO or IDOK>` | The fatal-error message box where it is not a task dialog (seen in a 2019 journal). The text is in the UI language; `IDS_UNRECOVERABLE_ERROR` is the same in all of them, though not every such box writes that line. When the box offers to save recovery files, the answer says whether any were written |
+| `program terminated` as the last line | Revit ended the process itself after a fatal error |
 | `captureTryCrash 0x<code>` | Revit caught an exception inside a guarded operation and wrote a crash dump for it; the code is the kind of exception (section 3). The session usually goes on and can end cleanly, so this is the marker behind a `.dmp` file in a session nobody saw crash. Read what follows it: often a failed model open (section 5) and the dialog that reported it |
 | `System exception in` | A native exception report |
 | `Exception occurred during Revit crash protection` | A second failure while Revit tried to recover |
@@ -34,6 +38,7 @@ Markers Revit writes on its way down:
 - **Exception markers followed by** the fatal-error dialog, the unhandled-exception filter, a failure in crash protection, an `SLOG ... >Crash` record or no clean exit: Revit most likely crashed there. Exception markers in a session that ended cleanly were caught and survived; list them all the same.
 - **The last command before the first exception** is the last `Jrn.Command` above it: the user's last action, a candidate trigger, not the cause.
 - One crash leaves several of these lines in two or three records: it is one incident.
+- **Compare the sessions of one folder.** When some sessions crashed and others ended cleanly, list the load records of each ([addin-records.md](addin-records.md)) and what the user did last. An add-in that started in every crashed session and in no clean one, or the same message, the same exception address and the same last action in every crash, is a strong candidate; one that is in all of them is not. State it as a correlation with the line numbers of both lists; the dump or a run without that add-in confirms it.
 - Then look for `.dmp` files and a CER log of the same session (section 8), and note the phase the exception fell in ([journal-anatomy.md](journal-anatomy.md) section 5).
 
 ## 3. Exception codes
