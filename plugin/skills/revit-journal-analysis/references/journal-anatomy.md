@@ -43,6 +43,8 @@ Pitfalls:
 
 ## 3. Line kinds
 
+Most lines are indented by one or two spaces, in a long session nearly all of them. "Starts with" below means after that leading space. Never anchor a search at column 0 (`^Jrn\.`, `^'C`): it drops most of the records and then the "last command" it finds is wrong. Search without an anchor, or with `^\s*Jrn\.`.
+
 | A line that | Is |
 | --- | --- |
 | starts with `'` | A comment: Revit's own log text. Most carry a nesting prefix such as `' 0:< ` |
@@ -54,8 +56,8 @@ What the lines hold:
 
 - **Header**, in the first thirty or so lines: `started recording journal file`, `' Build:`, `' Branch:`, `' Release:` (not every release writes `Release:`) and `Actual language code=`. The very first line is a memory sample (`Initial VM:`).
 - **Process id**: `Session<pid>_P0MainQueue`, a little further down; used to match a CER log.
-- **User actions**: `Jrn.Command` (a ribbon command, a shortcut or an internal command id such as `ID_REVIT_FILE_OPEN`), `Jrn.RibbonEvent`, view and keyboard input (`Jrn.MouseMove`, `Jrn.LButtonDown`, `Jrn.Wheel`, `Jrn.Key`), dialog input (`Jrn.PushButton`, `Jrn.ComboBox`, `Jrn.Edit`, `Jrn.TreeCtrl` and similar control names). `Jrn.RibbonEvent "Execute external command:` is a click on an add-in's button; the rest of the line names the control and often the command class.
-- **Not user actions**: `Jrn.Directive` (settings Revit writes itself), `Jrn.Data` (values recorded for replay, dialog answers included), `Jrn.AddInEvent` (an add-in's own window) and the automatic `Jrn.RibbonEvent "TabActivated:` at start-up.
+- **User actions**: `Jrn.Command` (a ribbon command, a shortcut or an internal command id such as `ID_REVIT_FILE_OPEN`; `ID_APP_EXIT` is the user quitting Revit), `Jrn.Close "[<document>]" , "<view>"` (the user closing a view; closing a document's last view closes the document, followed by `[Jrn.CloseDocumentFile]`), `Jrn.RibbonEvent`, view and keyboard input (`Jrn.MouseMove`, `Jrn.LButtonDown`, `Jrn.Wheel`, `Jrn.Key`), dialog input (`Jrn.PushButton`, `Jrn.ComboBox`, `Jrn.Edit`, `Jrn.TreeCtrl` and similar control names). `Jrn.RibbonEvent "Execute external command:` is a click on an add-in's button; the rest of the line names the control and often the command class.
+- **Not user actions**: `Jrn.Directive` (settings Revit writes itself), `Jrn.Data` (values recorded for replay, dialog answers included), `Jrn.AddInEvent` (an add-in's own window) the automatic `Jrn.RibbonEvent "TabActivated:` at start-up, and `Jrn.Command "Internal" , " , ID_REVIT_MODEL_BROWSER_OPEN"`, which Revit writes itself when the last document closes and the Home screen comes back. The word `"Internal"` alone decides nothing: `ID_REVIT_FILE_OPEN` and `ID_APP_EXIT` are written as `"Internal"` too and are the user's.
 - **API records**: `API_SUCCESS { ... }`, `API_ERROR { ... }` and `API_INFO`: what the Revit API did for an add-in. The braces can span lines; a record ends at its closing `}`.
 - **Resource samples**: `Delta VM:` lines with their RAM figures and `GUI Resource Usage`, written after operations. A sample, not an event.
 - **Debug markers**: `DBG_INFO` and `DBG_WARN:` (both common in healthy sessions), `DBG_ERROR:`, `Assertion failed:`.

@@ -6,6 +6,38 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `revit-journal-analysis` skill, revised after reading real journals with two
+  other models and comparing their reports line by line:
+  - The first paragraph says where the journals, worker logs, crash dumps and
+    CER logs are stored.
+  - Most journal lines are indented: searches must not be anchored at column
+    0 (`^Jrn\.` found 829 of 23421 action lines in one journal).
+  - `captureTryCrash 0x<code>` is a crash-path marker: an exception Revit
+    caught and dumped in a session that can still end cleanly. A `.dmp` file
+    does not mean the session crashed.
+  - `openFromModelPath` is written for linked models too, and when the load
+    attempt ends whether it worked or not; the model the user opened is the
+    `"File Name"` after `ID_REVIT_FILE_OPEN`; `File: Open` marks the start.
+  - The user's last action includes `Jrn.Close`; `ID_REVIT_MODEL_BROWSER_OPEN`
+    is Revit's own; `ID_APP_EXIT` is the user quitting.
+  - A session that ends with no exception marker and no dump: list the
+    possible causes without ranking them.
+  - The vendor table is an ordered decision list; a vendor id other than
+    `ADSK` with an autodesk.com website declares Autodesk; the origin is a
+    declared one.
+  - Redaction also covers server names and IP addresses, with the places a
+    journal writes them.
+
+### Fixed
+
+- `revit-journal-analysis` skill: `AddInLoadFailureMessage: NoError` was
+  described as "the add-in loaded". It means the manifest was accepted; an
+  application whose load record is under `API_ERROR {` still has `NoError`.
+  The unsigned-add-in prompt's answer is often not recorded; the outcome is
+  in the manifest record (`Unsigned` with `LoadCancelled`).
+
 ## [0.8.0] - 2026-11-19
 
 A seventh skill, `revit-journal-analysis`, for reading Revit journal files,
