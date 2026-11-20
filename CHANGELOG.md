@@ -6,8 +6,27 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-19
+
+The journal skill reads cloud-model opens, managed exceptions and the
+fatal-error message box, and treats a journal as confidential; the journal
+facts in the add-in test and release skills are corrected, with their two
+scripts. Skill text and the two shipped scripts only: no Python package
+code, tool, pack format, TaskSpec, gate or wire-format change.
+
+Upgrade: `uvx --refresh revit-bridge`; for copied skill folders, run
+`revit-bridge skills install` again with `--force`. In Claude Code,
+`/plugin marketplace update revit-bridge`.
+
 ### Added
 
+- `revit-journal-analysis` skill: a rule that always holds, "A journal is
+  confidential". Nothing from a journal (lines, figures, names, project and
+  model names, hosts, guids, storage or download addresses, tokens) goes
+  into a skill, prompt, example, test, commit or pull-request text; nothing
+  is sent to another model or service unless its owner asked, and then only
+  a checked redacted copy; a report for someone else quotes the marker and
+  the line number, not the line.
 - `revit-journal-analysis` skill: a section on cloud models (Autodesk Docs,
   BIM 360), written from a real journal in which the same cloud model failed
   to open three times. How to count open attempts, the download records and
@@ -1153,7 +1172,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/revitbridge/revit-bridge/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/revitbridge/revit-bridge/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/revitbridge/revit-bridge/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/revitbridge/revit-bridge/compare/v0.7.0...v0.7.1
