@@ -6,6 +6,16 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-19
+
+The journal skill, revised against real journals, and a way to install it
+alone. Skill text and the marketplace file only: no Python code, tool, pack
+format, TaskSpec, gate or wire-format change.
+
+Upgrade: `uvx --refresh revit-bridge`; for copied skill folders, run
+`revit-bridge skills install` again with `--force`. In Claude Code,
+`/plugin marketplace update revit-bridge`.
+
 ### Added
 
 - A second plugin in the marketplace, `revit-journal-analysis`: only the
@@ -1093,7 +1103,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/revitbridge/revit-bridge/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/revitbridge/revit-bridge/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/revitbridge/revit-bridge/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/revitbridge/revit-bridge/compare/v0.6.1...v0.7.0
