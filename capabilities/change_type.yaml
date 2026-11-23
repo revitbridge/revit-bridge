@@ -1,78 +1,125 @@
 schema_version: 1
-name: "change_type"
-display_name: "Change Type"
-description: "Change up to 100 selected elements to a type in the same category. Obtain the target type id from list_types; mixed categories and invalid types are refused."
+name: change_type
+display_name: Change Type
+description: >-
+  Change the elements selected in Revit (at most 100) to another type of the same category.
+  The category is an OST_* name and the type is given by its id (from list_types). Every
+  selected element is checked first; an element of another category, in a group, or that
+  cannot take the type stops the run and nothing is changed. Elements that already have the
+  type are listed under AlreadyThisType; if all have it, nothing is changed and the run says
+  so. The validator reads the type back from every changed element.
 version: "1.0.0"
-revit_versions: ["2026"]
+revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  var selected = new UIDocument(document).Selection.GetElementIds().ToList();
-  if (selected.Count == 0)
-      return new { Status = "Error", Message = "No elements are selected." };
-  if (selected.Count > 100)
-      return new { Status = "Error", Message = "Select at most 100 elements per run." };
+  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
+  // The bridge already opened the transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
   string categoryName = "{category}";
+  string typeText = "{type_id}";
+  const int MaxSelected = 100;
+
+  // 1. The category and the target type.
   BuiltInCategory category;
-  if (!categoryName.StartsWith("OST_", StringComparison.Ordinal)
-      || !Enum.TryParse(categoryName, out category) || !Enum.IsDefined(typeof(BuiltInCategory), category))
-      return new { Status = "Error", Message = "Unknown BuiltInCategory identifier." };
-  var targetId = new ElementId((long){type_id});
-  var target = document.GetElement(targetId) as ElementType;
-  if (target == null || target.Category == null || target.Category.Id.Value != (long)category)
-      return new { Status = "Error", Message = "Target type was not found in the requested category." };
-  var skipped = new List<object>();
-  foreach (var id in selected)
+  if (!categoryName.StartsWith("OST_", StringComparison.Ordinal) || !Enum.TryParse(categoryName, out category)
+      || !Enum.IsDefined(typeof(BuiltInCategory), category))
+      throw new InvalidOperationException("\"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
+  ElementId categoryId = new ElementId(category);
+  int typeNumber;
+  if (!int.TryParse(typeText, System.Globalization.NumberStyles.Integer, invariant, out typeNumber) || typeNumber <= 0)
+      throw new InvalidOperationException("The type must be given by its id (a whole number from list_types, 1 to 2147483647), got \"" + typeText + "\".");
+  // ElementId(int) on 2021-2023, obsolete on 2024-2025, gone from 2026 (the int then converts to
+  // ElementId(Int64)): one line for every year, without the 2024-2025 warning.
+  #pragma warning disable 618
+  ElementId typeId = new ElementId(typeNumber);
+  #pragma warning restore 618
+  ElementType target = document.GetElement(typeId) as ElementType;
+  if (target == null)
+      throw new InvalidOperationException("There is no type with id " + typeText + " in this model. Look the type up with list_types.");
+  if (target.Category == null || !target.Category.Id.Equals(categoryId))
+      throw new InvalidOperationException("Type " + typeText + " (" + target.Name + ") is not a " + categoryName + " type.");
+
+  // 2. Check every selected element before changing any.
+  List<ElementId> selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  if (selected.Count == 0)
+      throw new InvalidOperationException("Nothing is selected in Revit. Select the elements first, then run the tool again.");
+  if (selected.Count > MaxSelected)
+      throw new InvalidOperationException(selected.Count + " elements are selected; this tool changes at most " + MaxSelected + " per run. Select fewer.");
+  var problems = new List<string>();
+  var toChange = new List<ElementId>();
+  var already = new List<long>();
+  foreach (ElementId id in selected)
   {
-      try
-      {
-          var element = document.GetElement(id);
-          if (element == null || element.Category == null || element.Category.Id.Value != target.Category.Id.Value)
-              throw new InvalidOperationException("Selected element is not in the target type category.");
-          if (element.Pinned || !element.IsValidType(targetId))
-              throw new InvalidOperationException("Selected element is pinned or cannot use the target type.");
-      }
-      catch (Exception ex) { skipped.Add(new { Id = id.Value, Reason = ex.Message }); }
+      Element element = document.GetElement(id);
+      if (element == null) { problems.Add(idOf(id) + " no longer exists"); continue; }
+      if (element.Category == null || !element.Category.Id.Equals(categoryId)) { problems.Add(idOf(id) + " is not in " + categoryName); continue; }
+      if (!element.GroupId.Equals(ElementId.InvalidElementId)) { problems.Add(idOf(id) + " is in a group; change it in the group"); continue; }
+      if (element.GetTypeId().Equals(typeId)) { already.Add(idOf(id)); continue; }
+      if (!element.IsValidType(typeId)) { problems.Add(idOf(id) + " cannot take type " + target.Name); continue; }
+      toChange.Add(id);
   }
-  if (skipped.Count > 0)
-      return new { Status = "Error", Message = "Selection preflight failed. No element types were changed; see Skipped.",
-          ElementIds = new List<long>(), Count = 0, Skipped = skipped };
+  if (problems.Count > 0)
+      throw new InvalidOperationException("Nothing was changed: " + problems.Count + " of " + selected.Count + " selected elements cannot change to "
+          + target.Name + ". " + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
+  if (toChange.Count == 0)
+      throw new InvalidOperationException("Nothing was changed: all " + selected.Count + " selected elements already have type " + target.Name + ".");
+
+  // 3. Change, then read every type back. In rare cases (a curtain panel and a basic wall) Revit
+  // replaces the element and ChangeTypeId returns the new element's id; follow it then.
   var changed = new List<long>();
-  foreach (var id in selected)
+  foreach (ElementId id in toChange)
   {
-      try
-      {
-          var element = document.GetElement(id);
-          if (element == null)
-              throw new InvalidOperationException("Selected element is no longer available.");
-          if (element.GetTypeId() == targetId) continue;
-          ElementId replacement = element.ChangeTypeId(targetId);
-          var actualId = replacement == ElementId.InvalidElementId ? id : replacement;
-          var actual = document.GetElement(actualId);
-          if (actual == null || actual.GetTypeId() != targetId)
-              throw new InvalidOperationException("Type readback does not match the requested type.");
-          changed.Add(actualId.Value);
-      }
-      catch (Exception ex) { skipped.Add(new { Id = id.Value, Reason = ex.Message }); }
+      ElementId replacement = document.GetElement(id).ChangeTypeId(typeId);
+      Element replaced = replacement == null || replacement.Equals(ElementId.InvalidElementId) ? null : document.GetElement(replacement);
+      ElementId now = replaced != null && !(replaced is ElementType) ? replacement : id;
+      Element after = document.GetElement(now);
+      if (after == null || !after.GetTypeId().Equals(typeId))
+          throw new InvalidOperationException("Element " + idOf(id) + " did not take type " + target.Name + "; nothing was changed.");
+      changed.Add(idOf(now));
   }
-  return new { Status = changed.Count > 0 && skipped.Count == 0 ? "Modified" : "Error",
-      Message = changed.Count == 0 ? "No element types were changed." : skipped.Count > 0 ? "Some selected elements could not be changed; see Skipped." : "Element types changed.",
-      ElementIds = changed, Count = changed.Count, Skipped = skipped };
+
+  return new
+  {
+      Status = "Changed",
+      TypeId = idOf(typeId),
+      Type = target.FamilyName + ": " + target.Name,
+      ElementIds = changed,
+      Count = changed.Count,
+      AlreadyThisType = already
+  };
 parameters:
-  - name: "category"
-    type: "string"
-    description: "BuiltInCategory identifier such as OST_Walls"
-    source: "designer"
+  - name: category
+    type: string
+    description: OST_* name of the selected elements' category, such as OST_Walls or OST_Doors
+    source: designer
     required: true
-  - name: "type_id"
-    type: "integer"
-    description: "Target ElementType id from list_types for the selected category"
-    source: "designer"
+  - name: type_id
+    type: integer
+    description: Id of the target type, from list_types for that category (or a type picked in the host)
+    source: designer
     required: true
-preconditions: []
-not_for: []
-applies_when: ["change type"]
-validator: {"kind":"param_equals","category":"{category}","checks":[{"param_name":"ELEM_TYPE_PARAM","spec_param":"type_id"}]}
-fixtures: [{"name":"basic","params":{"category":"OST_Walls","type_id":201},"expect":{"Status":"Modified"}}]
+preconditions:
+  - text: "select the elements in Revit first (at most 100), all of the given category"
+not_for:
+  - "create type"
+  - "duplicate type"
+  - "type parameter"
+  - "set parameter"
+applies_when:
+  - "change type"
+  - "swap type"
+  - "replace type"
+validator:
+  kind: param_equals
+  category: "{category}"
+  checks:
+    - param_name: ELEM_TYPE_PARAM
+      spec_param: type_id
+fixtures:
+  - name: basic
+    params: {category: "OST_Walls", type_id: 201}
+    expect: {Status: "Changed"}
 approved_by: null
 approved_at: null
-created_at: "2026-01-01T00:00:00"
-source_query: "change type"
+created_at: "2026-11-23T00:00:00"
+source_query: change the type of the selected elements

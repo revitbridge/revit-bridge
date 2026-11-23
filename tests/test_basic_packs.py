@@ -1,20 +1,30 @@
-"""Contracts for the fourteen basic modeling packs; no live Revit access."""
+"""The fourteen basic modelling packs: format, rendering, refusal shape; no Revit.
+
+What these tests cannot show: that the C# compiles and behaves in Revit. Every refusal
+in these packs throws, because the add-in commits its transaction whenever a snippet
+returns and rolls it back only when the snippet throws.
+"""
 from __future__ import annotations
 
+import asyncio
 import json
-import os
 import re
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
+from revit_bridge import execution
 from revit_bridge.capabilities.schema import validate_pack
 from revit_bridge.capabilities.store import ToolStore, escape_param_value
+from revit_bridge.evidence.ledger import Ledger
+from revit_bridge.revit.client import RevitClient
 from revit_bridge.revit.sandbox import review
+from revit_bridge.snapshot.query import LEVELS_CODE
+from revit_bridge.spec.gate import Gate
+from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec
 
+from tests.fake_revit import FakeRevit
 
 ROOT = Path(__file__).resolve().parents[1] / "capabilities"
 NAMES = (
@@ -22,15 +32,34 @@ NAMES = (
     "create_roof_by_footprint", "create_ceiling", "set_parameter", "move_elements",
     "change_type", "delete_selected", "count_by_level", "list_types", "elements_in_link",
 )
+PREEXISTING = (
+    "create_beam", "create_floor", "create_structural_column", "create_wall",
+    "delete_elements_by_category", "modify_wall_height", "query_levels", "query_model_stats",
+)
+CREATES = {
+    "create_level": "OST_Levels", "create_grid": "OST_Grids", "create_door": "OST_Doors",
+    "create_window": "OST_Windows", "create_room": "OST_Rooms", "create_roof_by_footprint": "OST_Roofs",
+    "create_ceiling": "OST_Ceilings",
+}
+SELECTION = ("set_parameter", "move_elements", "change_type", "delete_selected")
+QUERIES = ("count_by_level", "list_types", "elements_in_link")
+ALL_YEARS = ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
+FROM_2022 = ("create_ceiling", "set_parameter")      # Ceiling.Create, Definition.GetDataType
+
 PLACEHOLDER = re.compile(r"\{[A-Za-z_]\w*\}")
-# Every string parameter is inserted into an ordinary C# string literal. These
-# templates use the JSON-compatible subset of C# escapes for user text.
 STRING_LITERAL = re.compile(r'"(?:[^"\\\r\n]|\\["\\rn])*"')
 HOSTILE_TEXT = 'A "quoted" name\\path\r\n"; return null; //'
+# Calls that change the model; a read-only query uses none of them.
+MUTATIONS = re.compile(r"\b(?:Set|Delete|Create|NewFamilyInstance|NewRoom|NewFootPrintRoof|ChangeTypeId"
+                       r"|MoveElements?|Activate|set_\w+)\s*\(|\.Name\s*=[^=]")
 
 
-def data_for(name):
+def data_for(name: str) -> dict:
     return yaml.safe_load((ROOT / f"{name}.yaml").read_text(encoding="utf-8"))
+
+
+def code_of(name: str) -> str:
+    return data_for(name)["code_template"]
 
 
 @pytest.fixture
@@ -38,79 +67,182 @@ def store(tmp_path):
     return ToolStore(user_dir=tmp_path / "user", builtin_dir=ROOT)
 
 
+def rendered(store: ToolStore, name: str) -> list[str]:
+    out = []
+    for fixture in data_for(name)["fixtures"]:
+        code, errors = store.render(name, fixture["params"])
+        assert errors == [] and code, (name, fixture["name"], errors)
+        out.append(code)
+    return out
+
+
+def blocks_after(code: str, keyword: str) -> list[str]:
+    """The brace-delimited body following each ``keyword (...)`` in ``code``."""
+    bodies = []
+    for match in re.finditer(rf"\b{keyword}\s*\(", code):
+        start = code.index("{", match.end())
+        depth, index = 0, start
+        while True:
+            depth += {"{": 1, "}": -1}.get(code[index], 0)
+            if depth == 0:
+                break
+            index += 1
+        bodies.append(code[start:index + 1])
+    return bodies
+
+
+# -- the listing and the format ----------------------------------------------------------------
+
+def test_the_listing_shows_the_fourteen_packs_next_to_the_eight_earlier_ones():
+    store = ToolStore()                       # the package's own built-in directory
+    listed = {tool.name for tool in store.list_tools()}
+    assert set(NAMES) <= listed and set(PREEXISTING) <= listed
+    assert len(listed) == len(NAMES) + len(PREEXISTING)
+    for name in NAMES:
+        assert store.path_of(name) == store.builtin_dir / f"{name}.yaml"
+
+
 @pytest.mark.parametrize("name", NAMES)
-def test_pack_loads_validates_and_renders_a_fixture(store, name):
+def test_pack_is_valid_v1_and_every_fixture_renders_without_placeholders(store, name):
     data = data_for(name)
     assert validate_pack(data) == []
+    assert data["schema_version"] == 1 and data["version"] == "1.0.0" and data["name"] == name
     loaded = store.load(name)
-    assert loaded is not None and loaded.name == name
-    code, errors = store.render(name, data["fixtures"][0]["params"])
-    assert errors == [] and code
-    assert PLACEHOLDER.search(code) is None
-    assert review(code) == (True, [])
-    assert not re.search(r"new\s+(?:Sub)?Transaction\s*\(", code)
+    assert loaded is not None and loaded.code_template == data["code_template"]
+    assert data["fixtures"], name
+    for code in rendered(store, name):
+        assert PLACEHOLDER.search(code) is None
+        assert review(code) == (True, [])
 
 
 @pytest.mark.parametrize("name", NAMES)
-def test_string_values_remain_complete_string_literals(store, name):
+def test_every_value_enters_the_code_inside_a_string_literal(name):
+    """Numbers too: the snippet parses them, so an odd value is a refusal, not C#."""
+    code = code_of(name)
+    for param in data_for(name)["parameters"]:
+        token = "{" + param["name"] + "}"
+        assert code.count(token) >= 1, (name, token)
+        assert code.count(token) == code.count('"' + token + '"'), (name, token)
+
+
+@pytest.mark.parametrize("name", [n for n in NAMES if any(p["type"] == "string" for p in data_for(n)["parameters"])])
+def test_text_with_quotes_backslashes_and_line_breaks_stays_one_string_literal(store, name):
     data = data_for(name)
-    for parameter in data["parameters"]:
-        if parameter["type"] != "string":
+    for param in data["parameters"]:
+        if param["type"] != "string":
             continue
-        values = {**data["fixtures"][0]["params"], parameter["name"]: HOSTILE_TEXT}
+        values = {**data["fixtures"][0]["params"], param["name"]: HOSTILE_TEXT}
         code, errors = store.render(name, values)
         assert errors == [] and code
         escaped = '"' + escape_param_value(HOSTILE_TEXT) + '"'
-        literals = STRING_LITERAL.findall(code)
-        assert escaped in literals, (name, parameter["name"])
+        assert escaped in STRING_LITERAL.findall(code), (name, param["name"])
         assert json.loads(escaped) == HOSTILE_TEXT
         assert PLACEHOLDER.search(code) is None
 
 
-@pytest.mark.parametrize("name", [n for n in NAMES if n.startswith("create_")])
-def test_creation_validators_measure_new_instances(name):
-    validator = data_for(name)["validator"]
-    assert validator["kind"] == "count_delta"
-    assert validator["expected"] == 1
-    assert validator["category"].startswith("OST_")
-
-
-@pytest.mark.parametrize("name", ("count_by_level", "list_types", "elements_in_link"))
-def test_queries_are_bounded_and_report_truncation(store, name):
-    data = data_for(name)
-    limit = next(p for p in data["parameters"] if p["name"] == "limit")
-    assert limit["default"] == 100
-    code, errors = store.render(name, data["fixtures"][0]["params"])
+def test_odd_numbers_stay_inside_literals_and_non_numbers_are_refused_before_revit(store):
+    params = {"name": "B", "start_x": " 12 ", "start_y": "1e3", "end_x": -0.5, "end_y": 3000.0}
+    code, errors = store.render("create_grid", params)
     assert errors == []
-    assert "Math.Max(1, Math.Min(200," in code
-    assert "Truncated =" in code
-    assert data["validator"]["expected"] == 0
-    assert not re.search(r"\b(?:Set|Delete|Create|ChangeTypeId|MoveElement)\s*\(", code)
+    for text in ('" 12 "', '"1e3"', '"-0.5"', '"3000.0"'):
+        assert text in code
+    code, errors = store.render("create_grid", {**params, "end_y": '1"); document.Delete(x); //'})
+    assert code is None and errors
 
 
-@pytest.mark.parametrize("name", ("set_parameter", "move_elements", "change_type", "delete_selected"))
-def test_selection_commands_reject_empty_and_excessive_selections(name):
-    code = data_for(name)["code_template"]
-    assert 'Selection.GetElementIds()' in code
-    assert 'selected.Count == 0' in code
-    assert 'selected.Count > 100' in code
-    assert 'Status = "Error"' in code
-    assert 'ElementIds =' in code and 'Count =' in code
+# -- refusals throw ---------------------------------------------------------------------------
+
+LOCAL_FUNCTION = re.compile(r"^[A-Za-z_][\w<>,\[\]]*\s+[A-Z]\w*\([^;]*\)\s*\n\{", re.MULTILINE)
 
 
-def test_unavailable_verification_is_not_misrepresented():
-    # The existing validators cannot prove a translation, an arbitrary parameter
-    # name's new value, or deletion across mixed categories. Do not silently use
-    # count_delta=0 or created_ids to claim those operations were verified.
-    for name in ("set_parameter", "move_elements", "delete_selected"):
-        assert data_for(name)["validator"] is None
-    assert data_for("change_type")["validator"] == {
-        "kind": "param_equals", "category": "{category}",
-        "checks": [{"param_name": "ELEM_TYPE_PARAM", "spec_param": "type_id"}],
-    }
+def helper_spans(code: str) -> list[tuple[int, int]]:
+    """Where the snippet's lambdas and local functions are: a ``return`` there returns to the snippet."""
+    spans = []
+    starts = [m.end() - 1 for m in LOCAL_FUNCTION.finditer(code)]
+    starts += [m.end() - 1 for m in re.finditer(r"=>\s*\n\s*\{", code)]
+    for start in starts:
+        depth, index = 0, start
+        while True:
+            depth += {"{": 1, "}": -1}.get(code[index], 0)
+            if depth == 0:
+                break
+            index += 1
+        spans.append((start, index))
+    return spans
 
 
-def test_creation_model_parameters_declare_existing_choices():
+@pytest.mark.parametrize("name", NAMES)
+def test_every_refusal_throws_and_the_snippet_returns_only_its_result(name):
+    code = code_of(name)
+    assert "throw new InvalidOperationException(" in code
+    assert 'Status = "Error"' not in code
+    spans = helper_spans(code)
+    returns = [m.start() for m in re.finditer(r"\breturn\b", code)
+               if not any(start < m.start() < end for start, end in spans)]
+    assert len(returns) == 1, (name, [code[r:r + 40] for r in returns])
+    assert code[returns[0]:].startswith("return new") and code[:returns[0]].endswith("\n"), name
+    statuses = re.findall(r'Status = "(\w+)"', code)
+    assert len(statuses) == 1 and statuses[0] in {"Created", "Changed", "Moved", "Deleted", "Ok"}, (name, statuses)
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_no_catch_swallows_an_error(name):
+    code = code_of(name)
+    for caught in re.findall(r"\bcatch\s*\(([^)]*)\)", code):
+        assert caught.split()[0] == "Autodesk.Revit.Exceptions.ArgumentException", (name, caught)
+    for body in blocks_after(code, "catch"):
+        assert "throw new InvalidOperationException(" in body, (name, body)
+    assert not re.search(r"\bcatch\s*\{", code)
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_no_transaction_and_no_ui(name):
+    code = code_of(name)
+    assert not re.search(r"\b(?:Transaction|SubTransaction|TransactionGroup)\s*\(", code)
+    assert "TaskDialog" not in code and "PickObject" not in code and "MessageBox" not in code
+
+
+# -- units, ids and Revit years ------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", NAMES)
+def test_lengths_are_mm_and_converted_with_the_unit_api(name):
+    data = data_for(name)
+    code = data["code_template"]
+    doubles = [p for p in data["parameters"] if p["type"] == "double"]
+    for param in doubles:
+        assert param["unit"] == "mm" and "(mm)" in param["description"], (name, param["name"])
+    if doubles:
+        assert "UnitUtils.ConvertToInternalUnits(" in code and "UnitTypeId.Millimeters" in code
+    assert "304.8" not in code and "DisplayUnitType" not in code and "ParameterType" not in code
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_element_ids_compile_on_every_declared_year(name):
+    """``ElementId.Value`` and ``IntegerValue`` each exist on only part of 2021-2027: ids are read with
+    ``ToString`` and built from an ``int`` between the CS0618 pragmas."""
+    code = code_of(name)
+    assert not re.search(r"\.Value\b", code) and "IntegerValue" not in code
+    lines = code.splitlines()
+    for index, line in enumerate(lines):
+        if "new ElementId(" in line and "new ElementId(category)" not in line:
+            assert lines[index - 1].strip() == "#pragma warning disable 618", (name, line)
+            assert lines[index + 1].strip() == "#pragma warning restore 618", (name, line)
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_declared_revit_years(name):
+    data = data_for(name)
+    if name in FROM_2022:
+        assert data["revit_versions"] == ALL_YEARS[1:]
+        assert "Revit 2022 or later" in data["description"]
+        assert any("Revit 2022 or later" in item.get("text", "") for item in data["preconditions"])
+    else:
+        assert data["revit_versions"] == ALL_YEARS
+
+
+# -- parameters from the model ---------------------------------------------------------------------
+
+def test_parameters_that_pick_from_the_model_offer_real_choices():
     expected = {
         "create_door": {"wall_id": "elements:OST_Walls", "type_name": "family_types:OST_Doors"},
         "create_window": {"wall_id": "elements:OST_Walls", "type_name": "family_types:OST_Windows"},
@@ -119,26 +251,71 @@ def test_creation_model_parameters_declare_existing_choices():
         "create_ceiling": {"level_name": "levels", "type_name": "family_types:OST_Ceilings"},
         "elements_in_link": {"link_id": "elements:OST_RvtLinks"},
     }
-    for name, sources in expected.items():
-        params = {p["name"]: p for p in data_for(name)["parameters"]}
-        for parameter, source in sources.items():
-            assert params[parameter]["choices_from"] == source
-            assert params[parameter]["source"].startswith("tool:")
-
-
-def test_numeric_lengths_are_millimeters():
     for name in NAMES:
-        for parameter in data_for(name)["parameters"]:
-            if parameter["type"] == "double":
-                assert parameter["unit"] == "mm", (name, parameter["name"])
+        for param in data_for(name)["parameters"]:
+            wanted = expected.get(name, {}).get(param["name"])
+            if wanted:
+                assert param["choices_from"] == wanted and param["source"].startswith("tool:"), (name, param)
+            elif param["name"].endswith(("_id", "level_name", "type_name")):
+                # The planner's ruling: change_type.type_id is the designer's id from list_types.
+                assert (name, param["name"]) == ("change_type", "type_id"), (name, param["name"])
+            else:
+                assert "choices_from" not in param, (name, param["name"])
 
 
-def test_preexisting_packs_still_load_and_render(store):
-    existing = {
-        "create_beam", "create_floor", "create_structural_column", "create_wall",
-        "delete_elements_by_category", "modify_wall_height", "query_levels", "query_model_stats",
+# -- validators ------------------------------------------------------------------------------------
+
+def test_validators_prove_creation_type_change_and_read_only():
+    for name, category in CREATES.items():
+        assert data_for(name)["validator"] == {"kind": "count_delta", "category": category, "expected": 1}
+    assert data_for("change_type")["validator"] == {
+        "kind": "param_equals", "category": "{category}",
+        "checks": [{"param_name": "ELEM_TYPE_PARAM", "spec_param": "type_id"}],
     }
-    for name in existing:
+    for name in QUERIES:
+        validator = data_for(name)["validator"]
+        assert validator["kind"] == "count_delta" and validator["expected"] == 0
+    # No built-in validator proves an arbitrary parameter, a move or a mixed deletion (planner: open item).
+    for name in ("set_parameter", "move_elements", "delete_selected"):
+        data = data_for(name)
+        assert data["validator"] is None
+        assert "there is no validator" in data["description"]
+
+
+# -- selections and queries --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", SELECTION)
+def test_selection_tools_refuse_an_empty_or_large_selection_and_report_ids(name):
+    code = code_of(name)
+    assert "new UIDocument(document).Selection.GetElementIds()" in code
+    assert "if (selected.Count == 0)\n    throw new InvalidOperationException(\"Nothing is selected in Revit." in code
+    assert "const int MaxSelected = 100;" in code and "if (selected.Count > MaxSelected)" in code
+    assert "ElementIds =" in code and "Count =" in code
+    # every element is checked before the first change
+    assert code.index("problems.Count > 0") < min(
+        code.index(call) for call in (".Set(", "MoveElements(", "ChangeTypeId(", "document.Delete(") if call in code)
+
+
+@pytest.mark.parametrize("name", QUERIES)
+def test_queries_are_read_only_bounded_and_report_truncation(store, name):
+    data = data_for(name)
+    limit = next(p for p in data["parameters"] if p["name"] == "limit")
+    assert limit["default"] == 100 and limit["required"] is False
+    code = data["code_template"]
+    assert "const int MaxRows = 200;" in code and "limit = Math.Min(limit, MaxRows);" in code
+    assert "Truncated =" in code
+    assert not MUTATIONS.search(code), MUTATIONS.search(code)
+
+
+def test_creation_and_change_tools_do_change_the_model():
+    for name in tuple(CREATES) + SELECTION:
+        assert MUTATIONS.search(code_of(name)), name
+
+
+# -- the earlier packs ---------------------------------------------------------------------------------
+
+def test_the_eight_earlier_packs_still_load_and_render(store):
+    for name in PREEXISTING:
         data = data_for(name)
         assert validate_pack(data) == []
         assert store.load(name).code_template == data["code_template"]
@@ -147,185 +324,80 @@ def test_preexisting_packs_still_load_and_render(store):
             assert errors == [] and code
 
 
-# Execute the actual rendered snippet with a deliberately small, observable API
-# stand-in. This checks mutation ordering, not Revit's transaction/type behavior.
-CHANGE_TYPE_STUB = r'''
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text.Json;
+# -- through the execution flow with a fake add-in ----------------------------------------------------
 
-public enum BuiltInCategory { OST_Walls = 1, OST_Doors = 2 }
-public readonly record struct ElementId(long Value)
-{
-    public static readonly ElementId InvalidElementId = new(-1);
-}
-public sealed class Category
-{
-    public ElementId Id { get; set; } = new(1);
-}
-public class Element
-{
-    public ElementId Id { get; set; }
-    public Category Category { get; set; } = new();
-    public bool Pinned { get; set; }
-    public bool ValidType { get; set; } = true;
-    public bool CheckThrows { get; set; }
-    public bool ChangeThrows { get; set; }
-    public ElementId TypeId { get; set; } = new(101);
-    public Document Owner { get; set; }
-    public ElementId GetTypeId() => TypeId;
-    public bool IsValidType(ElementId id)
-    {
-        Owner.Trace.Add("check:" + Id.Value);
-        if (CheckThrows) throw new InvalidOperationException("type check failed");
-        return ValidType;
-    }
-    public ElementId ChangeTypeId(ElementId id)
-    {
-        Owner.Trace.Add("change:" + Id.Value);
-        Owner.Changes.Add(Id.Value);
-        if (ChangeThrows) throw new InvalidOperationException("runtime change failed");
-        TypeId = id;
-        return ElementId.InvalidElementId;
-    }
-}
-public sealed class ElementType : Element { }
-public sealed class Document
-{
-    public Dictionary<long, Element> Elements = new();
-    public List<ElementId> Selected = new() { new(1), new(2) };
-    public List<long> Lookups = new();
-    public List<long> Changes = new();
-    public List<string> Trace = new();
-    public Element GetElement(ElementId id)
-    {
-        Lookups.Add(id.Value);
-        return Elements.TryGetValue(id.Value, out var element) ? element : null;
-    }
-}
-public sealed class Selection
-{
-    private readonly Document document;
-    public Selection(Document document) { this.document = document; }
-    public ICollection<ElementId> GetElementIds() => document.Selected;
-}
-public sealed class UIDocument
-{
-    public Selection Selection { get; }
-    public UIDocument(Document document) { Selection = new Selection(document); }
-}
-public static class Program
-{
-    public static object Execute(Document document)
-    {
-        // RENDERED_SNIPPET
-    }
-    public static void Main()
-    {
-        var reports = new Dictionary<string, object>();
-        foreach (string name in new[] {
-            "mixed", "mixed_first", "pinned", "pinned_first",
-            "incompatible", "incompatible_first", "missing", "check_error",
-            "already_target_pinned", "valid", "unchanged_and_valid", "runtime_error"
-        })
-        {
-            var document = new Document();
-            var first = new Element { Id = new(1), Owner = document };
-            var second = new Element { Id = new(2), Owner = document };
-            document.Elements[1] = first;
-            document.Elements[2] = second;
-            document.Elements[201] = new ElementType { Id = new(201), Owner = document };
-            if (name.StartsWith("mixed")) second.Category.Id = new(2);
-            if (name.StartsWith("pinned")) second.Pinned = true;
-            if (name.StartsWith("incompatible")) second.ValidType = false;
-            if (name == "missing") document.Elements.Remove(2);
-            if (name == "check_error") second.CheckThrows = true;
-            if (name == "already_target_pinned") { second.TypeId = new(201); second.Pinned = true; }
-            if (name == "unchanged_and_valid") first.TypeId = new(201);
-            if (name == "runtime_error") first.ChangeThrows = true;
-            if (name.EndsWith("_first")) document.Selected.Reverse();
-            reports[name] = new {
-                Result = Execute(document), document.Changes, document.Trace, document.Lookups,
-                Types = new[] { first.TypeId.Value, second.TypeId.Value }
-            };
-        }
-        Console.WriteLine("REPORT:" + JsonSerializer.Serialize(reports));
-    }
-}
-'''
+THROWN = 'A level named "L3" already exists. Choose another name.'
 
 
-@pytest.fixture(scope="module")
-def change_type_reports(tmp_path_factory):
-    dotnet = os.environ.get("REVIT_BRIDGE_TEST_DOTNET") or shutil.which("dotnet")
-    if not dotnet:
-        pytest.skip("The optional rendered-C# regression requires a .NET 8+ SDK.")
-    directory = tmp_path_factory.mktemp("change_type_csharp")
-    sdks = subprocess.run([dotnet, "--list-sdks"], cwd=directory, capture_output=True, text=True, check=True)
-    majors = [int(value) for value in re.findall(r"^(\d+)\.", sdks.stdout, re.MULTILINE) if int(value) >= 8]
-    if not majors:
-        pytest.skip("The optional rendered-C# regression requires a .NET 8+ SDK.")
-    # Framework reference packs ship with the SDK; prohibit package downloads.
-    (directory / "NuGet.Config").write_text(
-        '<configuration><packageSources><clear /></packageSources></configuration>', encoding="utf-8",
-    )
-    project = directory / "Regression.csproj"
-    project.write_text(
-        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType>'
-        f'<TargetFramework>net{max(majors)}.0</TargetFramework>'
-        '<Nullable>disable</Nullable></PropertyGroup></Project>', encoding="utf-8",
-    )
-    store = ToolStore(user_dir=directory / "user", builtin_dir=ROOT)
-    code, errors = store.render("change_type", data_for("change_type")["fixtures"][0]["params"])
-    assert errors == [] and code
-    (directory / "Program.cs").write_text(CHANGE_TYPE_STUB.replace("// RENDERED_SNIPPET", code), encoding="utf-8")
-    run = subprocess.run(
-        [dotnet, "run", "--project", str(project), "--configuration", "Release", "--verbosity", "quiet"],
-        cwd=directory, capture_output=True, text=True, timeout=120,
-    )
-    assert run.returncode == 0, run.stdout + run.stderr
-    report = next((line.removeprefix("REPORT:") for line in run.stdout.splitlines() if line.startswith("REPORT:")), None)
-    assert report is not None, run.stdout + run.stderr
-    return json.loads(report)
+def token_for(gate: Gate, tool: str, params: dict) -> str:
+    spec = TaskSpec(task=tool, action=Action(kind="run_tool", tool=tool),
+                    parameters=[ParamBinding(name=k, value=v, source=Source.answer, evidence=f"q_{k}")
+                                for k, v in params.items()])
+    return gate.issue(spec).token
 
 
-@pytest.mark.parametrize("scenario", (
-    "mixed", "mixed_first", "pinned", "pinned_first", "incompatible", "incompatible_first",
-    "missing", "check_error", "already_target_pinned",
-))
-def test_change_type_preflights_all_selected_elements_without_mutation(change_type_reports, scenario):
-    report = change_type_reports[scenario]
-    assert report["Result"]["Status"] == "Error"
-    assert report["Result"]["Count"] == 0
-    assert report["Result"]["ElementIds"] == []
-    assert report["Result"]["Skipped"][0]["Id"] == 2
-    assert report["Result"]["Skipped"][0]["Reason"]
-    assert report["Changes"] == []
-    assert {1, 2}.issubset(report["Lookups"])
-    assert report["Types"] == [101, 201 if scenario == "already_target_pinned" else 101]
+def fake_addin(pack_reply, counts=(4, 5)):
+    """A fake add-in with one document; the pack's code gets ``pack_reply(request_id)``."""
+    state = {"ran": False}
+
+    def handler(request):
+        rid, method = request["id"], request["method"]
+        if method != "send_code_to_revit":
+            return FakeRevit.default_handler(request)
+        code = request["params"]["code"]
+        if code == execution.DOCUMENT_PROBE:
+            return FakeRevit.code_result(rid, {"Title": "Project1", "RevitVersion": "2026"})
+        if code == LEVELS_CODE:
+            return FakeRevit.code_result(rid, [{"Id": 1, "Name": "L1", "ElevationMm": 0.0}])
+        if "CategoryNames" in code:                                  # the snapshot block
+            return FakeRevit.code_result(rid, {
+                "Document": {"Title": "Project1", "RevitVersion": "2026", "IsWorkshared": False},
+                "Levels": [{"Id": 1, "Name": "L1", "ElevationMm": 0.0}], "CategoryNames": {}, "Warnings": []})
+        if "Every refusal throws" in code:                           # the pack itself
+            state["ran"] = True
+            return pack_reply(rid)
+        if "GetElementCount" in code:                                # count_delta's probe
+            return FakeRevit.code_result(rid, counts[1] if state["ran"] else counts[0])
+        raise AssertionError(f"unexpected code: {code[:80]}")
+    return handler
 
 
-def test_change_type_preserves_valid_and_already_matching_inputs(change_type_reports):
-    report = change_type_reports["valid"]
-    assert report["Result"]["Status"] == "Modified"
-    assert report["Result"]["ElementIds"] == [1, 2]
-    assert report["Result"]["Count"] == 2
-    assert report["Result"]["Skipped"] == []
-    assert report["Trace"] == ["check:1", "check:2", "change:1", "change:2"]
-    assert report["Types"] == [201, 201]
-    matching = change_type_reports["unchanged_and_valid"]
-    assert matching["Result"]["Status"] == "Modified"
-    assert matching["Result"]["ElementIds"] == [2]
-    assert matching["Changes"] == [2]
-    assert matching["Types"] == [201, 201]
+def run(tmp_path, tool: str, params: dict, handler):
+    store = ToolStore(user_dir=tmp_path / "user", builtin_dir=ROOT)
+    gate, ledger = Gate(tmp_path / "pending"), Ledger(tmp_path / "evidence")
+    token = token_for(gate, tool, params)
+
+    async def go():
+        async with FakeRevit(handler) as fake:
+            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=2)
+            try:
+                return await execution.run_pack(store=store, gate=gate, ledger=ledger, client=client, name=tool,
+                                                params=dict(params), token=token, host="web")
+            finally:
+                await client.disconnect()
+    result = asyncio.run(go())
+    return result, store, gate, token
 
 
-def test_change_type_reports_runtime_errors_and_continues_after_preflight(change_type_reports):
-    report = change_type_reports["runtime_error"]
-    assert report["Result"]["Status"] == "Error"
-    assert report["Result"]["ElementIds"] == [2]
-    assert report["Result"]["Count"] == 1
-    assert report["Result"]["Skipped"] == [{"Id": 1, "Reason": "runtime change failed"}]
-    assert report["Trace"] == ["check:1", "check:2", "change:1", "change:2"]
-    assert report["Types"] == [101, 201]
+def test_a_refusal_thrown_in_revit_is_a_failed_run_and_the_validator_does_not_run(tmp_path):
+    reply = lambda rid: FakeRevit.thrown(rid, "System.InvalidOperationException", THROWN)
+    result, store, gate, token = run(tmp_path, "create_level", {"name": "L3", "elevation": 6000}, fake_addin(reply))
+    assert result.success is False and THROWN in result.error
+    assert result.validation is None and result.result is None
+    assert gate.peek(token).used_at                                   # it reached Revit
+    assert store.load("create_level").failure_count == 1
+
+
+def test_a_created_level_passes_its_count_delta(tmp_path):
+    reply = lambda rid: FakeRevit.code_result(rid, {"Status": "Created", "ElementId": 4242, "Name": "L3"})
+    result, store, _, _ = run(tmp_path, "create_level", {"name": "L3", "elevation": 6000}, fake_addin(reply))
+    assert result.success is True and result.error is None
+    assert result.validation.validator == "count_delta" and result.validation.passed is True
+    assert store.load("create_level").execution_count == 1
+
+
+def test_an_empty_selection_refused_in_revit_fails_a_pack_without_validator(tmp_path):
+    message = "Nothing is selected in Revit. Select the elements first, then run the tool again."
+    reply = lambda rid: FakeRevit.thrown(rid, "System.InvalidOperationException", message)
+    result, _, _, _ = run(tmp_path, "delete_selected", {}, fake_addin(reply))
+    assert result.success is False and message in result.error and result.validation is None

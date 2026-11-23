@@ -1,100 +1,157 @@
 schema_version: 1
-name: "create_ceiling"
-display_name: "Create Ceiling"
-description: "Create a rectangular ceiling on a named level with an offset in millimeters."
+name: create_ceiling
+display_name: Create Ceiling
+description: >-
+  Create one ceiling on a level from a rectangle given by its corner (x, y) and its
+  width along X and length along Y, at a height above the level, all in mm. Needs Revit 2022 or
+  later (the API cannot create ceilings before 2022). The ceiling type is a ceiling type name;
+  when two families have a type of that name, give it as "Family: Type". Refusals (no such level
+  or type, a width or length that is not more than zero, a negative height) stop the run and
+  change nothing.
 version: "1.0.0"
-revit_versions: ["2026"]
+revit_versions: ["2022", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  ElementId createdId = ElementId.InvalidElementId;
-  try
+  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
+  // The bridge already opened the transaction; none is opened here.
+  // Ceiling.Create exists from Revit 2022: on 2021 this code does not compile and nothing runs.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, string, double> toFeet = (label, text) =>
   {
-      var levels = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
-          .Where(e => e.Name == "{level_name}").Take(2).ToList();
-      if (levels.Count != 1)
-          return new { Status = "Error", Message = "Level name must match exactly one level." };
-      var level = levels[0];
-      var types = new FilteredElementCollector(document).OfClass(typeof(CeilingType)).Cast<CeilingType>()
-          .Where(e => e.Name == "{type_name}").Take(2).ToList();
-      if (types.Count != 1)
-          return new { Status = "Error", Message = "Ceiling type name must match exactly one type." };
-      double x = {x} / 304.8, y = {y} / 304.8;
-      double width = {width} / 304.8, length = {length} / 304.8;
-      if (width <= document.Application.ShortCurveTolerance || length <= document.Application.ShortCurveTolerance
-          || !XYZ.IsWithinLengthLimits(new XYZ(x, y, level.Elevation))
-          || !XYZ.IsWithinLengthLimits(new XYZ(x + width, y + length, level.Elevation)))
-          return new { Status = "Error", Message = "Rectangle dimensions are too small or outside the model limits." };
-      var points = new[] { new XYZ(x, y, level.Elevation), new XYZ(x + width, y, level.Elevation),
-          new XYZ(x + width, y + length, level.Elevation), new XYZ(x, y + length, level.Elevation) };
-      var profile = new List<Curve>();
-      for (int i = 0; i < 4; i++) profile.Add(Line.CreateBound(points[i], points[(i + 1) % 4]));
-      var ceiling = Ceiling.Create(document, new List<CurveLoop> { CurveLoop.Create(profile) }, types[0].Id, level.Id);
-      createdId = ceiling.Id;
-      var height = ceiling.get_Parameter(BuiltInParameter.CEILING_HEIGHTABOVELEVEL_PARAM);
-      if (height == null || height.IsReadOnly || !(height.HasValue && Math.Abs(height.AsDouble() - {height} / 304.8) <= 1e-9) && !height.Set({height} / 304.8))
-          throw new InvalidOperationException("The ceiling height could not be set.");
-      return new { Status = "Created", ElementId = ceiling.Id.Value, Level = level.Name, TypeId = types[0].Id.Value };
-  }
-  catch (Exception ex)
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException(label + " must be a number in mm, got \"" + text + "\".");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  };
+  Func<double, double> toMm = feet => Math.Round(UnitUtils.ConvertFromInternalUnits(feet, UnitTypeId.Millimeters), 1);
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  string levelName = "{level_name}";
+  string typeName = "{type_name}";
+  double tolerance = document.Application.ShortCurveTolerance;
+  // A value read back within this of what was set counts as kept (feet, about 0.0003 mm).
+  const double ReadBackTolerance = 1e-6;
+
+  Level level = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+      .FirstOrDefault(l => l.Name == levelName);
+  if (level == null)
+      throw new InvalidOperationException("There is no level named \"" + levelName + "\". Pick a level from the list.");
+  var types = new FilteredElementCollector(document).OfClass(typeof(CeilingType)).Cast<CeilingType>()
+      .Where(t => t.Name == typeName || t.FamilyName + ": " + t.Name == typeName)
+      .ToList();
+  if (types.Count == 0)
+      throw new InvalidOperationException("There is no ceiling type named \"" + typeName + "\". Pick a ceiling type from the list.");
+  if (types.Count > 1)
+      throw new InvalidOperationException(types.Count + " ceiling types are named \"" + typeName + "\" (families: "
+          + string.Join(", ", types.Select(t => t.FamilyName).Distinct()) + "). Give the type as \"Family: Type\".");
+  CeilingType ceilingType = types[0];
+
+  double x = toFeet("X", "{x}");
+  double y = toFeet("Y", "{y}");
+  double width = toFeet("Width", "{width}");
+  double length = toFeet("Length", "{length}");
+  double height = toFeet("Height", "{height}");
+  if (width <= tolerance || length <= tolerance)
+      throw new InvalidOperationException("Width and length must both be more than zero mm.");
+  if (height < 0)
+      throw new InvalidOperationException("The height above the level must be zero or more mm.");
+  double z = level.Elevation;
+  XYZ[] corners =
   {
-      if (createdId != ElementId.InvalidElementId)
-      {
-          try { document.Delete(createdId); }
-          catch (Exception cleanup)
-          {
-              return new { Status = "Error", Message = ex.Message + " Cleanup failed: " + cleanup.Message, ElementId = createdId.Value };
-          }
-      }
-      return new { Status = "Error", Message = ex.Message };
-  }
+      new XYZ(x, y, z), new XYZ(x + width, y, z), new XYZ(x + width, y + length, z), new XYZ(x, y + length, z)
+  };
+  if (!corners.All(c => XYZ.IsWithinLengthLimits(c)) || !XYZ.IsWithinLengthLimits(new XYZ(x, y, z + height)))
+      throw new InvalidOperationException("The ceiling reaches outside the model's limits.");
+  var edges = new List<Curve>();
+  for (int i = 0; i < 4; i++)
+      edges.Add(Line.CreateBound(corners[i], corners[(i + 1) % 4]));
+
+  Ceiling ceiling = Ceiling.Create(document, new List<CurveLoop> { CurveLoop.Create(edges) }, ceilingType.Id, level.Id);
+  Parameter offset = ceiling.get_Parameter(BuiltInParameter.CEILING_HEIGHTABOVELEVEL_PARAM);
+  if (offset == null || offset.IsReadOnly)
+      throw new InvalidOperationException("The ceiling's height above the level cannot be set; nothing was created.");
+  if (!offset.Set(height))
+      throw new InvalidOperationException("Revit refused the height " + toMm(height) + " mm; nothing was created.");
+  document.Regenerate();
+  if (!offset.HasValue || Math.Abs(offset.AsDouble() - height) > ReadBackTolerance)
+      throw new InvalidOperationException("Revit did not keep the height " + toMm(height) + " mm; nothing was created.");
+
+  return new
+  {
+      Status = "Created",
+      ElementId = idOf(ceiling.Id),
+      Level = level.Name,
+      TypeId = idOf(ceilingType.Id),
+      Type = ceilingType.FamilyName + ": " + ceilingType.Name,
+      HeightMm = toMm(offset.AsDouble()),
+      WidthMm = toMm(width),
+      LengthMm = toMm(length)
+  };
 parameters:
-  - name: "type_name"
-    type: "string"
-    description: "Ceiling type name"
-    source: "tool:family_types"
+  - name: level_name
+    type: string
+    description: Level the ceiling belongs to
+    source: tool:levels
+    choices_from: levels
     required: true
-    choices_from: "family_types:OST_Ceilings"
-  - name: "level_name"
-    type: "string"
-    description: "Level name"
-    source: "tool:levels"
+  - name: type_name
+    type: string
+    description: 'Ceiling type name, or "Family: Type" when two families share the name'
+    source: tool:family_types
+    choices_from: family_types:OST_Ceilings
     required: true
-    choices_from: "levels"
-  - name: "x"
-    type: "double"
-    description: "Ceiling x (mm)"
-    source: "designer"
+  - name: x
+    type: double
+    description: X of the rectangle's corner with the smallest X and Y (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "y"
-    type: "double"
-    description: "Ceiling y (mm)"
-    source: "designer"
+  - name: y
+    type: double
+    description: Y of the rectangle's corner with the smallest X and Y (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "width"
-    type: "double"
-    description: "Ceiling width (mm)"
-    source: "designer"
+  - name: width
+    type: double
+    description: Rectangle size along X (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "length"
-    type: "double"
-    description: "Ceiling length (mm)"
-    source: "designer"
+  - name: length
+    type: double
+    description: Rectangle size along Y (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "height"
-    type: "double"
-    description: "Ceiling height (mm)"
-    source: "designer"
+  - name: height
+    type: double
+    description: Height of the ceiling above the level (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-preconditions: [{"kind":"levels_min","value":1}]
-not_for: []
-applies_when: ["create ceiling"]
-validator: {"kind":"count_delta","category":"OST_Ceilings","expected":1}
-fixtures: [{"name":"basic","params":{"type_name":"Plain Ceiling","level_name":"L1","x":0,"y":0,"width":6000,"length":8000,"height":2700},"expect":{"Status":"Created"}}]
+preconditions:
+  - kind: levels_min
+    value: 1
+  - kind: category_present
+    category: OST_Ceilings
+  - text: "Revit 2022 or later: the API has no way to create a ceiling before 2022"
+not_for:
+  - "ceiling type"
+  - "ceiling grid"
+  - "move ceiling"
+applies_when:
+  - "create ceiling"
+  - "add ceiling"
+  - "place ceiling"
+validator:
+  kind: count_delta
+  category: OST_Ceilings
+  expected: 1
+fixtures:
+  - name: basic
+    params: {level_name: "L1", type_name: "Generic", x: 0, y: 0, width: 6000, length: 8000, height: 2700}
+    expect: {Status: "Created"}
 approved_by: null
 approved_at: null
-created_at: "2026-01-01T00:00:00"
-source_query: "create ceiling"
+created_at: "2026-11-23T00:00:00"
+source_query: create a ceiling

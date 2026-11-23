@@ -1,93 +1,204 @@
 schema_version: 1
-name: "create_window"
-display_name: "Create Window"
-description: "Place one wall-hosted window with its sill height. Type names must be unique within the category."
+name: create_window
+display_name: Create Window
+description: >-
+  Place one window in a basic wall, at the point of the wall nearest to (x, y) in mm,
+  with its sill the given height (mm) above the wall's base level. The window type is a loaded
+  window type name; when two families have a type of that name, give it as "Family: Type".
+  Refusals (no such wall, curtain or stacked wall, no such or ambiguous type, a point off the
+  wall or too close to its ends, a window that would stick out of the wall) stop the run and
+  change nothing.
 version: "1.0.0"
-revit_versions: ["2026"]
+revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  ElementId createdId = ElementId.InvalidElementId;
-  try
+  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
+  // The bridge already opened the transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, string, double> toFeet = (label, text) =>
   {
-      var wall = document.GetElement(new ElementId((long){wall_id})) as Wall;
-      if (wall == null)
-          return new { Status = "Error", Message = "Host wall was not found." };
-      var level = document.GetElement(wall.LevelId) as Level;
-      if (level == null)
-          return new { Status = "Error", Message = "The wall has no usable level." };
-      var symbols = new FilteredElementCollector(document).OfClass(typeof(FamilySymbol))
-          .OfCategory(BuiltInCategory.OST_Windows).Cast<FamilySymbol>()
-          .Where(e => e.Name == "{type_name}").Take(2).ToList();
-      if (symbols.Count != 1)
-          return new { Status = "Error", Message = "Type name must match exactly one loaded family type in this category." };
-      var symbol = symbols[0];
-      if (symbol.Family.FamilyPlacementType != FamilyPlacementType.OneLevelBasedHosted)
-          return new { Status = "Error", Message = "Choose a wall-hosted family type." };
-      var location = new XYZ({x} / 304.8, {y} / 304.8, level.Elevation + {sill_height} / 304.8);
-      if (!XYZ.IsWithinLengthLimits(location))
-          return new { Status = "Error", Message = "Location is outside the model limits." };
-      var wallCurve = wall.Location as LocationCurve;
-      var projected = wallCurve == null ? null : wallCurve.Curve.Project(location);
-      if (projected == null || projected.XYZPoint.DistanceTo(new XYZ(location.X, location.Y, projected.XYZPoint.Z)) > Math.Max(wall.Width / 2.0, document.Application.ShortCurveTolerance))
-          return new { Status = "Error", Message = "The location must lie on the host wall." };
-      if (!symbol.IsActive) { symbol.Activate(); document.Regenerate(); }
-      var instance = document.Create.NewFamilyInstance(location, symbol, wall, level, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
-      createdId = instance.Id;
-      if (instance.Host == null || instance.Host.Id != wall.Id)
-          throw new InvalidOperationException("The new instance was not hosted by the requested wall.");
-      var sill = instance.get_Parameter(BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM);
-      if (sill == null || sill.IsReadOnly || !(sill.HasValue && Math.Abs(sill.AsDouble() - {sill_height} / 304.8) <= 1e-9) && !sill.Set({sill_height} / 304.8))
-          throw new InvalidOperationException("The sill height could not be set.");
-      return new { Status = "Created", ElementId = instance.Id.Value, HostId = wall.Id.Value, TypeId = symbol.Id.Value, Level = level.Name };
-  }
-  catch (Exception ex)
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException(label + " must be a number in mm, got \"" + text + "\".");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  };
+  Func<double, double> toMm = feet => Math.Round(UnitUtils.ConvertFromInternalUnits(feet, UnitTypeId.Millimeters), 1);
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  Func<Element, BuiltInParameter, BuiltInParameter, Parameter> lengthOf = (e, first, second) =>
   {
-      if (createdId != ElementId.InvalidElementId)
-      {
-          try { document.Delete(createdId); }
-          catch (Exception cleanup)
-          {
-              return new { Status = "Error", Message = ex.Message + " Cleanup failed: " + cleanup.Message, ElementId = createdId.Value };
-          }
-      }
-      return new { Status = "Error", Message = ex.Message };
+      Parameter p = e.get_Parameter(first);
+      if (p == null || !p.HasValue || p.StorageType != StorageType.Double)
+          p = e.get_Parameter(second);
+      return p != null && p.HasValue && p.StorageType == StorageType.Double ? p : null;
+  };
+  string wallText = "{wall_id}";
+  string typeName = "{type_name}";
+  double tolerance = document.Application.ShortCurveTolerance;
+  // A value read back within this of what was set counts as kept (feet, about 0.0003 mm).
+  const double ReadBackTolerance = 1e-6;
+
+  // 1. The host wall, by id: it must exist, be a wall, and be a basic wall with a location line.
+  int wallNumber;
+  if (!int.TryParse(wallText, System.Globalization.NumberStyles.Integer, invariant, out wallNumber) || wallNumber <= 0)
+      throw new InvalidOperationException("The host wall must be given by its element id (a whole number from 1 to 2147483647), got \"" + wallText + "\".");
+  // ElementId(int) on 2021-2023, obsolete on 2024-2025, gone from 2026 (the int then converts to
+  // ElementId(Int64)): one line for every year, without the 2024-2025 warning.
+  #pragma warning disable 618
+  Wall wall = document.GetElement(new ElementId(wallNumber)) as Wall;
+  #pragma warning restore 618
+  if (wall == null)
+      throw new InvalidOperationException("There is no wall with id " + wallText + " in this model. Pick a wall from the list.");
+  if (wall.WallType.Kind != WallKind.Basic)
+      throw new InvalidOperationException("Wall " + wallText + " is a " + wall.WallType.Kind + " wall; this tool places windows in basic walls only.");
+  LocationCurve wallLocation = wall.Location as LocationCurve;
+  if (wallLocation == null || wallLocation.Curve == null)
+      throw new InvalidOperationException("Wall " + wallText + " has no location line.");
+  Level level = document.GetElement(wall.LevelId) as Level;
+  if (level == null)
+      throw new InvalidOperationException("Wall " + wallText + " has no base level.");
+
+  // 2. The window type, by name or "Family: Type", among loaded window types.
+  var types = new FilteredElementCollector(document).OfClass(typeof(FamilySymbol))
+      .OfCategory(BuiltInCategory.OST_Windows).Cast<FamilySymbol>()
+      .Where(s => s.Name == typeName || s.FamilyName + ": " + s.Name == typeName)
+      .ToList();
+  if (types.Count == 0)
+      throw new InvalidOperationException("No loaded window type is named \"" + typeName + "\". Pick a window type from the list, or load its family first.");
+  if (types.Count > 1)
+      throw new InvalidOperationException(types.Count + " window types are named \"" + typeName + "\" (families: "
+          + string.Join(", ", types.Select(s => s.FamilyName).Distinct()) + "). Give the type as \"Family: Type\".");
+  FamilySymbol symbol = types[0];
+  if (symbol.Family.FamilyPlacementType != FamilyPlacementType.OneLevelBasedHosted)
+      throw new InvalidOperationException("Window type \"" + typeName + "\" is not placed in a wall (" + symbol.Family.FamilyPlacementType + "); pick a wall-hosted window type.");
+
+  // 3. The point: on the wall (within its thickness of the location line), not past its ends.
+  double x = toFeet("X", "{x}");
+  double y = toFeet("Y", "{y}");
+  double sill = toFeet("Sill height", "{sill_height}");
+  if (sill < 0)
+      throw new InvalidOperationException("The sill height must be zero or more mm above the level.");
+  Curve line = wallLocation.Curve;
+  XYZ asked = new XYZ(x, y, line.GetEndPoint(0).Z);
+  if (!XYZ.IsWithinLengthLimits(asked))
+      throw new InvalidOperationException("The point is outside the model's limits.");
+  IntersectionResult nearest = line.Project(asked);
+  if (nearest == null)
+      throw new InvalidOperationException("The point could not be projected onto wall " + wallText + ".");
+  XYZ onWall = nearest.XYZPoint;
+  double offWall = onWall.DistanceTo(asked);
+  if (offWall > wall.Width + tolerance)
+      throw new InvalidOperationException("The point is " + toMm(offWall) + " mm from wall " + wallText + "; give a point on the wall (it is " + toMm(wall.Width) + " mm thick).");
+  double toStart = onWall.DistanceTo(line.GetEndPoint(0));
+  double toEnd = onWall.DistanceTo(line.GetEndPoint(1));
+  Parameter widthParameter = lengthOf(symbol, BuiltInParameter.WINDOW_WIDTH, BuiltInParameter.FAMILY_WIDTH_PARAM);
+  double halfWidth = widthParameter != null ? widthParameter.AsDouble() / 2.0 : 0.0;
+  if (Math.Min(toStart, toEnd) < halfWidth + tolerance)
+      throw new InvalidOperationException("The window does not fit there: the point is " + toMm(Math.Min(toStart, toEnd))
+          + " mm from an end of wall " + wallText + (widthParameter != null ? " and the window is " + toMm(2 * halfWidth) + " mm wide." : "."));
+
+  // 4. Vertically: sill and head inside the wall's extent, when the wall's box and the type's height are known.
+  Parameter heightParameter = lengthOf(symbol, BuiltInParameter.WINDOW_HEIGHT, BuiltInParameter.FAMILY_HEIGHT_PARAM);
+  BoundingBoxXYZ wallBox = wall.get_BoundingBox(null);
+  double bottom = level.Elevation + sill;
+  if (wallBox != null && bottom < wallBox.Min.Z - tolerance)
+      throw new InvalidOperationException("A sill " + toMm(sill) + " mm above level " + level.Name + " is below the bottom of wall " + wallText + ".");
+  if (wallBox != null && heightParameter != null && bottom + heightParameter.AsDouble() > wallBox.Max.Z + tolerance)
+      throw new InvalidOperationException("The window does not fit: its head would be " + toMm(bottom + heightParameter.AsDouble() - wallBox.Max.Z)
+          + " mm above the top of wall " + wallText + ". Lower the sill or pick a shorter type.");
+
+  // 5. Place it, set and read back the sill, check that the wall hosts it.
+  if (!symbol.IsActive)
+  {
+      symbol.Activate();
+      document.Regenerate();
   }
+  FamilyInstance window = document.Create.NewFamilyInstance(new XYZ(onWall.X, onWall.Y, bottom), symbol, wall, level,
+      Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+  document.Regenerate();
+  if (window.Host == null || !window.Host.Id.Equals(wall.Id))
+      throw new InvalidOperationException("Revit did not place the window in wall " + wallText + "; nothing was created.");
+  Parameter sillParameter = window.get_Parameter(BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM);
+  if (sillParameter == null || sillParameter.IsReadOnly)
+      throw new InvalidOperationException("The window's sill height cannot be set; nothing was created.");
+  if (!sillParameter.HasValue || Math.Abs(sillParameter.AsDouble() - sill) > ReadBackTolerance)
+  {
+      if (!sillParameter.Set(sill))
+          throw new InvalidOperationException("Revit refused the sill height " + toMm(sill) + " mm; nothing was created.");
+      document.Regenerate();
+  }
+  if (!sillParameter.HasValue || Math.Abs(sillParameter.AsDouble() - sill) > ReadBackTolerance)
+      throw new InvalidOperationException("Revit did not keep the sill height " + toMm(sill) + " mm; nothing was created.");
+
+  return new
+  {
+      Status = "Created",
+      ElementId = idOf(window.Id),
+      HostId = idOf(wall.Id),
+      TypeId = idOf(symbol.Id),
+      Type = symbol.FamilyName + ": " + symbol.Name,
+      Level = level.Name,
+      XMm = toMm(onWall.X),
+      YMm = toMm(onWall.Y),
+      SillHeightMm = toMm(sillParameter.AsDouble()),
+      WidthChecked = widthParameter != null,
+      HeightChecked = wallBox != null && heightParameter != null
+  };
 parameters:
-  - name: "wall_id"
-    type: "integer"
-    description: "Host wall ElementId"
-    source: "tool:elements"
+  - name: wall_id
+    type: integer
+    description: Element id of the basic wall that hosts the window
+    source: tool:elements
+    choices_from: elements:OST_Walls
     required: true
-    choices_from: "elements:OST_Walls"
-  - name: "type_name"
-    type: "string"
-    description: "Loaded wall-hosted type name"
-    source: "tool:family_types"
+  - name: type_name
+    type: string
+    description: 'Loaded window type name, or "Family: Type" when two families share the name'
+    source: tool:family_types
+    choices_from: family_types:OST_Windows
     required: true
-    choices_from: "family_types:OST_Windows"
-  - name: "x"
-    type: "double"
-    description: "Insertion X (mm)"
-    source: "designer"
+  - name: x
+    type: double
+    description: X of a point on the wall where the window's centre goes (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "y"
-    type: "double"
-    description: "Insertion Y (mm)"
-    source: "designer"
+  - name: y
+    type: double
+    description: Y of a point on the wall where the window's centre goes (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "sill_height"
-    type: "double"
-    description: "Sill height above the host wall level (mm)"
-    source: "designer"
+  - name: sill_height
+    type: double
+    description: Sill height above the wall's base level (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-preconditions: [{"kind":"levels_min","value":1}]
-not_for: []
-applies_when: ["create window"]
-validator: {"kind":"count_delta","category":"OST_Windows","expected":1}
-fixtures: [{"name":"basic","params":{"wall_id":101,"type_name":"Fixed 1200","x":1500,"y":0,"sill_height":900},"expect":{"Status":"Created"}}]
+preconditions:
+  - kind: levels_min
+    value: 1
+  - kind: category_present
+    category: OST_Windows
+  - text: "the host must be a basic wall (not curtain or stacked); the sill is measured from the wall's base level"
+not_for:
+  - "curtain wall"
+  - "window type"
+  - "move window"
+  - "door"
+applies_when:
+  - "create window"
+  - "add window"
+  - "place window"
+  - "insert window"
+validator:
+  kind: count_delta
+  category: OST_Windows
+  expected: 1
+fixtures:
+  - name: basic
+    params: {wall_id: 101, type_name: "Fixed 1200", x: 1500, y: 0, sill_height: 900}
+    expect: {Status: "Created"}
 approved_by: null
 approved_at: null
-created_at: "2026-01-01T00:00:00"
-source_query: "create window"
+created_at: "2026-11-23T00:00:00"
+source_query: place a window in a wall

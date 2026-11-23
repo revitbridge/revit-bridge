@@ -1,82 +1,140 @@
 schema_version: 1
-name: "create_roof_by_footprint"
-display_name: "Create Roof By Footprint"
-description: "Create a rectangular footprint roof on a named level. Type names must be unique."
+name: create_roof_by_footprint
+display_name: Create Roof By Footprint
+description: >-
+  Create one flat footprint roof on a level from a rectangle given by its corner
+  (x, y) and its width along X and length along Y, all in mm. No edge defines a slope; change
+  slopes in Revit afterwards. The roof type is a roof type name; when two families have a type
+  of that name, give it as "Family: Type". Refusals (no such level or type, a width or length
+  that is not more than zero) stop the run and change nothing.
 version: "1.0.0"
-revit_versions: ["2026"]
+revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  try
+  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
+  // The bridge already opened the transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, string, double> toFeet = (label, text) =>
   {
-      var levels = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
-          .Where(e => e.Name == "{level_name}").Take(2).ToList();
-      if (levels.Count != 1)
-          return new { Status = "Error", Message = "Level name must match exactly one level." };
-      var level = levels[0];
-      var types = new FilteredElementCollector(document).OfClass(typeof(RoofType)).Cast<RoofType>()
-          .Where(e => e.Name == "{type_name}").Take(2).ToList();
-      if (types.Count != 1)
-          return new { Status = "Error", Message = "Roof type name must match exactly one type." };
-      double x = {x} / 304.8, y = {y} / 304.8;
-      double width = {width} / 304.8, length = {length} / 304.8;
-      if (width <= document.Application.ShortCurveTolerance || length <= document.Application.ShortCurveTolerance
-          || !XYZ.IsWithinLengthLimits(new XYZ(x, y, level.Elevation))
-          || !XYZ.IsWithinLengthLimits(new XYZ(x + width, y + length, level.Elevation)))
-          return new { Status = "Error", Message = "Rectangle dimensions are too small or outside the model limits." };
-      var points = new[] { new XYZ(x, y, level.Elevation), new XYZ(x + width, y, level.Elevation),
-          new XYZ(x + width, y + length, level.Elevation), new XYZ(x, y + length, level.Elevation) };
-      var profile = new CurveArray();
-      for (int i = 0; i < 4; i++) profile.Append(Line.CreateBound(points[i], points[(i + 1) % 4]));
-      ModelCurveArray edges;
-      var roof = document.Create.NewFootPrintRoof(profile, level, types[0], out edges);
-      return new { Status = "Created", ElementId = roof.Id.Value, Level = level.Name, TypeId = types[0].Id.Value };
-  }
-  catch (Exception ex)
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException(label + " must be a number in mm, got \"" + text + "\".");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  };
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  string levelName = "{level_name}";
+  string typeName = "{type_name}";
+  double tolerance = document.Application.ShortCurveTolerance;
+
+  Level level = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+      .FirstOrDefault(l => l.Name == levelName);
+  if (level == null)
+      throw new InvalidOperationException("There is no level named \"" + levelName + "\". Pick a level from the list.");
+  var types = new FilteredElementCollector(document).OfClass(typeof(RoofType)).Cast<RoofType>()
+      .Where(t => t.Name == typeName || t.FamilyName + ": " + t.Name == typeName)
+      .ToList();
+  if (types.Count == 0)
+      throw new InvalidOperationException("There is no roof type named \"" + typeName + "\". Pick a roof type from the list.");
+  if (types.Count > 1)
+      throw new InvalidOperationException(types.Count + " roof types are named \"" + typeName + "\" (families: "
+          + string.Join(", ", types.Select(t => t.FamilyName).Distinct()) + "). Give the type as \"Family: Type\".");
+  RoofType roofType = types[0];
+
+  double x = toFeet("X", "{x}");
+  double y = toFeet("Y", "{y}");
+  double width = toFeet("Width", "{width}");
+  double length = toFeet("Length", "{length}");
+  if (width <= tolerance || length <= tolerance)
+      throw new InvalidOperationException("Width and length must both be more than zero mm.");
+  double z = level.Elevation;
+  XYZ[] corners =
   {
-      return new { Status = "Error", Message = ex.Message };
-  }
+      new XYZ(x, y, z), new XYZ(x + width, y, z), new XYZ(x + width, y + length, z), new XYZ(x, y + length, z)
+  };
+  if (!corners.All(c => XYZ.IsWithinLengthLimits(c)))
+      throw new InvalidOperationException("The rectangle reaches outside the model's limits.");
+  CurveArray footprint = new CurveArray();
+  for (int i = 0; i < 4; i++)
+      footprint.Append(Line.CreateBound(corners[i], corners[(i + 1) % 4]));
+
+  ModelCurveArray edges;
+  FootPrintRoof roof = document.Create.NewFootPrintRoof(footprint, level, roofType, out edges);
+  if (roof == null)
+      throw new InvalidOperationException("Revit did not create the roof; nothing was changed.");
+  foreach (ModelCurve edge in edges)
+      roof.set_DefinesSlope(edge, false);
+
+  return new
+  {
+      Status = "Created",
+      ElementId = idOf(roof.Id),
+      Level = level.Name,
+      TypeId = idOf(roofType.Id),
+      Type = roofType.FamilyName + ": " + roofType.Name,
+      WidthMm = Math.Round(UnitUtils.ConvertFromInternalUnits(width, UnitTypeId.Millimeters), 1),
+      LengthMm = Math.Round(UnitUtils.ConvertFromInternalUnits(length, UnitTypeId.Millimeters), 1)
+  };
 parameters:
-  - name: "type_name"
-    type: "string"
-    description: "Roof type name"
-    source: "tool:family_types"
+  - name: level_name
+    type: string
+    description: Level the roof sits on
+    source: tool:levels
+    choices_from: levels
     required: true
-    choices_from: "family_types:OST_Roofs"
-  - name: "level_name"
-    type: "string"
-    description: "Level name"
-    source: "tool:levels"
+  - name: type_name
+    type: string
+    description: 'Roof type name, or "Family: Type" when two families share the name'
+    source: tool:family_types
+    choices_from: family_types:OST_Roofs
     required: true
-    choices_from: "levels"
-  - name: "x"
-    type: "double"
-    description: "Roof x (mm)"
-    source: "designer"
+  - name: x
+    type: double
+    description: X of the rectangle's corner with the smallest X and Y (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "y"
-    type: "double"
-    description: "Roof y (mm)"
-    source: "designer"
+  - name: y
+    type: double
+    description: Y of the rectangle's corner with the smallest X and Y (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "width"
-    type: "double"
-    description: "Roof width (mm)"
-    source: "designer"
+  - name: width
+    type: double
+    description: Rectangle size along X (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "length"
-    type: "double"
-    description: "Roof length (mm)"
-    source: "designer"
+  - name: length
+    type: double
+    description: Rectangle size along Y (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-preconditions: [{"kind":"levels_min","value":1}]
-not_for: []
-applies_when: ["create roof by footprint"]
-validator: {"kind":"count_delta","category":"OST_Roofs","expected":1}
-fixtures: [{"name":"basic","params":{"type_name":"Generic Roof","level_name":"L2","x":0,"y":0,"width":6000,"length":8000},"expect":{"Status":"Created"}}]
+preconditions:
+  - kind: levels_min
+    value: 1
+  - kind: category_present
+    category: OST_Roofs
+not_for:
+  - "roof by extrusion"
+  - "sloped roof"
+  - "roof type"
+  - "curtain system"
+applies_when:
+  - "create roof"
+  - "footprint roof"
+  - "flat roof"
+  - "add roof"
+validator:
+  kind: count_delta
+  category: OST_Roofs
+  expected: 1
+fixtures:
+  - name: basic
+    params: {level_name: "L2", type_name: "Generic - 400mm", x: 0, y: 0, width: 6000, length: 8000}
+    expect: {Status: "Created"}
 approved_by: null
 approved_at: null
-created_at: "2026-01-01T00:00:00"
-source_query: "create roof by footprint"
+created_at: "2026-11-23T00:00:00"
+source_query: create a footprint roof

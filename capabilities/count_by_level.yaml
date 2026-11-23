@@ -1,75 +1,126 @@
 schema_version: 1
-name: "count_by_level"
-display_name: "Count By Level"
-description: "Count instances of a category by level, returning at most 200 level rows. Elements without a level are reported separately. At most 5000 instances are inspected per run."
+name: count_by_level
+display_name: Count By Level
+description: >-
+  Read only. Count the elements of one category (an OST_* name) on each level of the model,
+  levels in elevation order, at most limit rows (default 100, at most 200) with Truncated
+  saying whether levels were left out. An element's level is its own level, else its reference,
+  base or schedule level; elements with none are counted under WithoutLevel. A category with
+  more than 100000 elements is refused.
 version: "1.0.0"
-revit_versions: ["2026"]
+revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  try
+  // Read only. Every refusal throws, so the add-in reports the message and keeps nothing.
+  // The bridge already opened the transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  string categoryName = "{category}";
+  string limitText = "{limit}";
+  const int MaxRows = 200;
+  const int MaxElements = 100000;
+
+  BuiltInCategory category;
+  if (!categoryName.StartsWith("OST_", StringComparison.Ordinal) || !Enum.TryParse(categoryName, out category)
+      || !Enum.IsDefined(typeof(BuiltInCategory), category))
+      throw new InvalidOperationException("\"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
+  if (Category.GetCategory(document, category) == null)
+      throw new InvalidOperationException(categoryName + " is not a category of this model.");
+  int limit;
+  if (!int.TryParse(limitText, System.Globalization.NumberStyles.Integer, invariant, out limit) || limit < 1)
+      throw new InvalidOperationException("The limit must be a whole number from 1 to " + MaxRows + ", got \"" + limitText + "\".");
+  limit = Math.Min(limit, MaxRows);
+
+  int total = new FilteredElementCollector(document).OfCategory(category).WhereElementIsNotElementType().GetElementCount();
+  if (total > MaxElements)
+      throw new InvalidOperationException(categoryName + " has " + total + " elements; this tool counts at most " + MaxElements + ".");
+
+  // An element's level: its LevelId, else the first of these parameters that names one.
+  BuiltInParameter[] levelParameters =
   {
-      string categoryName = "{category}";
-      BuiltInCategory category;
-      if (!categoryName.StartsWith("OST_", StringComparison.Ordinal)
-          || !Enum.TryParse(categoryName, out category) || !Enum.IsDefined(typeof(BuiltInCategory), category))
-          return new { Status = "Error", Message = "Unknown BuiltInCategory identifier." };
-      int limit = Math.Max(1, Math.Min(200, {limit}));
-      var elements = new FilteredElementCollector(document).OfCategory(category).WhereElementIsNotElementType().Take(5001).ToList();
-      if (elements.Count > 5000)
-          return new { Status = "Error", Message = "This query supports at most 5000 instances per category to keep Revit responsive.", Truncated = true };
-      var counts = new Dictionary<long, int>();
-      var skipped = new List<object>();
-      foreach (var element in elements)
-      {
-          try
-          {
-              long key = element.LevelId.Value;
-              int count;
-              counts.TryGetValue(key, out count);
-              counts[key] = count + 1;
-          }
-          catch (Exception ex) { skipped.Add(new { Id = element.Id.Value, Reason = ex.Message }); }
-      }
-      var rows = new List<object>();
-      var levels = new FilteredElementCollector(document).OfClass(typeof(Level));
-      int total = levels.GetElementCount();
-      foreach (var level in levels.Cast<Level>().Take(limit))
-      {
-          try
-          {
-              int count;
-              counts.TryGetValue(level.Id.Value, out count);
-              rows.Add(new { Id = level.Id.Value, Name = level.Name, Count = count });
-          }
-          catch (Exception ex) { skipped.Add(new { Id = level.Id.Value, Reason = ex.Message }); }
-      }
-      int unassigned;
-      counts.TryGetValue(ElementId.InvalidElementId.Value, out unassigned);
-      return new { Status = skipped.Count == 0 ? "Ok" : "Error", Category = categoryName, Total = total,
-          ElementCount = elements.Count, WithoutLevel = unassigned, Items = rows, Returned = rows.Count,
-          Truncated = total > rows.Count, Skipped = skipped };
-  }
-  catch (Exception ex)
+      BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM, BuiltInParameter.FAMILY_BASE_LEVEL_PARAM, BuiltInParameter.SCHEDULE_LEVEL_PARAM
+  };
+  var counts = new Dictionary<ElementId, int>();
+  foreach (Element element in new FilteredElementCollector(document).OfCategory(category).WhereElementIsNotElementType())
   {
-      return new { Status = "Error", Message = ex.Message };
+      ElementId levelId = element.LevelId ?? ElementId.InvalidElementId;
+      if (levelId.Equals(ElementId.InvalidElementId))
+      {
+          foreach (BuiltInParameter levelParameter in levelParameters)
+          {
+              Parameter p = element.get_Parameter(levelParameter);
+              if (p != null && p.HasValue && p.StorageType == StorageType.ElementId && !p.AsElementId().Equals(ElementId.InvalidElementId))
+              {
+                  levelId = p.AsElementId();
+                  break;
+              }
+          }
+      }
+      int count;
+      counts.TryGetValue(levelId, out count);
+      counts[levelId] = count + 1;
   }
+
+  List<Level> levels = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+      .OrderBy(l => l.Elevation).ToList();
+  var levelIds = new HashSet<ElementId>(levels.Select(l => l.Id));
+  int withoutLevel = counts.Keys.Where(key => !levelIds.Contains(key)).Sum(key => counts[key]);
+  var items = levels.Take(limit).Select(l =>
+  {
+      int count;
+      counts.TryGetValue(l.Id, out count);
+      return new
+      {
+          LevelId = idOf(l.Id),
+          Level = l.Name,
+          ElevationMm = Math.Round(UnitUtils.ConvertFromInternalUnits(l.Elevation, UnitTypeId.Millimeters), 1),
+          Count = count
+      };
+  }).ToList();
+
+  return new
+  {
+      Status = "Ok",
+      Category = categoryName,
+      Total = total,
+      WithoutLevel = withoutLevel,
+      Items = items,
+      Levels = levels.Count,
+      Returned = items.Count,
+      Truncated = levels.Count > items.Count
+  };
 parameters:
-  - name: "category"
-    type: "string"
-    description: "BuiltInCategory identifier such as OST_Walls"
-    source: "designer"
+  - name: category
+    type: string
+    description: OST_* name of the category to count, such as OST_Walls or OST_Doors
+    source: designer
     required: true
-  - name: "limit"
-    type: "int"
-    description: "Maximum returned rows, clamped to 1 through 200"
-    source: "default"
+  - name: limit
+    type: int
+    description: Most level rows to return (1 to 200)
+    source: default
     required: false
     default: 100
 preconditions: []
-not_for: []
-applies_when: ["count by level"]
-validator: {"kind":"count_delta","category":"{category}","expected":0}
-fixtures: [{"name":"basic","params":{"category":"OST_Walls","limit":100},"expect":{"Status":"Ok"}}]
+not_for:
+  - "create"
+  - "delete"
+  - "count in link"
+applies_when:
+  - "count by level"
+  - "how many per level"
+  - "elements on each level"
+validator:
+  kind: count_delta
+  category: "{category}"
+  expected: 0
+fixtures:
+  - name: basic
+    params: {category: "OST_Walls"}
+    expect: {Status: "Ok"}
+  - name: short
+    params: {category: "OST_Doors", limit: 20}
+    expect: {Status: "Ok"}
 approved_by: null
 approved_at: null
-created_at: "2026-01-01T00:00:00"
-source_query: "count by level"
+created_at: "2026-11-23T00:00:00"
+source_query: count elements by level

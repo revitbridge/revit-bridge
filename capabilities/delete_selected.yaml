@@ -1,41 +1,76 @@
 schema_version: 1
-name: "delete_selected"
-display_name: "Delete Selected"
-description: "Delete up to 100 selected elements and report all ids Revit actually deleted, including dependent elements. An empty selection is an error."
+name: delete_selected
+display_name: Delete Selected
+description: >-
+  Delete the elements selected in Revit (at most 100). Every selected element is checked
+  first; pinned elements, element types (deleting one deletes all its instances), views and
+  levels stop the run and nothing is deleted. Revit also deletes what depends on the selection
+  (a wall's doors and windows, for example); those ids are listed under AlsoDeleted. Returns
+  the ids deleted; there is no validator, the tool checks that every one is gone.
 version: "1.0.0"
-revit_versions: ["2026"]
+revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  var selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
+  // The bridge already opened the transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  const int MaxSelected = 100;
+
+  List<ElementId> selected = new UIDocument(document).Selection.GetElementIds().ToList();
   if (selected.Count == 0)
-      return new { Status = "Error", Message = "No elements are selected." };
-  if (selected.Count > 100)
-      return new { Status = "Error", Message = "Select at most 100 elements per run." };
-  try
+      throw new InvalidOperationException("Nothing is selected in Revit. Select the elements first, then run the tool again.");
+  if (selected.Count > MaxSelected)
+      throw new InvalidOperationException(selected.Count + " elements are selected; this tool deletes at most " + MaxSelected + " per run. Select fewer.");
+
+  // 1. Check every selected element before deleting any.
+  var problems = new List<string>();
+  foreach (ElementId id in selected)
   {
-      foreach (var id in selected)
-      {
-          var element = document.GetElement(id);
-          if (element == null || element.Pinned)
-              return new { Status = "Error", Message = "A selected element is missing or pinned; nothing was deleted." };
-      }
-      var deleted = document.Delete(selected);
-      var ids = deleted.Select(id => id.Value).ToList();
-      var surviving = deleted.Where(id => document.GetElement(id) != null).Select(id => id.Value).ToList();
-      return new { Status = ids.Count > 0 && surviving.Count == 0 ? "Deleted" : "Error",
-          Message = surviving.Count == 0 ? "Deleted ids include dependent elements." : "Some reported ids still exist.",
-          ElementIds = ids, Count = ids.Count, SurvivingIds = surviving };
+      Element element = document.GetElement(id);
+      if (element == null) { problems.Add(idOf(id) + " no longer exists"); continue; }
+      if (element is ElementType) { problems.Add(idOf(id) + " is a type; deleting it would delete every element of that type"); continue; }
+      if (element is View) { problems.Add(idOf(id) + " is a view"); continue; }
+      if (element is Level) { problems.Add(idOf(id) + " is a level; deleting it would delete everything on it"); continue; }
+      if (element.Pinned) { problems.Add(idOf(id) + " is pinned; unpin it in Revit first"); continue; }
   }
-  catch (Exception ex)
+  if (problems.Count > 0)
+      throw new InvalidOperationException("Nothing was deleted: " + problems.Count + " of " + selected.Count + " selected elements cannot be deleted by this tool. "
+          + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
+
+  // 2. Delete, then check that every selected element is gone.
+  ICollection<ElementId> deleted = document.Delete(selected);
+  var survivors = selected.Where(id => document.GetElement(id) != null).ToList();
+  if (survivors.Count > 0)
+      throw new InvalidOperationException("Revit did not delete " + survivors.Count + " selected element(s) ("
+          + string.Join(", ", survivors.Take(5).Select(id => idOf(id))) + "); nothing was deleted.");
+  var also = deleted.Where(id => !selected.Contains(id)).Select(id => idOf(id)).ToList();
+
+  return new
   {
-      return new { Status = "Error", Message = ex.Message };
-  }
+      Status = "Deleted",
+      ElementIds = selected.Select(id => idOf(id)).ToList(),
+      Count = selected.Count,
+      AlsoDeleted = also.Take(100).ToList(),
+      AlsoDeletedCount = also.Count
+  };
 parameters: []
-preconditions: []
-not_for: []
-applies_when: ["delete selected"]
+preconditions:
+  - text: "select the elements in Revit first (at most 100); unpin pinned elements"
+not_for:
+  - "delete by category"
+  - "delete type"
+  - "purge"
+  - "delete view"
+applies_when:
+  - "delete selected"
+  - "delete selection"
+  - "remove selected elements"
 validator: null
-fixtures: [{"name":"basic","params":{},"expect":{"Status":"Deleted"}}]
+fixtures:
+  - name: basic
+    params: {}
+    expect: {Status: "Deleted"}
 approved_by: null
 approved_at: null
-created_at: "2026-01-01T00:00:00"
-source_query: "delete selected"
+created_at: "2026-11-23T00:00:00"
+source_query: delete the selected elements

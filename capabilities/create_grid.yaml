@@ -1,76 +1,106 @@
 schema_version: 1
-name: "create_grid"
-display_name: "Create Grid"
-description: "Create one straight grid between two points, with a unique name."
+name: create_grid
+display_name: Create Grid
+description: Create one straight grid line between two points (mm) with a new, unique name.
+  Refusals (empty, invalid or taken name, points that are not numbers, the same point twice)
+  stop the run and change nothing.
 version: "1.0.0"
-revit_versions: ["2026"]
+revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  ElementId createdId = ElementId.InvalidElementId;
+  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
+  // The bridge already opened the transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, string, double> toFeet = (label, text) =>
+  {
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException(label + " must be a number in mm, got \"" + text + "\".");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  };
+  string gridName = "{name}";
+
+  if (string.IsNullOrWhiteSpace(gridName))
+      throw new InvalidOperationException("Give the new grid a name.");
+  if (!NamingUtils.IsValidName(gridName))
+      throw new InvalidOperationException("\"" + gridName + "\" cannot be a grid name: Revit does not allow characters such as : ; [ ] | < > ? ` ~ or braces in names.");
+  Grid clash = new FilteredElementCollector(document).OfClass(typeof(Grid)).Cast<Grid>()
+      .FirstOrDefault(g => g.Name == gridName);
+  if (clash != null)
+      throw new InvalidOperationException("A grid named \"" + gridName + "\" already exists. Choose another name.");
+
+  XYZ start = new XYZ(toFeet("Start X", "{start_x}"), toFeet("Start Y", "{start_y}"), 0);
+  XYZ end = new XYZ(toFeet("End X", "{end_x}"), toFeet("End Y", "{end_y}"), 0);
+  if (!XYZ.IsWithinLengthLimits(start) || !XYZ.IsWithinLengthLimits(end))
+      throw new InvalidOperationException("A grid point is outside the model's limits.");
+  if (start.DistanceTo(end) < document.Application.ShortCurveTolerance)
+      throw new InvalidOperationException("The start and end points are the same or too close together; a grid needs two different points.");
+
+  Grid grid = Grid.Create(document, Line.CreateBound(start, end));
   try
   {
-      string name = "{name}";
-      if (string.IsNullOrWhiteSpace(name) || !NamingUtils.IsValidName(name))
-          return new { Status = "Error", Message = "A valid grid name is required." };
-      if (new FilteredElementCollector(document).OfClass(typeof(Grid)).Cast<Grid>().Any(e => e.Name == name))
-          return new { Status = "Error", Message = "A grid with this name already exists." };
-      var start = new XYZ({start_x} / 304.8, {start_y} / 304.8, 0);
-      var end = new XYZ({end_x} / 304.8, {end_y} / 304.8, 0);
-      if (!XYZ.IsWithinLengthLimits(start) || !XYZ.IsWithinLengthLimits(end)
-          || start.DistanceTo(end) <= document.Application.ShortCurveTolerance)
-          return new { Status = "Error", Message = "Grid endpoints are outside the model limits or too close together." };
-      var grid = Grid.Create(document, Line.CreateBound(start, end));
-      createdId = grid.Id;
-      grid.Name = name;
-      return new { Status = "Created", ElementId = grid.Id.Value, Name = grid.Name };
+      grid.Name = gridName;
   }
-  catch (Exception ex)
+  catch (Autodesk.Revit.Exceptions.ArgumentException ex)
   {
-      if (createdId != ElementId.InvalidElementId)
-      {
-          try { document.Delete(createdId); }
-          catch (Exception cleanup)
-          {
-              return new { Status = "Error", Message = ex.Message + " Cleanup failed: " + cleanup.Message, ElementId = createdId.Value };
-          }
-      }
-      return new { Status = "Error", Message = ex.Message };
+      throw new InvalidOperationException("Revit refused the grid name \"" + gridName + "\": " + ex.Message);
   }
+
+  return new
+  {
+      Status = "Created",
+      ElementId = long.Parse(grid.Id.ToString(), invariant),
+      Name = grid.Name,
+      LengthMm = Math.Round(UnitUtils.ConvertFromInternalUnits(start.DistanceTo(end), UnitTypeId.Millimeters), 1)
+  };
 parameters:
-  - name: "name"
-    type: "string"
-    description: "Unique grid name"
-    source: "designer"
+  - name: name
+    type: string
+    description: Name of the new grid; must not be used by another grid
+    source: designer
     required: true
-  - name: "start_x"
-    type: "double"
-    description: "Grid start_x (mm)"
-    source: "designer"
+  - name: start_x
+    type: double
+    description: Start point X (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "start_y"
-    type: "double"
-    description: "Grid start_y (mm)"
-    source: "designer"
+  - name: start_y
+    type: double
+    description: Start point Y (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "end_x"
-    type: "double"
-    description: "Grid end_x (mm)"
-    source: "designer"
+  - name: end_x
+    type: double
+    description: End point X (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
-  - name: "end_y"
-    type: "double"
-    description: "Grid end_y (mm)"
-    source: "designer"
+  - name: end_y
+    type: double
+    description: End point Y (mm)
+    unit: mm
+    source: designer
     required: true
-    unit: "mm"
 preconditions: []
-not_for: []
-applies_when: ["create grid"]
-validator: {"kind":"count_delta","category":"OST_Grids","expected":1}
-fixtures: [{"name":"basic","params":{"name":"A","start_x":0,"start_y":0,"end_x":0,"end_y":10000},"expect":{"Status":"Created"}}]
+not_for:
+  - "arc grid"
+  - "rename grid"
+  - "list grids"
+applies_when:
+  - "create grid"
+  - "add grid"
+  - "new grid line"
+validator:
+  kind: count_delta
+  category: OST_Grids
+  expected: 1
+fixtures:
+  - name: basic
+    params: {name: "A", start_x: 0, start_y: 0, end_x: 0, end_y: 10000}
+    expect: {Status: "Created"}
 approved_by: null
 approved_at: null
-created_at: "2026-01-01T00:00:00"
-source_query: "create grid"
+created_at: "2026-11-23T00:00:00"
+source_query: create a grid
