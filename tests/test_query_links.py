@@ -1,18 +1,22 @@
-"""``query``: list_model_items when the add-in offers it, the fallbacks when it does not, and link_id."""
+"""``query``: list_model_items where it is needed, the 0.8.2 paths where they suffice, and link_id."""
 from __future__ import annotations
 
 import asyncio
 import re
+import socket
 
 import pytest
 
 from revit_bridge.revit.client import RevitClient
 from revit_bridge.snapshot.query import (
+    CATEGORY_RE,
+    LEVELS_CODE,
     LINK_NOTE,
     ModelItems,
     ModelItemsError,
     RevitQueryError,
     RevitQueryExecutor,
+    element_id_or_none,
     in_link,
     link_items,
     parse_model_items,
@@ -47,19 +51,78 @@ OLDEST = FakeModel(list_model_items=False, capabilities="unsupported")   # no ge
 LEVELS = [{"id": 311, "name": "F1", "elevation_mm": 0.0}, {"id": 312, "name": "F2", "elevation_mm": 3000.0},
           {"id": 313, "name": "Roof", "elevation_mm": 9000.0}]
 
+# The C# origin/main (0.8.2) sends for these reads, byte for byte.
+LEVELS_0_8_2 = ('var levels = new FilteredElementCollector(document)\n    .OfClass(typeof(Level))\n'
+                '    .Cast<Level>()\n    .OrderBy(l => l.Elevation)\n'
+                '    .Select(l => new { Id = l.Id.Value, Name = l.Name, ElevationMm = Math.Round(l.Elevation * 304.8, 1) })\n'
+                '    .ToList();\nreturn levels;')
+COUNTS_0_8_2 = ('var result = new List<object>();\n'
+                'foreach (var name in new string[] { "OST_Walls", "OST_Doors" }) {\n    try {\n'
+                '        var bic = (BuiltInCategory)Enum.Parse(typeof(BuiltInCategory), name);\n'
+                '        var n = new FilteredElementCollector(document).OfCategory(bic)\n'
+                '            .WhereElementIsNotElementType().GetElementCount();\n'
+                '        result.Add(new { Category = name, Count = n });\n    } catch (Exception ex) {\n'
+                '        result.Add(new { Category = name, Count = -1, Error = ex.Message });\n    }\n}\nreturn result;')
+ELEMENTS_0_8_2 = ('var bic = (BuiltInCategory)Enum.Parse(typeof(BuiltInCategory), "OST_Walls");\n'
+                  'var total = new FilteredElementCollector(document).OfCategory(bic)\n'
+                  '    .WhereElementIsNotElementType().GetElementCount();\n'
+                  'var items = new FilteredElementCollector(document).OfCategory(bic)\n'
+                  '    .WhereElementIsNotElementType().Take(5)\n    .Select(e => {\n'
+                  '        var t = document.GetElement(e.GetTypeId());\n        var lv = document.GetElement(e.LevelId);\n'
+                  '        return new { Id = e.Id.Value, Name = e.Name,\n'
+                  '                     Category = e.Category != null ? e.Category.Name : "",\n'
+                  '                     Type = t != null ? t.Name : "",\n'
+                  '                     Level = lv != null ? lv.Name : null };\n'
+                  '    }).ToList();\nreturn new { Total = total, Items = items };')
 
-# -- the two capability paths -------------------------------------------------------------
 
-def test_levels_take_list_model_items_when_offered_and_the_old_path_otherwise():
-    reply, requests = ask_requests(NEW, "levels")
-    assert reply == {"kind": "levels", "items": LEVELS}
-    assert [r["method"] for r in requests] == ["get_bridge_capabilities", "list_model_items"]
-    assert requests[-1]["params"] == {"kind": "levels"}                # all rows: no q, no limit
-    for handler in (OLD, OLDEST):
-        reply, methods = ask(handler, "levels")
-        assert reply == {"kind": "levels", "items": LEVELS}           # the same reply on both paths
-        assert methods == ["get_bridge_capabilities", "send_code_to_revit"]
+# -- the reads that keep their 0.8.2 path ------------------------------------------------------
 
+def test_levels_without_link_id_keep_the_0_8_2_request_on_every_add_in():
+    for handler in (NEW, OLD, OLDEST):
+        reply, requests = ask_requests(handler, "levels")
+        assert reply == {"kind": "levels", "items": LEVELS}
+        assert [r["method"] for r in requests] == ["send_code_to_revit"]     # no capability probe either
+        assert requests[0]["params"]["code"] == LEVELS_0_8_2 == LEVELS_CODE
+
+
+def test_family_types_without_link_id_keep_one_call_and_its_order_on_every_add_in():
+    """Two categories: one get_available_family_types call, the add-in's order kept (a call per
+    category would put the walls first)."""
+    class Interleaving(FakeModel):
+        def __call__(self, request):
+            if request["method"] == "get_available_family_types":
+                rows = [{"FamilyTypeId": 411, "FamilyName": "Single-Flush", "TypeName": "915 x 2134mm",
+                         "Category": "Doors"},
+                        {"FamilyTypeId": 401, "FamilyName": "Basic Wall", "TypeName": "Generic - 200mm",
+                         "Category": "Walls"}]
+                return FakeRevit.ok(request["id"], rows)
+            return super().__call__(request)
+
+    for with_method in (True, False):
+        reply, requests = ask_requests(Interleaving(list_model_items=with_method), "family_types",
+                                       {"categories": ["OST_Walls", "OST_Doors"]})
+        assert [r["method"] for r in requests] == ["get_available_family_types"], with_method
+        assert requests[0]["params"] == {"categoryList": ["OST_Walls", "OST_Doors"]}
+        assert [i["id"] for i in reply["items"]] == [411, 401], with_method
+        assert reply == {"kind": "family_types", "categories": ["OST_Walls", "OST_Doors"], "items": [
+            {"id": 411, "family": "Single-Flush", "name": "915 x 2134mm", "category": "Doors"},
+            {"id": 401, "family": "Basic Wall", "name": "Generic - 200mm", "category": "Walls"}]}
+
+
+def test_counts_and_elements_without_link_id_send_the_0_8_2_code():
+    for handler in (NEW, OLD):
+        reply, requests = ask_requests(handler, "counts", {"categories": ["OST_Walls", "OST_Doors"]})
+        assert reply == {"kind": "counts", "items": [{"category": "OST_Walls", "count": 12},
+                                                     {"category": "OST_Doors", "count": 3}]}
+        assert [r["method"] for r in requests] == ["send_code_to_revit"]
+        assert requests[0]["params"]["code"] == COUNTS_0_8_2
+        reply, requests = ask_requests(handler, "elements", {"category": "OST_Walls", "limit": 5})
+        assert reply["total"] == 12 and [r["method"] for r in requests] == ["send_code_to_revit"]
+        assert requests[0]["params"]["code"] == ELEMENTS_0_8_2
+
+
+# -- the capability probe ----------------------------------------------------------------------
 
 def test_the_capability_is_asked_once_per_connection():
     async def go():
@@ -68,7 +131,7 @@ def test_the_capability_is_asked_once_per_connection():
             executor = RevitQueryExecutor(client)
             try:
                 for _ in range(3):
-                    await run_query(executor, "levels")
+                    await run_query(executor, "links")
             finally:
                 await client.disconnect()
             return [r["method"] for r in fake.requests]
@@ -76,59 +139,35 @@ def test_the_capability_is_asked_once_per_connection():
     assert methods.count("get_bridge_capabilities") == 1 and methods.count("list_model_items") == 3
 
 
-def test_family_types_ask_per_category_on_the_new_path_and_reach_more_categories():
-    reply, requests = ask_requests(NEW, "family_types", {"categories": ["OST_Walls", "OST_PipeCurves"]})
-    assert reply == {"kind": "family_types", "categories": ["OST_Walls", "OST_PipeCurves"], "items": [
-        {"id": 401, "family": "Basic Wall", "name": "Generic - 200mm", "category": "Walls"},
-        {"id": 402, "family": "Basic Wall", "name": "Generic - 300mm", "category": "Walls"},
-        {"id": 431, "family": "Pipe Types", "name": "Standard", "category": "Pipes"}]}
-    assert [r["params"] for r in requests[1:]] == [{"kind": "types", "category": "OST_Walls"},
-                                                   {"kind": "types", "category": "OST_PipeCurves"}]
-
-    reply, methods = ask(OLD, "family_types", {"categories": ["OST_Walls", "OST_PipeCurves"]})
-    assert [i["id"] for i in reply["items"]] == [401, 402]             # the old command has no pipes
-    assert methods == ["get_bridge_capabilities", "get_available_family_types"]
-
-
-def test_add_in_warnings_reach_the_reply_and_are_not_dropped():
-    reply, _ = ask(FakeModel(warnings=["level 9 skipped: boom"]), "levels")
-    assert reply == {"kind": "levels", "items": LEVELS, "warnings": ["level 9 skipped: boom"]}
-    reply, _ = ask(FakeModel(warnings=["type 7 skipped: boom"]), "family_types", {"categories": ["OST_Walls"]})
-    assert reply["warnings"] == ["type 7 skipped: boom"]
-    for kind in ("links", "type_categories"):
-        reply, _ = ask(FakeModel(warnings=["w"]), kind)
-        assert reply["warnings"] == ["w"], kind
-    reply, _ = ask(FakeModel(warnings=["w"]), "levels", {"link_id": 501})   # the link read's and the levels'
-    assert reply["warnings"] == ["w", "w"]
-
-
 def test_a_method_that_was_advertised_but_is_missing_falls_back():
-    reply, methods = ask(FakeModel(advertise_only=True), "levels")
-    assert reply == {"kind": "levels", "items": LEVELS}
+    reply, methods = ask(FakeModel(advertise_only=True), "links")
+    assert reply["count"] == 3
     assert methods == ["get_bridge_capabilities", "list_model_items", "send_code_to_revit"]
     reply, _ = ask(FakeModel(advertise_only=True), "levels", {"link_id": 501})
     assert reply["error"] == "unsupported_addin"
 
 
-def test_counts_and_elements_without_link_id_never_ask_for_the_capability():
-    reply, methods = ask(NEW, "counts", {"categories": ["OST_Walls", "OST_Doors"]})
-    assert reply == {"kind": "counts", "items": [{"category": "OST_Walls", "count": 12},
-                                                 {"category": "OST_Doors", "count": 3}]}
-    assert methods == ["send_code_to_revit"]
-    reply, methods = ask(NEW, "elements", {"category": "OST_Walls", "limit": 5})
-    assert reply["total"] == 12 and methods == ["send_code_to_revit"]
+# -- list_model_items replies --------------------------------------------------------------------
 
+def test_add_in_warnings_reach_the_reply_and_are_not_dropped():
+    for kind in ("links", "type_categories"):
+        reply, _ = ask(FakeModel(warnings=["w"]), kind)
+        assert reply["warnings"] == ["w"], kind
+    reply, _ = ask(FakeModel(warnings=["w"]), "levels", {"link_id": 501})   # the link read's and the levels'
+    assert reply["warnings"] == ["w", "w"]
+    reply, _ = ask(FakeModel(warnings=["type 7 skipped: boom"]), "family_types",
+                   {"categories": ["OST_StructuralFraming"], "link_id": 501})
+    assert reply["warnings"] == ["type 7 skipped: boom", "type 7 skipped: boom"]
 
-# -- list_model_items failures -----------------------------------------------------------------
 
 def test_a_failed_list_model_items_is_mapped_onto_the_query_errors():
     for code in ("no_document", "busy", "timeout", "failed"):
-        reply, _ = ask(FakeModel(fail=code), "levels")
-        assert reply == {"error": "revit_error", "kind": "levels", "message": f"{code}: fake failure {code}"}, code
+        reply, _ = ask(FakeModel(fail=code), "links")
+        assert reply == {"error": "revit_error", "kind": "links", "message": f"{code}: fake failure {code}"}, code
     for code in ("bad_params", "bad_category", "unknown_kind"):
         reply, _ = ask(FakeModel(fail=code), "type_categories")
         assert reply["error"] == "invalid_args" and reply["message"].startswith(code), code
-    reply, _ = ask(NEW, "family_types", {"categories": ["OST_Nope"]})   # an OST_ name Revit does not have
+    reply, _ = ask(NEW, "family_types", {"categories": ["OST_Nope"], "link_id": 501})   # Revit has no such category
     assert reply["error"] == "invalid_args" and reply["message"].startswith("bad_category: ")
 
 
@@ -159,8 +198,8 @@ def test_a_truncated_reply_says_so():
             reply["result"]["Truncated"] = True
             return reply
 
-    reply, _ = ask(Truncating(), "levels")
-    assert reply["truncated"] is True and len(reply["items"]) == 3
+    reply, _ = ask(Truncating(), "links")
+    assert reply["truncated"] is True and reply["count"] == 3
 
 
 # -- links and type_categories --------------------------------------------------------------
@@ -220,11 +259,13 @@ def test_type_categories_on_both_paths():
 
 def test_a_type_category_that_is_not_an_ost_name_is_dropped_with_a_warning():
     model = FakeModel()
-    model.model["types"]["OST_Bad1"] = [{"FamilyTypeId": 1, "TypeName": "x", "Category": "x"}]
+    model.model["types"]["OST_Bad.x"] = [{"FamilyTypeId": 1, "TypeName": "x", "Category": "x"}]
+    model.model["types"]["OST_IOS_Geo2"] = [{"FamilyTypeId": 2, "TypeName": "y", "Category": "y"}]
     reply, _ = ask(model, "type_categories")
-    assert "OST_Bad1" not in [i["category"] for i in reply["items"]]
+    categories = [i["category"] for i in reply["items"]]
+    assert "OST_Bad.x" not in categories and "OST_IOS_Geo2" in categories     # digits and underscores are fine
     assert len(reply["warnings"]) == 1
-    assert re.fullmatch(r"type category row \d: 'OST_Bad1' is not an OST_\* name", reply["warnings"][0])
+    assert re.fullmatch(r"type category row \d: 'OST_Bad\.x' is not an OST_\* name", reply["warnings"][0])
 
 
 def test_new_kinds_check_their_args_and_report_revit_errors():
@@ -243,6 +284,28 @@ def test_new_kinds_check_their_args_and_report_revit_errors():
         assert reply == {"error": "revit_error", "kind": kind, "message": "no document open"}
 
 
+# -- category names ------------------------------------------------------------------------------
+
+def test_category_names_take_letters_digits_and_underscores_and_nothing_else():
+    for good in ("OST_Walls", "OST_IOS_GeoSite", "OST_Fake_2", "OST_3"):
+        assert CATEGORY_RE.fullmatch(good), good
+    for bad in ("OST_Walls\n", "OST_Walls.x", "OST_Walls x", 'OST_Walls"', "OST_", "Walls", "OST_Wall;s",
+                "ost_Walls", " OST_Walls"):
+        assert not CATEGORY_RE.fullmatch(bad), bad
+    reply, requests = ask_requests(NEW, "counts", {"categories": ["OST_Fake_2"]})
+    assert reply["items"] == [{"category": "OST_Fake_2", "count": 0}]
+    assert 'new string[] { "OST_Fake_2" }' in requests[0]["params"]["code"]
+    for bad in ("OST_Walls\n", "OST_Walls.x", "OST_Walls x", 'OST_Walls"', "OST_Walls\"); File.Delete(\"x"):
+        for kind, args in (("counts", {"categories": [bad]}), ("elements", {"category": bad}),
+                           ("family_types", {"categories": [bad]})):
+            reply, methods = ask(NEW, kind, args)
+            # a trailing newline is stripped like any surrounding white space (0.8.2 too); the rest is refused
+            if bad == "OST_Walls\n":
+                assert "error" not in reply, (kind, bad)
+                continue
+            assert reply["error"] == "invalid_args" and methods == [], (kind, bad)
+
+
 # -- link_id ---------------------------------------------------------------------------------
 
 LINK_501 = {"id": 501, "name": "Structure.rvt : 1 : location <Not Shared>", "document_title": "Structure",
@@ -256,7 +319,6 @@ def test_levels_and_family_types_of_a_link():
                      "link": LINK_501, "coordinates": "link", "note": LINK_NOTE}
     assert [r["params"] for r in requests[1:]] == [{"kind": "links", "ids": [501]},
                                                    {"kind": "levels", "link_id": 501}]
-    assert "own coordinate system" in LINK_NOTE
 
     reply, requests = ask_requests(NEW, "family_types", {"categories": ["OST_StructuralFraming"], "link_id": "501"})
     assert reply["items"] == [{"id": 901, "family": "Concrete-Rectangular Beam", "name": "300x600mm",
@@ -266,6 +328,12 @@ def test_levels_and_family_types_of_a_link():
 
     reply, _ = ask(NEW, "levels", {"link_id": 502})
     assert reply["link"]["rotated"] is True and reply["link"]["origin_mm"] == {"x": 12000.0, "y": -500.0, "z": 0.0}
+
+
+def test_the_link_note_says_coordinates_and_ids_belong_to_the_link():
+    assert "own coordinate system" in LINK_NOTE
+    assert ("Element, level and type ids read through link_id belong to the linked document: they name no "
+            "element of the open model and must not be passed to tools that act on the open model") in LINK_NOTE
 
 
 def test_type_categories_of_a_link():
@@ -301,6 +369,26 @@ def test_counts_and_elements_of_a_link_run_in_the_link_document():
                                "type": "300x600mm", "level": "S-F1"}]
     code = requests[-1]["params"]["code"]
     assert "linkDoc.GetElement(e.GetTypeId())" in code and ".Take(3)" in code
+
+
+def test_a_link_that_goes_away_between_the_check_and_the_read_is_refused():
+    """The link passed the list_model_items check, then the send_code block finds it unloaded or gone."""
+    class Racing(FakeModel):
+        def __init__(self, link_error):
+            super().__init__()
+            self.link_error = link_error
+
+        def _send_code(self, rid, code):
+            if "LinkError" in code:
+                return FakeRevit.code_result(rid, {"LinkError": self.link_error})
+            return super()._send_code(rid, code)
+
+    for link_error in ("link_not_loaded", "unknown_link"):
+        for kind, args in (("elements", {"category": "OST_StructuralFraming"}),
+                           ("counts", {"categories": ["OST_StructuralFraming"]})):
+            reply, methods = ask(Racing(link_error), kind, dict(args, link_id=501))
+            assert reply["error"] == link_error and reply["kind"] == kind and reply["link_id"] == 501
+            assert methods == ["get_bridge_capabilities", "list_model_items", "send_code_to_revit"]
 
 
 def test_an_unknown_link_id_is_refused_before_any_linked_read():
@@ -373,7 +461,8 @@ def test_link_id_with_unknown_capabilities_is_a_revit_error_not_unsupported():
 
 def test_bad_link_ids_never_reach_revit():
     arabic_indic_12 = chr(0x0661) + chr(0x0662)             # digits to str.isdigit, not to the id check
-    for bad in (0, -5, "abc", "5x", 1.5, True, [501], {"id": 501}, 2 ** 70, arabic_indic_12):
+    for bad in (0, -5, "abc", "5x", 1.5, True, [501], {"id": 501}, 2 ** 63, 2 ** 70, 1e30,
+                "9999999999999999999", arabic_indic_12):
         reply, methods = ask(NEW, "levels", {"link_id": bad})
         assert reply["error"] == "invalid_args" and "invalid link_id" in reply["message"], bad
         assert methods == [], bad
@@ -388,21 +477,47 @@ def test_the_link_code_renames_only_the_document_it_reads():
     assert "FilteredElementCollector(linkDoc).GetElementCount()" in code
     assert "var documented = 1; return linkDoc.Title;" in code
     assert '"unknown_link" : "link_not_loaded"' in code
-    with pytest.raises((TypeError, ValueError)):
-        in_link("x", "501; File.Delete")
+    for bad in ("501; File.Delete", 0, 2 ** 63, 1.5, True):
+        with pytest.raises(ValueError):
+            in_link("x", bad)
 
 
-def test_ids_are_capped_at_200_per_call():
+# -- element ids ---------------------------------------------------------------------------------
+
+def test_element_ids_are_whole_numbers_in_int64():
+    for good, value in ((1, 1), (312, 312), (312.0, 312), ("312", 312), (2 ** 63 - 1, 2 ** 63 - 1)):
+        assert element_id_or_none(good) == value, good
+    for bad in (0, -1, 1.9, 0.5, True, False, None, 2 ** 63, 10 ** 30, 1e30, "9999999999999999999", "1e3",
+                "12a", float("nan"), float("inf"), [1]):
+        assert element_id_or_none(bad) is None, bad
+
+
+def test_ids_are_checked_before_they_go_into_a_request():
     async def go():
         async with FakeRevit(NEW) as fake:
             client = RevitClient(host="127.0.0.1", port=fake.port, timeout=2)
+            ex = RevitQueryExecutor(client)
             try:
                 with pytest.raises(ValueError, match="at most 200 ids"):
-                    await RevitQueryExecutor(client).list_model_items("levels", ids=list(range(201)))
+                    await ex.list_model_items("levels", ids=list(range(1, 202)))
+                for bad in ([2 ** 63], [10 ** 30], [0], [1.5], [True]):
+                    with pytest.raises(ValueError, match="invalid element id"):
+                        await ex.list_model_items("levels", ids=bad)
+                with pytest.raises(ValueError, match="invalid element id"):
+                    await ex.list_model_items("levels", link_id=2 ** 63)
             finally:
                 await client.disconnect()
             return fake.requests
     assert asyncio.run(go()) == []
+
+
+def test_the_fake_refuses_ids_outside_int64_like_the_add_in():
+    fake = FakeModel()
+    for params in ({"kind": "levels", "ids": [312, 2 ** 63]}, {"kind": "types", "ids": [-2 ** 63 - 1]},
+                   {"kind": "levels", "link_id": 2 ** 63}):
+        result = fake._list_model_items(1, params)["result"]
+        assert result["Success"] is False and result["Error"]["Code"] == "bad_params", params
+    assert fake._list_model_items(1, {"kind": "levels", "ids": [312]})["result"]["Items"][0]["Id"] == 312
 
 
 def test_the_fake_types_follow_the_add_in():
@@ -434,3 +549,60 @@ def test_the_fake_types_follow_the_add_in():
     assert errors == [("bad_params", "kind types needs category or ids."),
                       ("bad_params", "ids is not used with kind type_categories."),
                       ("bad_params", "link_id is not used with kind links.")]
+
+
+# -- transport failures propagate ---------------------------------------------------------------
+
+def closed_port() -> int:
+    """A local port nothing listens on: connecting to it is refused."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def run_on(port, fn):
+    async def go():
+        client = RevitClient(host="127.0.0.1", port=port, timeout=2, connect_timeout=2)
+        try:
+            return await fn(RevitQueryExecutor(client))
+        finally:
+            await client.disconnect()
+    return asyncio.run(go())
+
+
+LINK_QUERIES = (("levels", {"link_id": 501}), ("family_types", {"categories": ["OST_Walls"], "link_id": 501}),
+                ("counts", {"categories": ["OST_Walls"], "link_id": 501}), ("type_categories", {"link_id": 501}),
+                ("links", None))
+
+
+def test_a_refused_connection_propagates_from_link_queries():
+    port = closed_port()
+    for kind, args in LINK_QUERIES:
+        with pytest.raises(OSError):
+            run_on(port, lambda ex, kind=kind, args=args: run_query(ex, kind, args))
+
+
+def test_a_connection_closed_mid_call_propagates_from_link_queries():
+    """The add-in closes the connection on the capability probe, or on the link check after it."""
+    class ClosingOn(FakeModel):
+        def __init__(self, method):
+            super().__init__()
+            self.method = method
+
+        def __call__(self, request):
+            if request["method"] == self.method:
+                return FakeRevit.DROP
+            return super().__call__(request)
+
+    async def ask_closing(method, kind, args):
+        async with FakeRevit(ClosingOn(method)) as fake:
+            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=2)
+            try:
+                return await run_query(RevitQueryExecutor(client), kind, args)
+            finally:
+                await client.disconnect()
+
+    for method in ("get_bridge_capabilities", "list_model_items"):
+        for kind, args in LINK_QUERIES:
+            with pytest.raises(OSError):
+                asyncio.run(ask_closing(method, kind, args))

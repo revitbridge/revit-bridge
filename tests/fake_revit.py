@@ -186,7 +186,12 @@ DEFAULT_MODEL = {
 }
 
 
-_CATEGORY_SHAPE = re.compile(r"^OST_[A-Za-z0-9_]+$")
+_CATEGORY_SHAPE = re.compile(r"OST_[A-Za-z0-9_]+")       # always fullmatch, as the add-in's ^...$ Regex
+_INT64 = (-2 ** 63, 2 ** 63 - 1)                          # the add-in's TryGetInt64: a JSON integer in Int64
+
+
+def _int64(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and _INT64[0] <= value <= _INT64[1]
 _ID_KEYS = {"levels": "Id", "links": "Id", "types": "FamilyTypeId"}
 _NAME_KEYS = {"levels": ("Name",), "links": ("Name", "TypeName", "DocumentTitle"),
               "types": ("FamilyName", "TypeName"), "type_categories": ("Category", "DisplayName")}
@@ -270,16 +275,18 @@ class FakeModel:
         if category is not None:
             if kind != "types":
                 return self._failed(rid, kind, "bad_params", "category is used with kind types only.")
-            if not isinstance(category, str) or not _CATEGORY_SHAPE.match(category) or category == "OST_Nope":
+            if not isinstance(category, str) or not _CATEGORY_SHAPE.fullmatch(category) or category == "OST_Nope":
                 return self._failed(rid, kind, "bad_category", "category must be the name of a BuiltInCategory, "
                                                                f"such as OST_Walls; got {json.dumps(category)}.")
-        if link_id is not None and kind == "links":
-            return self._failed(rid, kind, "bad_params", "link_id is not used with kind links.")
+        if link_id is not None:
+            if kind == "links":
+                return self._failed(rid, kind, "bad_params", "link_id is not used with kind links.")
+            if not _int64(link_id):
+                return self._failed(rid, kind, "bad_params", "link_id must be an integer element id.")
         if ids is not None:
             if kind == "type_categories":
                 return self._failed(rid, kind, "bad_params", "ids is not used with kind type_categories.")
-            if (not isinstance(ids, list) or len(ids) > 200
-                    or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids)):
+            if not isinstance(ids, list) or len(ids) > 200 or not all(_int64(i) for i in ids):
                 return self._failed(rid, kind, "bad_params", "ids must be an array of at most 200 integer element ids.")
         if kind == "types" and category is None and ids is None:
             return self._failed(rid, kind, "bad_params", "kind types needs category or ids.")
@@ -340,10 +347,10 @@ class FakeModel:
         if "typeof(Level)" in code:
             return FakeRevit.code_result(rid, copy.deepcopy(doc["levels"]))
         if "new string[]" in code:
-            names = re.findall(r'"(OST_[A-Za-z]+)"', code)
+            names = re.findall(r'"(OST_[A-Za-z0-9_]+)"', code)
             return FakeRevit.code_result(rid, [{"Category": n, "Count": doc["counts"].get(n, 0)} for n in names])
         if "OfCategory(bic)" in code and "Take(" in code:
-            category = re.search(r'"(OST_[A-Za-z]+)"', code).group(1)
+            category = re.search(r'"(OST_[A-Za-z0-9_]+)"', code).group(1)
             items = doc.get("elements", {}).get(category, [])
             return FakeRevit.code_result(rid, {"Total": doc["counts"].get(category, len(items)),
                                                "Items": copy.deepcopy(items)})

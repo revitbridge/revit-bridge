@@ -62,12 +62,17 @@ def test_type_without_category_lists_categories_first(path):
 
 @pytest.mark.parametrize("path", sorted(PATHS))
 def test_type_with_category_lists_its_types(path):
-    out = candidates(PATHS[path], "type", category="OST_Walls")
+    out, methods = run(PATHS[path], mention_candidates, "type", category="OST_Walls")
     assert out == {"kind": "type", "total": 2, "truncated": False, "items": [
         {"kind": "type", "id": 401, "name": "Generic - 200mm", "label": "Basic Wall: Generic - 200mm",
          "detail": "Walls", "category": "OST_Walls", "family": "Basic Wall"},
         {"kind": "type", "id": 402, "name": "Generic - 300mm", "label": "Basic Wall: Generic - 300mm",
          "detail": "Walls", "category": "OST_Walls", "family": "Basic Wall"}]}
+    # the picker uses list_model_items where it exists (the same list the old command gives, with warnings)
+    expected = "list_model_items" if path == "new" else "get_available_family_types"
+    assert methods == ["get_bridge_capabilities", expected]
+    out = candidates(PATHS[path], "type", category="OST_PipeCurves")
+    assert [i["id"] for i in out["items"]] == ([431] if path == "new" else [])
 
 
 @pytest.mark.parametrize("path", sorted(PATHS))
@@ -224,8 +229,76 @@ def test_resolve_reads_each_kind_once_by_id():
 def test_add_in_warnings_are_passed_on():
     out, _ = run(FakeModel(warnings=["level 9 skipped: boom"]), resolve_mentions, [{"kind": "level", "id": 312}])
     assert out["warnings"] == ["level 9 skipped: boom"] and out["resolved"][0]["id"] == 312
-    assert candidates(FakeModel(warnings=["w"]), "level")["warnings"] == ["w"]
-    assert "warnings" not in candidates(PATHS["new"], "level")
+    for kind, kwargs in (("type", {"category": "OST_Walls"}), ("type", {}), ("link", {})):
+        assert candidates(FakeModel(warnings=["w"]), kind, **kwargs)["warnings"] == ["w"], (kind, kwargs)
+    assert "warnings" not in candidates(PATHS["new"], "type", category="OST_Walls")
+
+
+def test_ids_that_are_not_element_ids_are_invalid_and_the_rest_is_still_checked():
+    mentions = [{"kind": "level", "id": 312}, {"kind": "level", "id": 10 ** 30},
+                {"kind": "level", "id": "9999999999999999999"}, {"kind": "level", "id": 1e30},
+                {"kind": "level", "id": 1.9}, {"kind": "level", "id": True}, {"kind": "type", "id": 2 ** 63},
+                {"kind": "link", "id": 0}, {"kind": "level", "id": 311.0}]
+    out, requests = requests_of(PATHS["new"], mentions)
+    assert [i["id"] for i in out["resolved"]] == [312, 311]                  # 311.0 is a whole number
+    assert [m["reason"] for m in out["not_found"]] == ["invalid"] * 7
+    assert [m["id"] for m in out["not_found"]] == [10 ** 30, "9999999999999999999", 1e30, 1.9, True, 2 ** 63, 0]
+    assert [r["params"] for r in requests[1:]] == [{"kind": "levels", "ids": [312, 311]}]    # nothing else sent
+
+
+def test_an_unreadable_capability_is_an_error_when_checking_picks_never_not_found():
+    """A capability probe that timed out or failed: checking by id must not fall back to the
+    old type list (it lacks pipes and other types the picker offered) and report "not found"."""
+    def probe_fails(request):
+        if request["method"] == "get_bridge_capabilities":
+            return FakeRevit.error(request["id"], -32000, "internal error")
+        return FakeModel()(request)
+
+    for kind, mention_id in (("type", 431), ("level", 312), ("link", 501)):
+        with pytest.raises(RevitQueryError, match="capabilities could not be read"):
+            run(probe_fails, resolve_mentions, [{"kind": kind, "id": mention_id}])
+    # offering candidates may still fall back: an offer is not a verdict
+    assert candidates(probe_fails, "type", category="OST_Walls")["total"] == 2
+    assert candidates(probe_fails, "link")["total"] == 3
+
+
+def _closed_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_transport_failures_propagate_from_candidates_and_resolution():
+    port = _closed_port()
+
+    async def on_closed_port(fn, *args, **kwargs):
+        client = RevitClient(host="127.0.0.1", port=port, timeout=2, connect_timeout=2)
+        try:
+            return await fn(RevitQueryExecutor(client), *args, **kwargs)
+        finally:
+            await client.disconnect()
+
+    calls = [(mention_candidates, ("level",), {}), (mention_candidates, ("link",), {}),
+             (mention_candidates, ("type",), {}), (mention_candidates, ("type",), {"category": "OST_Walls"}),
+             (resolve_mentions, ([{"kind": "level", "id": 312}],), {}),
+             (resolve_mentions, ([{"kind": "type", "id": 401}],), {}),
+             (resolve_mentions, ([{"kind": "link", "id": 501}],), {})]
+    for fn, args, kwargs in calls:
+        with pytest.raises(OSError):
+            asyncio.run(on_closed_port(fn, *args, **kwargs))
+
+    class Closing(FakeModel):
+        """The add-in closes the connection on the capability probe."""
+        def __call__(self, request):
+            if request["method"] == "get_bridge_capabilities":
+                return FakeRevit.DROP
+            return super().__call__(request)
+
+    for fn, args, kwargs in calls[1:]:                     # every call that probes the capability
+        with pytest.raises(OSError):
+            run(Closing(), fn, *args, **kwargs)
 
 
 def test_a_model_that_cannot_be_read_is_an_error_not_not_found():
@@ -286,3 +359,52 @@ def test_mention_block_quotes_names_so_they_cannot_break_out():
     assert "\n" not in block
     long = mention_block([{"kind": "level", "id": 7, "name": "x" * 500}], "en")
     assert '"' + "x" * 117 + '..."' in long
+
+
+def _name_literal(block: str) -> str:
+    return block[block.index(': level "') + len(": level "):block.rindex(" (id")]
+
+
+def test_mention_block_escapes_control_and_separator_characters():
+    import json
+    import unicodedata
+
+    rlo, lri, zwsp, bom, ls, ps = (chr(c) for c in (0x202E, 0x2066, 0x200B, 0xFEFF, 0x2028, 0x2029))
+    tag, surrogate, nel = chr(0xE0001), chr(0xD800), chr(0x85)
+    name = ("A" + chr(0) + "B" + chr(7) + "C" + chr(0x1B) + "D" + chr(0x7F) + "E" + chr(0x9B) + "F" + rlo + "G"
+            + lri + "H" + zwsp + "I" + bom + "J" + ls + "K" + ps + "L" + nel + "M\tN\rO" + tag + "P"
+            + surrogate + "Q")
+    block = mention_block([{"kind": "level", "id": 7, "name": name}], "en")
+    literal = _name_literal(block)
+    # no character that is not plain text is left in the block: controls, format characters
+    # (bidi overrides, zero width), separators and surrogates are \\u escapes; runs of white space
+    # (tab, CR, NEL, U+2028, U+2029) are one space
+    for ch in block:
+        category = unicodedata.category(ch)
+        assert category[0] != "C" and category not in ("Zl", "Zp"), repr(ch)
+    assert json.loads(literal) == ("A" + chr(0) + "B" + chr(7) + "C" + chr(0x1B) + "D" + chr(0x7F) + "E"
+                                   + chr(0x9B) + "F" + rlo + "G" + lri + "H" + zwsp + "I" + bom + "J K L M N O"
+                                   + tag + "P" + surrogate + "Q")
+    for escape in ("\\u0000", "\\u0007", "\\u001b", "\\u007f", "\\u009b", "\\u202e", "\\u2066", "\\u200b",
+                   "\\ufeff", "\\udb40\\udc01", "\\ud800"):
+        assert escape in literal, escape
+
+
+def test_the_name_cap_counts_the_escaped_text():
+    import json
+
+    rlo, lri = chr(0x202E), chr(0x2066)
+    block = mention_block([{"kind": "level", "id": 7, "name": rlo * 100}], "en")
+    literal = _name_literal(block)
+    assert len(literal) <= 120 + 2                            # at most 120 characters between the quotes
+    assert literal.endswith('..."') and literal.count("\\u202e") == 19
+    assert json.loads(literal) == rlo * 19 + "..."
+    plain = _name_literal(mention_block([{"kind": "level", "id": 7, "name": "y" * 120}], "en"))
+    assert plain == '"' + "y" * 120 + '"'                     # exactly at the cap: not cut
+    many = [{"kind": "level", "id": i, "name": lri * 500} for i in range(1, MAX_MENTIONS + 1)]
+    assert len(mention_block(many, "en")) < MAX_MENTIONS * 160 + 100   # the block is bounded too
+
+
+def test_an_id_that_is_not_an_element_id_is_quoted_in_the_block():
+    block = mention_block([{"kind": "level", "id": "7); x", "name": "L"}], "en")
+    assert block.endswith('level "L" (id "7); x").')

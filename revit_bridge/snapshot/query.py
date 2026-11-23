@@ -6,19 +6,24 @@ intent classifier that used to sit next to it belongs to the host and was
 not migrated.
 
 ``list_model_items`` (add-in method, ``{kind, category?, link_id?, ids?, q?,
-limit?}`` with ``kind`` levels | links | types | type_categories) is used when
-the add-in's ``get_bridge_capabilities`` lists it: no compile, no transaction.
-Its reply is always a successful JSON-RPC result ``{Success, Kind, Items,
-Total, Truncated, Warnings, Error}``; ``Success`` false carries ``Error:
-{Code, Message}``, mapped here onto the query's own error replies.
-Otherwise the reads fall back: ``levels`` and ``family_types`` take the paths
-they always took (``send_code`` and ``get_available_family_types``), ``links``
-and ``type_categories`` a read-only ``send_code`` block, and a ``link_id``
-(read a linked model) is refused with ``unsupported_addin``. ``elements`` and
-``counts`` of a link run a ``send_code`` block against the link document (the
-method does not serve them). The bridge asks for all rows (no ``q``, no
-``limit``) and filters itself, so both paths give the same answer; rows asked
-by ``ids`` are filtered by id here too.
+limit?}`` with ``kind`` levels | links | types | type_categories) is used where
+it is needed and the add-in's ``get_bridge_capabilities`` lists it: the
+``links`` and ``type_categories`` kinds, every ``link_id`` read, checks by id
+(``*_by_id``) and the type picker (``get_type_rows``). No compile, no
+transaction. Its reply is always a successful JSON-RPC result ``{Success,
+Kind, Items, Total, Truncated, Warnings, Error}``; ``Success`` false carries
+``Error: {Code, Message}``, mapped here onto the query's own error replies.
+``levels`` and ``family_types`` without ``link_id`` keep their 0.8.2 path on
+every add-in (``send_code`` and one ``get_available_family_types`` call), so
+their requests and replies do not change. Without the method, ``links`` and
+``type_categories`` fall back to a read-only ``send_code`` block and a
+``link_id`` is refused with ``unsupported_addin``; a check by id falls back
+only when the add-in definitely lacks the method (an unreadable capability
+raises). ``elements`` and ``counts`` of a link run a ``send_code`` block
+against the link document (the method does not serve them). The bridge asks
+for all rows (no ``q``, no ``limit``) and filters itself; rows asked by
+``ids`` are filtered by id here too. Transport failures propagate on every
+path.
 """
 from __future__ import annotations
 
@@ -33,8 +38,10 @@ from revit_bridge.revit.client import RevitClient
 
 _log = logging.getLogger("revit_bridge.snapshot.query")
 
-# Category values interpolated into C# must match this exact shape (P0-4)
-CATEGORY_RE = re.compile(r"OST_[A-Za-z]+")
+# Category values interpolated into C# must match this exact shape (P0-4), always with
+# ``fullmatch`` (``^...$`` with ``match`` would let a trailing newline through). Letters,
+# digits and underscores after ``OST_``: the BuiltInCategory names the add-in accepts.
+CATEGORY_RE = re.compile(r"OST_[A-Za-z0-9_]+")
 
 # ``choices_from`` values a capability pack may declare for a parameter.
 CHOICE_SOURCES = ("levels", "family_types:<OST_Category>", "floor_types", "elements:<OST_Category>")
@@ -89,8 +96,10 @@ _LINK_CODES = frozenset({"unknown_link", "link_not_loaded"})
 # What a reply read from a linked model says about its coordinates.
 LINK_NOTE = ("read from the linked model: elevations and coordinates are in the link's own coordinate "
              "system; link.origin_mm is where the link's origin sits in the host model, and link.rotated "
-             "is true when its placement is more than a translation (rotated or mirrored)")
-_MAX_ELEMENT_ID = 2 ** 63 - 1
+             "is true when its placement is more than a translation (rotated or mirrored). Element, "
+             "level and type ids read through link_id belong to the linked document: they name no "
+             "element of the open model and must not be passed to tools that act on the open model")
+_MAX_ELEMENT_ID = 2 ** 63 - 1       # an ElementId is an Int64 (Revit 2024 and later)
 
 
 # The levels read (``get_levels``, ``query("levels")``, the execution's document
@@ -179,8 +188,24 @@ _LINK_PRELUDE = (
 
 
 def in_link(code: str, link_id: int) -> str:
-    """``code`` run against the linked document of RevitLinkInstance ``link_id`` (an int)."""
-    return _LINK_PRELUDE.format(link_id=int(link_id)) + re.sub(r"\bdocument\b", "linkDoc", code)
+    """``code`` run against the linked document of RevitLinkInstance ``link_id`` (an element id)."""
+    return _LINK_PRELUDE.format(link_id=_checked_id(link_id)) + re.sub(r"\bdocument\b", "linkDoc", code)
+
+
+def element_id_or_none(value) -> int | None:
+    """``value`` as an element id: a whole number with 0 < id <= 2**63-1 (an int, a float with no
+    fractional part, or a string of digits); None for anything else - bools, 1.9 (never cut to 1),
+    1e30, "9999999999999999999"."""
+    number = int_or_none(value)
+    return number if number is not None and 0 < number <= _MAX_ELEMENT_ID else None
+
+
+def _checked_id(value) -> int:
+    """An id about to go into a request or into C#: ValueError unless it is an element id."""
+    number = element_id_or_none(value)
+    if number is None:
+        raise ValueError(f"invalid element id {value!r}: expected a whole number in 1..{_MAX_ELEMENT_ID}")
+    return number
 
 
 class RevitQueryError(RuntimeError):
@@ -238,6 +263,16 @@ def only_ids(data: ModelItems, ids, key: str) -> ModelItems:
 def model_items_offered(caps: Capabilities) -> bool:
     """The add-in lists ``list_model_items`` among its methods."""
     return caps.supported and caps.has_method(LIST_MODEL_ITEMS_METHOD)
+
+
+async def capabilities_of(client) -> Capabilities:
+    """``discover(client)``, except that a transport failure (connection refused, reset or closed)
+    is raised as ConnectionError instead of coming back as an ``unknown`` capability: every query
+    path lets transport failures propagate, as ``run_query`` says."""
+    caps = await discover(client)
+    if caps.state == UNKNOWN and caps.error_kind == "unreachable":
+        raise ConnectionError(caps.reason or "the Revit add-in is unreachable")
+    return caps
 
 
 def _first(mapping: dict, *keys):
@@ -503,8 +538,9 @@ class RevitQueryExecutor:
     # -- list_model_items, with the fallbacks ------------------------------------------
 
     async def offers_list_model_items(self) -> bool:
-        """The add-in's capability reply lists ``list_model_items`` (cached per connection)."""
-        return model_items_offered(await discover(self.client))
+        """The add-in's capability reply lists ``list_model_items`` (cached per connection); a
+        transport failure raises."""
+        return model_items_offered(await capabilities_of(self.client))
 
     async def list_model_items(self, kind: str, *, category: str | None = None, link_id: int | None = None,
                                ids: list[int] | None = None, q: str | None = None,
@@ -525,9 +561,9 @@ class RevitQueryExecutor:
                 raise ValueError(f"invalid category {category!r}")
             params["category"] = category
         if link_id is not None:
-            params["link_id"] = int(link_id)
+            params["link_id"] = _checked_id(link_id)
         if ids is not None:
-            id_list = [int(i) for i in ids]
+            id_list = [_checked_id(i) for i in ids]        # the add-in refuses anything outside Int64
             if len(id_list) > MAX_IDS:
                 raise ValueError(f"at most {MAX_IDS} ids per list_model_items call, got {len(id_list)}")
             params["ids"] = id_list
@@ -544,9 +580,20 @@ class RevitQueryExecutor:
             raise RevitQueryError(message)
         return parse_model_items(resp.result)
 
-    async def _offered(self, kind: str, **params) -> ModelItems | None:
-        """``list_model_items`` when the add-in offers it; None for the caller's fallback."""
-        if not await self.offers_list_model_items():
+    async def _offered(self, kind: str, *, definite: bool = False, **params) -> ModelItems | None:
+        """``list_model_items`` when the add-in offers it; None for the caller's fallback.
+
+        ``definite``: the fallback may only stand in when the add-in definitely does not offer
+        the method; a capability that could not be read (timeout, error) raises RevitQueryError
+        instead. Checking a pick by id needs this: the fallback lists fewer types than the
+        method, so a pick it does not see would read as "not found". A transport failure
+        raises either way.
+        """
+        caps = await capabilities_of(self.client)
+        if definite and caps.state == UNKNOWN:
+            raise RevitQueryError(f"the add-in's capabilities could not be read "
+                                  f"({caps.error_kind or 'unknown'}: {caps.reason}); {kind} not checked")
+        if not model_items_offered(caps):
             return None
         try:
             return await self.list_model_items(kind, **params)
@@ -555,8 +602,8 @@ class RevitQueryExecutor:
 
     async def get_link_rows(self, ids: list[int] | None = None) -> ModelItems:
         """RevitLinkInstance rows (list_model_items ``links``, else the LINKS_CODE block); with
-        ``ids`` only those."""
-        data = await self._offered("links", ids=ids)
+        ``ids`` only those, and an unreadable capability raises (see ``_offered``)."""
+        data = await self._offered("links", definite=ids is not None, ids=ids)
         if data is None:
             data = parse_model_items(await self._code_dict(LINKS_CODE))
         return data if ids is None else only_ids(data, ids, "Id")
@@ -567,17 +614,30 @@ class RevitQueryExecutor:
         data = await self._offered("type_categories")
         return data if data is not None else parse_model_items(await self._code_dict(TYPE_CATEGORIES_CODE))
 
+    async def get_type_rows(self, category: str) -> ModelItems:
+        """The types of one category, for a picker: list_model_items ``types`` (rows with
+        ``BuiltInCategory``, and the add-in's warnings), else ``get_available_family_types``."""
+        if not CATEGORY_RE.fullmatch(category):
+            raise ValueError(f"invalid category {category!r}: expected an OST_* name")
+        data = await self._offered("types", category=category)
+        if data is None:
+            data = ModelItems(rows=[t for t in await self.get_family_types([category], strict=True)
+                                    if isinstance(t, dict)])
+        return data
+
     async def get_levels_by_id(self, ids: list[int]) -> ModelItems:
-        """The level rows with these ids: list_model_items ``levels`` with ``ids``, else ``get_levels``."""
-        data = await self._offered("levels", ids=list(ids))
+        """The level rows with these ids: list_model_items ``levels`` with ``ids``, else ``get_levels``;
+        an unreadable capability raises."""
+        data = await self._offered("levels", definite=True, ids=list(ids))
         if data is None:
             data = ModelItems(rows=[r for r in await self.get_levels(strict=True) if isinstance(r, dict)])
         return only_ids(data, ids, "Id")
 
     async def get_types_by_id(self, ids: list[int]) -> ModelItems:
         """The type rows with these ids, any category: list_model_items ``types`` with ``ids``,
-        else what ``get_available_family_types`` lists without a category."""
-        data = await self._offered("types", ids=list(ids))
+        else (only on an add-in that definitely lacks the method) what ``get_available_family_types``
+        lists without a category; an unreadable capability raises."""
+        data = await self._offered("types", definite=True, ids=list(ids))
         if data is None:
             data = ModelItems(rows=[t for t in await self.get_family_types([], strict=True) if isinstance(t, dict)])
         return only_ids(data, ids, "FamilyTypeId")
@@ -755,8 +815,8 @@ def _link_id_arg(args: dict) -> int | None:
     raw = args.get("link_id")
     if raw is None:
         return None
-    value = int_or_none(raw)
-    if value is None or not 0 < value <= _MAX_ELEMENT_ID:
+    value = element_id_or_none(raw)
+    if value is None:
         raise ValueError(f"invalid link_id {raw!r}: expected the id of a link instance (query kind links)")
     return value
 
@@ -833,8 +893,10 @@ def _link_error(kind: str, code: str, link_id: int, link: dict | None = None,
 async def _link_or_refusal(executor: RevitQueryExecutor, kind: str,
                            link_id: int) -> tuple[dict | None, list[str], dict | None]:
     """``(link summary, warnings, None)`` for a loaded link of the open model, else
-    ``(None, [], refusal)``. The link is read with list_model_items ``links`` and ``ids``."""
-    caps = await discover(executor.client)
+    ``(None, [], refusal)``. The link is read with list_model_items ``links`` and ``ids``. A
+    transport failure raises (``capabilities_of``); any other unreadable capability is a
+    ``revit_error``, never ``unsupported_addin``."""
+    caps = await capabilities_of(executor.client)
     if caps.state == UNKNOWN:
         return None, [], {"error": "revit_error", "kind": kind,
                           "message": f"the add-in's capabilities could not be read "
@@ -854,12 +916,11 @@ async def _link_or_refusal(executor: RevitQueryExecutor, kind: str,
     return link_summary(items[0]), warnings, None
 
 
-async def _items_if_offered(executor: RevitQueryExecutor, kind: str, categories: list[str | None],
-                            link_id: int | None) -> ModelItems | None:
-    """``list_model_items`` for each category, merged; None when the add-in does not offer it
-    (always asked when ``link_id`` is given: the caller has checked the capability)."""
-    if link_id is None and not await executor.offers_list_model_items():
-        return None
+async def _linked_items(executor: RevitQueryExecutor, kind: str, categories: list[str | None],
+                        link_id: int) -> ModelItems | None:
+    """``list_model_items`` with ``link_id`` for each category, merged; None when the method
+    turned out to be missing. Only for linked reads: the caller has checked the capability, and
+    the reads without ``link_id`` keep their 0.8.2 path."""
     merged = ModelItems(rows=[])
     try:
         for category in categories:
@@ -887,21 +948,19 @@ def _finish(reply: dict, data: ModelItems, link: dict | None, link_warnings: lis
 
 async def _q_levels(executor: RevitQueryExecutor, args: dict) -> dict:
     link_id = _link_id_arg(args)
-    link, link_warnings = None, []
-    if link_id is not None:
-        link, link_warnings, refusal = await _link_or_refusal(executor, "levels", link_id)
-        if refusal is not None:
-            return refusal
-    data = await _items_if_offered(executor, "levels", [None], link_id)
-    if data is None:
-        if link_id is not None:
-            return unsupported_addin("levels")
-        # an add-in without list_model_items: the path this kind always took
+    if link_id is None:
+        # the 0.8.2 path on every add-in: the same request, the same reply
         items = [
             {"id": lv.get("Id"), "name": lv.get("Name", ""), "elevation_mm": lv.get("ElevationMm", 0.0)}
             for lv in await executor.get_levels(strict=True)
         ]
         return {"kind": "levels", "items": items}
+    link, link_warnings, refusal = await _link_or_refusal(executor, "levels", link_id)
+    if refusal is not None:
+        return refusal
+    data = await _linked_items(executor, "levels", [None], link_id)
+    if data is None:
+        return unsupported_addin("levels")
     items = [{"id": lv.get("Id"), "name": lv.get("Name", ""), "elevation_mm": lv.get("ElevationMm")}
              for lv in data.rows]
     return _finish({"kind": "levels", "items": items}, data, link, link_warnings)
@@ -941,7 +1000,7 @@ async def _q_type_categories(executor: RevitQueryExecutor, args: dict) -> dict:
         link, link_warnings, refusal = await _link_or_refusal(executor, "type_categories", link_id)
         if refusal is not None:
             return refusal
-        data = await _items_if_offered(executor, "type_categories", [None], link_id)
+        data = await _linked_items(executor, "type_categories", [None], link_id)
         if data is None:
             return unsupported_addin("type_categories")
     items, warnings = type_category_items(data)
@@ -966,19 +1025,18 @@ def _type_item(t: dict) -> dict:
 async def _q_family_types(executor: RevitQueryExecutor, args: dict) -> dict:
     categories = _categories_arg(args)
     link_id = _link_id_arg(args)
-    link, link_warnings = None, []
-    if link_id is not None:
-        link, link_warnings, refusal = await _link_or_refusal(executor, "family_types", link_id)
-        if refusal is not None:
-            return refusal
-    data = await _items_if_offered(executor, "types", list(categories), link_id)
-    if data is None:
-        if link_id is not None:
-            return unsupported_addin("family_types")
-        # an add-in without list_model_items: the path this kind always took
+    if link_id is None:
+        # the 0.8.2 path on every add-in: one get_available_family_types call for all categories,
+        # its order kept (one list_model_items call per category would reorder a multi-category reply)
         items = [_type_item(t) for t in await executor.get_family_types(categories, strict=True)
                  if isinstance(t, dict)]
         return {"kind": "family_types", "categories": categories, "items": items}
+    link, link_warnings, refusal = await _link_or_refusal(executor, "family_types", link_id)
+    if refusal is not None:
+        return refusal
+    data = await _linked_items(executor, "types", list(categories), link_id)
+    if data is None:
+        return unsupported_addin("family_types")
     reply = {"kind": "family_types", "categories": categories, "items": [_type_item(t) for t in data.rows]}
     return _finish(reply, data, link, link_warnings)
 

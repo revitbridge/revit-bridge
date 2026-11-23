@@ -38,12 +38,16 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 
 from revit_bridge.snapshot.query import (
     CATEGORY_RE,
     MAX_QUERY_LIMIT,
+    ModelItemsError,
+    RevitQueryError,
     RevitQueryExecutor,
     _type_name,
+    element_id_or_none,
     int_or_none,
     link_items,
     run_query,
@@ -52,7 +56,9 @@ from revit_bridge.snapshot.query import (
 MENTION_KINDS = ("level", "type", "link")
 MAX_MENTIONS = 20                   # the host's ChatRequest takes at most this many
 DEFAULT_MENTION_LIMIT = 50
-_MAX_NAME = 120                     # a longer name is cut in the text block
+# A name in the text block is at most this many characters AFTER escaping, quotes not counted
+# (so a name full of escapes cannot grow past it); the block is bounded by MAX_MENTIONS items.
+_MAX_NAME = 120
 
 __all__ = [
     "DEFAULT_MENTION_LIMIT",
@@ -163,7 +169,7 @@ async def mention_candidates(executor: RevitQueryExecutor, kind: str, category: 
 
     if category is not None:
         category = category.strip()
-        reply = await run_query(executor, "family_types", {"categories": [category]})
+        reply = await _type_candidates(executor, category)
     else:
         reply = await run_query(executor, {"level": "levels", "link": "links", "type": "type_categories"}[kind])
     if "error" in reply:
@@ -175,7 +181,7 @@ async def mention_candidates(executor: RevitQueryExecutor, kind: str, category: 
     elif category is None:
         items = [_category_item(row) for row in reply["items"]]
     else:
-        items = [_type_item(t.get("id"), t.get("family"), t.get("name"), t.get("category"), category)
+        items = [_type_item(t.get("FamilyTypeId"), t.get("FamilyName"), _type_name(t), t.get("Category"), category)
                  for t in reply["items"]]
     items = [item for item in items if item is not None]
     needle = (q or "").strip().casefold()
@@ -188,14 +194,33 @@ async def mention_candidates(executor: RevitQueryExecutor, kind: str, category: 
     return out
 
 
+async def _type_candidates(executor: RevitQueryExecutor, category: str) -> dict:
+    """The types of one category as raw rows: list_model_items when the add-in offers it (every
+    type of the category, with warnings), else ``get_available_family_types``; errors as replies."""
+    try:
+        data = await executor.get_type_rows(category)
+    except ValueError as exc:
+        return {"error": "invalid_args", "kind": "type", "message": str(exc)}
+    except ModelItemsError as exc:
+        return exc.reply("type")
+    except RevitQueryError as exc:
+        return {"error": "revit_error", "kind": "type", "message": str(exc)}
+    reply = {"items": data.rows, "warnings": list(data.warnings)}
+    if data.truncated:
+        reply["truncated"] = True
+    return reply
+
+
 # -- resolution -------------------------------------------------------------------------------
 
 def _normalise(mention) -> tuple[str | None, int | None]:
+    """``(kind, id)``; the id None when it is not an element id (a whole number in 1..2**63-1:
+    no bool, no 1.9, no 1e30): such a mention is ``invalid`` and never reaches the add-in."""
     if not isinstance(mention, dict):
         return None, None
     kind = mention.get("kind")
-    mention_id = int_or_none(mention.get("id"))
-    if kind not in MENTION_KINDS or mention_id is None or mention_id <= 0:
+    mention_id = element_id_or_none(mention.get("id"))
+    if kind not in MENTION_KINDS or mention_id is None:
         return (kind if isinstance(kind, str) else None), None
     return kind, mention_id
 
@@ -205,13 +230,16 @@ async def resolve_mentions(executor: RevitQueryExecutor, mentions: list) -> dict
     ``{"resolved": [...], "not_found": [...], "warnings": [...]}``.
 
     One read per kind mentioned, by id: list_model_items with ``ids`` when the
-    add-in offers it, else the old reads (levels and links through send_code,
-    types through ``get_available_family_types``). A resolved item is the
-    candidate item plus what the text block needs: ``elevation_mm`` (level);
-    ``document_title``, ``origin_mm``, ``rotated`` (link). Duplicates are
-    checked once. ``warnings`` are the add-in's lines about rows it could not
-    read. More than MAX_MENTIONS raises ValueError; a read that failed raises
-    RevitQueryError.
+    add-in offers it, else - only when the add-in definitely lacks the method -
+    the old reads (levels and links through send_code, types through
+    ``get_available_family_types``). An add-in whose capability could not be
+    read raises RevitQueryError rather than reporting a pick "not found"; a
+    transport failure raises as it is. A resolved item is the candidate item
+    plus what the text block needs: ``elevation_mm`` (level);
+    ``document_title``, ``origin_mm``, ``rotated`` (link). An id that is not an
+    element id is ``invalid`` and the other mentions are still checked.
+    Duplicates are checked once. ``warnings`` are the add-in's lines about rows
+    it could not read. More than MAX_MENTIONS raises ValueError.
     """
     if not isinstance(mentions, list):
         raise ValueError("mentions must be a list of {kind, id}")
@@ -302,12 +330,38 @@ _BLOCK = {
 }
 
 
+def _escaped(ch: str) -> str:
+    """One character as it goes inside a JSON string literal: quote and backslash escaped, and every
+    control, format, separator, surrogate, private-use or unassigned character as ``\\uXXXX``."""
+    if ch in '"\\':
+        return "\\" + ch
+    if unicodedata.category(ch)[0] == "C" or unicodedata.category(ch) in ("Zl", "Zp"):
+        return json.dumps(ch)[1:-1]                  # ensure_ascii: \\uXXXX (a surrogate pair above BMP)
+    return ch
+
+
 def _quote(text) -> str:
-    """A name as a JSON string literal: quotes, backslashes and line breaks cannot end the block."""
-    text = re.sub(r"\s+", " ", str(text or "")).strip()
-    if len(text) > _MAX_NAME:
-        text = text[:_MAX_NAME - 3] + "..."
-    return json.dumps(text, ensure_ascii=False)
+    """A name as a JSON string literal that cannot end the block or hide text: runs of whitespace
+    (line and paragraph separators included) become one space, then every character that is not
+    plain text is escaped; at most _MAX_NAME characters between the quotes, counted after
+    escaping, a cut name ending in ``...``."""
+    text = re.sub(r"\s+", " ", str(text if text is not None else "")).strip()
+    pieces = [_escaped(ch) for ch in text]
+    if sum(len(p) for p in pieces) > _MAX_NAME:
+        kept, size = [], 0
+        for piece in pieces:
+            if size + len(piece) > _MAX_NAME - 3:
+                break
+            kept.append(piece)
+            size += len(piece)
+        pieces = kept + ["..."]
+    return '"' + "".join(pieces) + '"'
+
+
+def _shown_id(value) -> str:
+    """An id for the block: the number, or the value quoted when it is not an element id."""
+    number = element_id_or_none(value)
+    return str(number) if number is not None else _quote(value)
 
 
 def mention_block(resolved: list[dict], language: str = "zh") -> str:
@@ -323,18 +377,18 @@ def mention_block(resolved: list[dict], language: str = "zh") -> str:
         kind = item.get("kind")
         if kind == "level":
             mm = _mm(item.get("elevation_mm"))
-            parts.append(table["level"].format(name=_quote(item.get("name")), id=item.get("id"),
+            parts.append(table["level"].format(name=_quote(item.get("name")), id=_shown_id(item.get("id")),
                                                elevation=table["comma"] + mm if mm else ""))
         elif kind == "type":
             family = item.get("family")
             category = item.get("category") or item.get("detail")
             parts.append(table["type"].format(
-                name=_quote(item.get("name")), id=item.get("id"),
+                name=_quote(item.get("name")), id=_shown_id(item.get("id")),
                 family=table["family"].format(family=_quote(family)) if family else "",
                 category=table["category"].format(category=_quote(category)) if category else ""))
         elif kind == "link":
             parts.append(table["link"].format(name=_quote(item.get("label") or item.get("name")),
-                                              id=item.get("id")))
+                                              id=_shown_id(item.get("id"))))
     if not parts:
         return ""
     return table["head"] + table["sep"].join(parts) + table["end"]
