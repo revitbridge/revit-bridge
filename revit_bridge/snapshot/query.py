@@ -147,6 +147,13 @@ return new { Success = true, Items = items, Warnings = warnings };"""
 # old ``get_available_family_types`` lists (family symbols and five system type
 # classes), so every category offered here can be listed by ``family_types``;
 # ordered by display name as list_model_items orders them.
+#
+# The category id is turned into the enum with Enum.ToObject and that enum value
+# is what Enum.IsDefined tests (as the add-in's TryGetBuiltInCategoryName does):
+# BuiltInCategory is a 32-bit enum before Revit 2024 and a 64-bit one from 2024,
+# and IsDefined throws when given a boxed number of the other width (a boxed int
+# against the 64-bit enum failed every type on Revit 2026). ``cat.Id.Value``
+# keeps the block on Revit 2024 and later, like every other template here.
 TYPE_CATEGORIES_CODE = """\
 var warnings = new List<string>();
 var counts = new Dictionary<string, int>();
@@ -160,11 +167,14 @@ foreach (var t in types) {
         var cat = t.Category;
         if (cat == null) continue;
         long raw = cat.Id.Value;
-        if (raw < int.MinValue || raw > int.MaxValue || !Enum.IsDefined(typeof(BuiltInCategory), (int)raw)) {
+        BuiltInCategory bic = BuiltInCategory.INVALID;
+        if (raw >= int.MinValue && raw <= int.MaxValue)
+            bic = (BuiltInCategory)Enum.ToObject(typeof(BuiltInCategory), raw);
+        if (bic == BuiltInCategory.INVALID || !Enum.IsDefined(typeof(BuiltInCategory), bic)) {
             if (warnings.Count < 100) warnings.Add("category " + raw + " (" + cat.Name + ") is not a built-in category");
             continue;
         }
-        string key = ((BuiltInCategory)(int)raw).ToString();
+        string key = bic.ToString();
         int n;
         counts.TryGetValue(key, out n);
         counts[key] = n + 1;

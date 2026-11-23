@@ -284,6 +284,65 @@ def test_new_kinds_check_their_args_and_report_revit_errors():
         assert reply == {"error": "revit_error", "kind": kind, "message": "no document open"}
 
 
+# -- the C# blocks: nothing that depends on the width of an enum or an id -----------------------------
+
+def _csharp_blocks():
+    """Every C# text the package sends from query.py and the snapshot: the constants, and the
+    blocks the executor builds, with and without a link."""
+    from revit_bridge.snapshot import project, query
+
+    blocks = {"LEVELS_CODE": query.LEVELS_CODE, "LINKS_CODE": query.LINKS_CODE,
+              "TYPE_CATEGORIES_CODE": query.TYPE_CATEGORIES_CODE, "SNAPSHOT_CODE": project.SNAPSHOT_CODE}
+    for name, (kind, args) in {"elements": ("elements", {"category": "OST_Walls", "limit": 5}),
+                               "counts": ("counts", {"categories": ["OST_Walls", "OST_IOS_GeoSite"]})}.items():
+        _, requests = ask_requests(NEW, kind, args)
+        blocks[name] = requests[-1]["params"]["code"]
+        _, requests = ask_requests(NEW, kind, dict(args, link_id=501))
+        blocks[name + " in a link"] = requests[-1]["params"]["code"]
+    return blocks
+
+
+def test_no_csharp_block_tests_a_boxed_number_against_builtincategory():
+    """Revit 2026: Enum.IsDefined(typeof(BuiltInCategory), (int)raw) threw for every type (the enum
+    is 64-bit from 2024, 32-bit before). The value tested must be the enum itself, made with
+    Enum.ToObject or declared BuiltInCategory; no int cast of an id; no IntegerValue (gone in 2026)."""
+    blocks = _csharp_blocks()
+    assert "in a link" in " ".join(blocks) and len(blocks) == 8
+    for name, code in blocks.items():
+        assert not re.search(r"IsDefined\(\s*typeof\(BuiltInCategory\)\s*,\s*\(\s*(int|long)\s*\)", code), name
+        for arg in re.findall(r"IsDefined\(\s*typeof\(BuiltInCategory\)\s*,\s*([^)]+?)\s*\)", code):
+            assert re.fullmatch(r"[A-Za-z_]\w*", arg), (name, arg)
+            assert re.search(rf"\bBuiltInCategory\s+{arg}\s*=", code), (name, arg)
+        assert "IntegerValue" not in code, name
+        assert not re.search(r"\(int\)\s*[\w.]*(Id|\.Value)\b", code), name
+    code = blocks["TYPE_CATEGORIES_CODE"]
+    assert "bic = (BuiltInCategory)Enum.ToObject(typeof(BuiltInCategory), raw);" in code
+    assert "!Enum.IsDefined(typeof(BuiltInCategory), bic)" in code
+    # the guard itself catches the Revit 2026 failure
+    broken = "long raw = 1; if (!Enum.IsDefined(typeof(BuiltInCategory), (int)raw)) return null;"
+    assert re.search(r"IsDefined\(\s*typeof\(BuiltInCategory\)\s*,\s*\(\s*(int|long)\s*\)", broken)
+
+
+def test_the_category_the_real_session_dropped_is_accepted():
+    """OST_IOS_GeoSite has an underscore after OST_: refused by the old pattern, accepted now."""
+    assert CATEGORY_RE.fullmatch("OST_IOS_GeoSite")
+    for with_method in (True, False):
+        model = FakeModel(list_model_items=with_method)
+        model.model["types"]["OST_IOS_GeoSite"] = [
+            {"FamilyTypeId": 441, "UniqueId": "u-441", "FamilyName": "Site", "TypeName": "Default",
+             "Category": "Project Base Point", "BuiltInCategory": "OST_IOS_GeoSite"}]
+        model.model["old_command_categories"].append("OST_IOS_GeoSite")
+        model.model["category_names"]["OST_IOS_GeoSite"] = "Project Base Point"
+        reply, _ = ask(model, "type_categories")
+        assert {"category": "OST_IOS_GeoSite", "display_name": "Project Base Point", "count": 1} in reply["items"]
+        assert reply["warnings"] == [], with_method
+        reply, _ = ask(model, "family_types", {"categories": ["OST_IOS_GeoSite"]})
+        assert [i["id"] for i in reply["items"]] == [441], with_method
+        reply, requests = ask_requests(model, "counts", {"categories": ["OST_IOS_GeoSite"]})
+        assert reply["items"] == [{"category": "OST_IOS_GeoSite", "count": 0}]
+        assert 'new string[] { "OST_IOS_GeoSite" }' in requests[-1]["params"]["code"]
+
+
 # -- category names ------------------------------------------------------------------------------
 
 def test_category_names_take_letters_digits_and_underscores_and_nothing_else():
