@@ -112,7 +112,9 @@ def test_unknown_kind_and_bad_args_never_reach_revit():
 
     out, fake = ask("levels", {"category": "OST_Walls"})
     assert out["error"] == "invalid_args" and "unexpected args ['category']" in out["message"]
-    assert out["allowed"] == [] and fake.requests == []
+    assert out["allowed"] == ["link_id"] and fake.requests == []
+    out, fake = ask("grids", {"link_id": 501})
+    assert out["error"] == "invalid_args" and out["allowed"] == [] and fake.requests == []
 
     out, fake = ask("elements", {"category": "OST_Walls; System.IO.File.Delete"})
     assert out["error"] == "invalid_args" and "invalid category" in out["message"] and fake.requests == []

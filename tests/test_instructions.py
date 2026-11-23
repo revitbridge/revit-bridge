@@ -393,6 +393,263 @@ def test_a_contract_that_does_not_load_falls_back_with_a_warning(tmp_path, monke
         assert len(lines(text)) <= 60
 
 
+# -- B1 (hostv2): the default host text is pinned; variants without code, with selections, per role --
+
+# host_instructions() as released in 0.8.2 (origin/main 9cd3b13), byte for byte.
+HOST_0_8_2 = """\
+You are connected to a running Autodesk Revit through revit-bridge 0.8. The server
+runs capability packs and C# in Revit; it never calls a model. You turn the
+designer's words into a TaskSpec in which every parameter has a source, get it
+confirmed by the designer in this host's interface, and report what the validator found.
+
+## Flow (always, in this order)
+1. get_project_snapshot - document, units, levels, grids, types, selection, `fingerprint`.
+2. query(kind, args) for any other read: levels, grids, family_types, elements,
+   selection, view_elements, units, counts. No token. Never write C# for a read.
+3. list_tools, then missing_params(tool, known) - the questions still open, with
+   the real options (levels, types). Ask the designer all of them in one round.
+   Never re-ask what is known; `model_fact`: query first; pause only what `blocks` lists.
+   An answer is source answer; a changed request voids what it touched: reconcile again.
+4. reconcile(spec, snapshot) - a draft TaskSpec against the model: values that do
+   not exist, ambiguous names, units and range words to confirm, stale snapshot.
+   Repeat until `ready` is true.
+5. Show the spec card; wait for an explicit yes.
+6. propose_spec(spec) -> {accepted, errors, reconcile}. Errors name the rule:
+   missing_param, no_evidence, unsourced_choice, guessed_value,
+   default_not_declared, bad_preference_ref, unconfirmed_interpretation,
+   blocked_code. Fix the spec and propose again until it is accepted.
+7. Confirmation and execution happen in this host's interface: the designer
+   confirms the card there and the host runs exactly what was confirmed. You
+   have no confirm_spec, run_tool or execute_code; you only propose the spec.
+8. The execution comes back to you as a message from the host. `success` is
+   true only when Revit succeeded AND the pack's validator passed;
+   validation_failed means the model did not change as claimed. Quote
+   `validation.checks`, `error` and `evidence_id`, and report only what that
+   message says.
+
+## TaskSpec
+{task, action: {kind: run_tool|execute_code, tool|code}, parameters: [{name, value,
+unit?, source, evidence}], interpretations: [{param?, text, confirmed}],
+snapshot_fingerprint, language}. Sources: designer (evidence = their words), tool
+(evidence = "tool:<name>"), answer (evidence = question id), preference (evidence =
+"preference:<name>"), default (evidence = "default:<tool>", only when the pack
+declares one). A number without a unit for a parameter that has one, or a range
+word such as "on F2", is an interpretation the designer must confirm.
+
+## Never
+- Guess a level, type, element id or coordinate: query, then ask.
+- Set a value "for now", "as usual" or "probably": it is a question.
+- Claim success on an error or on a failed validation; do not soften errors.
+- Say that anything was executed before the host reports an execution result.
+
+## Notes
+- Revit internal units are feet; packs take millimetres. Read-only tools also run
+  in a transaction on the add-in: they fail on a read-only document.
+- Snippet contract (execute_code): a method body with `document` and `parameters`
+  (object[]) in scope, already inside a transaction (never open one); usings
+  System, System.Linq, System.Collections.Generic, Autodesk.Revit.DB,
+  Autodesk.Revit.UI; references only the base library, RevitAPI and RevitAPIUI
+  (no JSON library); IO, Process, Assembly, DllImport, File, Registry, reflection
+  and threading are refused; end with `return <object>;`; categories are OST_*.
+"""
+# server_instructions() of 0.8.2: sha256 of its UTF-8 bytes.
+SERVER_0_8_2_SHA256 = "0be951bd4eb5f63a994dc4a699db14f6c6012063cdcc423f85c3c5441aad3d6d"
+
+CODE_WORDS = ("C#", "execute_code", "Snippet contract", "snippet", "get_guidance", "check_code", "blocked_code",
+              "dry_run", "solidify", "`code`", "|code")
+
+
+def _variants():
+    yield {}, host_instructions()
+    for code in (True, False):
+        for mentions in (False, True):
+            yield {"code": code, "mentions": mentions}, host_instructions(code=code, mentions=mentions)
+        for role in ("analyst", "planner", "supervisor"):
+            yield {"role": role, "code": code}, host_instructions(role=role, code=code)
+
+
+def test_the_default_host_text_is_byte_for_byte_the_0_8_2_text():
+    import hashlib
+
+    assert host_instructions() == HOST_0_8_2
+    assert host_instructions(None, True, False) == HOST_0_8_2
+    assert host_instructions(role=None, code=True, mentions=False) == HOST_0_8_2
+    assert revit_bridge.host_instructions() == HOST_0_8_2
+    assert hashlib.sha256(server_instructions().encode("utf-8")).hexdigest() == SERVER_0_8_2_SHA256
+
+
+def test_every_variant_keeps_the_budget_and_the_heading_rule():
+    for args, text in _variants():
+        rendered = lines(text)
+        assert text.strip() and len(rendered) <= 60, args
+        for i, line in enumerate(rendered):
+            if line.startswith("## "):
+                assert rendered[i + 1].strip(), (args, line)          # no blank line under a heading
+        assert "revit-bridge 0.8" in text, args
+
+
+def test_without_code_there_is_no_code_writing_and_no_get_guidance():
+    for args, text in _variants():
+        if args.get("code") is False:
+            for word in CODE_WORDS:
+                assert word not in text, (args, word)
+    full = host_instructions(code=False)
+    assert "{kind: run_tool, tool}" in full
+    assert "- Write code: if no tool fits, say that no existing tool can do it." in full
+    assert "have no confirm_spec or run_tool; you only propose the spec." in full
+    assert "unconfirmed_interpretation.\n   Fix the spec" in full
+    assert "Never write C# for a read." in host_instructions(mentions=True)
+    assert SNIPPET_NOTE_START in host_instructions(mentions=True)
+    assert SNIPPET_NOTE_START in host_instructions(role="planner")
+    assert "Never offer to write code." in host_instructions(role="analyst", code=False)
+    assert "Never offer to write code." not in host_instructions(role="analyst")
+
+
+SNIPPET_NOTE_START = "- Snippet contract (execute_code): "
+
+
+def test_the_variants_share_the_default_steps_verbatim():
+    default = host_instructions()
+    step3 = default[default.index("3. list_tools"):default.index("4. reconcile(")]
+    step4 = default[default.index("4. reconcile("):default.index("5. Show the spec card")]
+    for args, text in _variants():
+        if args.get("role") in (None, "planner"):
+            assert step3 in text and step4 in text, args
+            extended = LINK_STEP in " ".join(text.split())
+            assert extended is (text != HOST_0_8_2), args            # every variant but the default
+            assert '"on F2", is an interpretation the designer must confirm.' in text, args
+
+
+# Step 2 of every variant: the kinds link_id reads, type_categories included, and the rule that ids
+# read through a link are the link's (section 3 of the B1 review).
+LINK_STEP = ("links, type_categories. With args.link_id (a picked link's id) levels, family_types, elements, "
+             "counts, type_categories read that link; its ids are not the open model's: never pass them to a tool.")
+
+SELECTIONS_RULE = ('Picks in "Designer\'s selections": value = the name, evidence "mention:<kind>#<id>", source '
+                   'tool if the pack parameter has choices_from or tool:* source, else designer; never re-ask.')
+
+
+def test_the_selections_rule_only_where_asked():
+    assert "Designer's selections" not in host_instructions()
+    for text in (host_instructions(mentions=True), host_instructions(code=False, mentions=True),
+                 host_instructions(role="planner"), host_instructions(role="planner", code=False)):
+        section = text[text.index("## Designer's selections"):text.index("## Never")]
+        assert SELECTIONS_RULE in " ".join(section.split())
+        assert LINK_STEP in " ".join(text.split())                       # a picked link: args.link_id
+    assert "## Designer's selections" not in host_instructions(code=False)
+    assert "every value in the selections block, is known" in host_instructions(role="analyst")
+
+
+def test_the_planner_and_the_link_note_say_link_ids_are_not_the_open_models():
+    from revit_bridge.snapshot.query import LINK_NOTE
+
+    for code in (True, False):
+        flat = " ".join(host_instructions(role="planner", code=code).split())
+        assert "its ids are not the open model's: never pass them to a tool." in flat, code
+        assert "levels, family_types, elements, counts, type_categories read that link" in flat, code
+    assert "ids read through link_id belong to the linked document" in LINK_NOTE
+    assert "must not be passed to tools that act on the open model" in LINK_NOTE
+
+
+def _wall_spec(level_source: str, level_evidence: str, **start_x):
+    from revit_bridge.spec.models import TaskSpec
+
+    params = [{"name": "start_x", "value": 0, "unit": "mm", "source": "designer", "evidence": "from 0,0",
+               **start_x},
+              {"name": "start_y", "value": 0, "unit": "mm", "source": "designer", "evidence": "from 0,0"},
+              {"name": "end_x", "value": 6000, "unit": "mm", "source": "designer", "evidence": "to 6000,0"},
+              {"name": "end_y", "value": 0, "unit": "mm", "source": "designer", "evidence": "to 6000,0"},
+              {"name": "level_name", "value": "F2", "source": level_source, "evidence": level_evidence}]
+    return TaskSpec.model_validate({"task": "a wall on F2", "action": {"kind": "run_tool", "tool": "create_wall"},
+                                    "parameters": params, "interpretations": [],
+                                    "snapshot_fingerprint": "0" * 16, "language": "en"})
+
+
+def test_the_selections_rule_is_the_rule_validate_spec_applies():
+    """Section 2.4 as amended, pinned against spec/rules.py: a picked level bound to create_wall's
+    level_name (choices_from: levels) is source tool with the mention as evidence; source designer
+    there is still unsourced_choice; a designer-sourced parameter takes source designer."""
+    from revit_bridge.capabilities.store import ToolStore
+    from revit_bridge.spec.rules import validate_spec
+
+    pack = ToolStore().load("create_wall")
+    level = next(p for p in pack.parameters if p["name"] == "level_name")
+    assert level.get("choices_from") == "levels" and str(level.get("source")).startswith("tool:")
+    codes = [(e.code, e.param) for e in validate_spec(_wall_spec("tool", "mention:level#312"), pack)]
+    assert ("unsourced_choice", "level_name") not in codes and codes == []
+    codes = [(e.code, e.param) for e in validate_spec(_wall_spec("designer", "mention:level#312"), pack)]
+    assert codes == [("unsourced_choice", "level_name")]
+    # a parameter the pack declares designer-sourced: source designer with a mention as evidence
+    spec = _wall_spec("tool", "mention:level#312", evidence="mention:level#312")
+    assert validate_spec(spec, pack) == []
+
+
+def test_the_analyst_routes_with_one_json_object_and_no_tools():
+    text = host_instructions(role="analyst")
+    for route in ("- chat:", "- query:", "- tool:", "- none:"):
+        assert route in text, route
+    assert ('{"route": "chat" | "query" | "tool" | "none", "tool": "<name>", "facts_needed": ["..."], '
+            '"note": "..."}') in text
+    assert "Your reply is exactly one JSON object and nothing else, no text before or after it:" in text
+    assert "you call no tools" in text
+    flat = " ".join(text.split())
+    assert ("`note`: with chat and none, the reply the host shows the designer, in their language; "
+            "with query and tool, at most two sentences for the next step.") in flat
+    assert "`note` tells the designer that no existing tool does it and what is missing." in flat
+    for call in ("propose_spec", "missing_params", "reconcile(", "query(", "get_project_snapshot", "list_tools"):
+        assert call not in text, call
+    assert len(text) < len(host_instructions()) / 2
+
+
+def test_the_planner_reads_fills_and_proposes_and_reports_errors_as_they_are():
+    for code in (True, False):
+        text = host_instructions(role="planner", code=code)
+        for part in ("get_project_snapshot", "query(kind, args)", "missing_params(tool, known)",
+                     "reconcile(spec, snapshot)", "5. propose_spec(spec)",
+                     "6. Confirmation and execution happen in this host's interface",
+                     "the analyst's routing {route, tool?, facts_needed, note}", "## TaskSpec", "## Notes",
+                     # it answers query-route requests itself and sees query errors
+                     "- Claim success on an error or on a failed validation; do not soften errors."):
+            assert part in text, (code, part)
+        assert [int(m) for m in re.findall(r"^(\d)\. ", text, flags=re.M)] == [1, 2, 3, 4, 5, 6]
+        for absent in ("Show the spec card", "comes back to you", "validation.checks"):
+            assert absent not in text, (code, absent)
+
+
+def test_the_supervisor_reports_faithfully_and_answers_with_one_verdict_object():
+    text = host_instructions(role="supervisor")
+    assert text == host_instructions(role="supervisor", code=False)      # nothing about code to leave out
+    flat = " ".join(text.split())
+    for part in ("`success` is true only when Revit succeeded AND the pack's validator passed",
+                 "validation_failed means the model did not change as claimed",
+                 "`validation.checks`, `error` and `evidence_id`", "at most twice", "ask the designer",
+                 "Claim success on an error or on a failed validation",
+                 "query(kind, args) may check a fact in the model; it only reads.",
+                 "Your reply is exactly one JSON object and nothing else, no text before or after it:",
+                 '{"verdict": "done" | "retry" | "ask", "report": "...", "fix": "...", "question": "..."}',
+                 "`report`: what happened, for the designer, in their language, faithful to the result and "
+                 "the validator.",
+                 "- done: Revit succeeded and the validator passed.",
+                 "- retry: it failed and a different parameter value or tool choice can fix it",
+                 "`fix` says what the planner should change.",
+                 "- ask: anything else, after the second retry, or a validator failure you cannot explain "
+                 "(never done). `question` is what to ask the designer",
+                 "- `fix` only with retry, `question` only with ask."):
+        assert part in flat, part
+    for verdict in ('"done"', '"retry"', '"ask"'):
+        assert verdict in text, verdict
+    for key in ('"verdict"', '"report"', '"fix"', '"question"'):
+        assert key in text, key
+    for absent in ("propose_spec(", "missing_params", "reconcile(", "## TaskSpec"):
+        assert absent not in text, absent
+    assert len(text) < len(host_instructions()) / 2
+
+
+def test_an_unknown_role_is_refused():
+    with pytest.raises(ValueError, match="unknown role 'executor'"):
+        host_instructions(role="executor")
+
+
 def test_load_contract_reports_what_is_wrong(tmp_path):
     from revit_bridge.guidance import GuidanceError, load_contract
     from tests.test_guidance import lesson
