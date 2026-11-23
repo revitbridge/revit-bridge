@@ -257,13 +257,16 @@ _HOST_STEPS = _steps(_FLOW_TAIL["host"])         # 6 propose_spec, 7 the host co
 
 
 def _query_step(code: bool) -> str:
-    """Step 2 with the kinds added after 0.8.2 (links, type_categories, args.link_id)."""
+    """Step 2 with the kinds added after 0.8.2 (links, type_categories, args.link_id) and the rule
+    that ids read through a link are the link's, not the open model's."""
     step = """\
-2. query(kind, args) for any other read: levels, grids, family_types, elements, selection,
-   view_elements, units, counts, links, type_categories; args.link_id reads a linked
-   model (levels, family_types, elements, counts). No token.
+2. query(kind, args) for any other read, no token: levels, grids, family_types, elements,
+   selection, view_elements, units, counts, links, type_categories. With args.link_id (a
+   picked link's id) levels, family_types, elements, counts, type_categories read that link;
+   its ids are not the open model's: never pass them to a tool.
 """
-    return _swap(step, "No token.\n", "No token. Never write C# for a read.\n") if code else step
+    return _swap(step, "never pass them to a tool.\n",
+                 "never pass them to a tool. Never write C# for a read.\n") if code else step
 
 
 def _propose_step(code: bool, number: str = "6") -> str:
@@ -296,20 +299,20 @@ _NEVER_CODE = "- Write code: if no tool fits, say that no existing tool can do i
 # Section 2.4 as amended: a picked value bound to a pack parameter that takes its value from the
 # model (choices_from / source tool:*) is source tool, any other binding source designer; the
 # evidence is the mention either way (spec/rules.py accepts exactly this).
+# (A picked link's queries carry args.link_id: step 2 says so, next to the rule on its ids.)
 _SELECTIONS = """\
 ## Designer's selections
-A "Designer's selections" block holds the designer's verified picks: value = the name,
-evidence "mention:<kind>#<id>"; source tool if the pack parameter has choices_from or a
-tool:* source, else designer. Never re-ask them; a picked link's queries carry args.link_id.
+Picks in "Designer's selections": value = the name, evidence "mention:<kind>#<id>", source
+tool if the pack parameter has choices_from or tool:* source, else designer; never re-ask.
 """
 
 _NEVER_CLAIM = "- Claim success on an error or on a failed validation; do not soften errors.\n"
 
 
-def _never(code: bool, reports: bool = True) -> str:
-    """The never-list; the planner sees no result, so it has no rule about reporting one."""
-    head = _NEVER_HEAD if reports else _swap(_NEVER_HEAD, _NEVER_CLAIM, "")
-    return head + _NEVER_TAIL["host"] + ("" if code else _NEVER_CODE)
+def _never(code: bool) -> str:
+    """The never-list (the planner keeps the reporting rule: it answers query-route requests and
+    sees query errors)."""
+    return _NEVER_HEAD + _NEVER_TAIL["host"] + ("" if code else _NEVER_CODE)
 
 
 def _notes(code: bool) -> str:
@@ -372,7 +375,7 @@ def _render_planner(code: bool) -> str:
               "start from its tool and facts_needed; list_tools decides.\n")
     flow = (_FLOW_TITLE + _HEAD_STEPS["1"] + _query_step(code) + _HEAD_STEPS["3"] + _HEAD_STEPS["4"]
             + _FLOW_CHECK["host"] + _propose_step(code, "5") + _host_confirms_step(code, "6"))
-    return "\n".join([intro, flow, _taskspec(code), _SELECTIONS, _never(code, reports=False), _notes(code)])
+    return "\n".join([intro, flow, _taskspec(code), _SELECTIONS, _never(code), _notes(code)])
 
 
 def _render_supervisor(code: bool) -> str:

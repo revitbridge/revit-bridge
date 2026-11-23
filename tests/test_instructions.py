@@ -515,14 +515,18 @@ def test_the_variants_share_the_default_steps_verbatim():
     for args, text in _variants():
         if args.get("role") in (None, "planner"):
             assert step3 in text and step4 in text, args
-            extended = "links, type_categories; args.link_id reads a linked" in text
+            extended = LINK_STEP in " ".join(text.split())
             assert extended is (text != HOST_0_8_2), args            # every variant but the default
             assert '"on F2", is an interpretation the designer must confirm.' in text, args
 
 
-SELECTIONS_RULE = ('value = the name, evidence "mention:<kind>#<id>"; source tool if the pack parameter has '
-                   'choices_from or a tool:* source, else designer. Never re-ask them; a picked link\'s queries '
-                   'carry args.link_id.')
+# Step 2 of every variant: the kinds link_id reads, type_categories included, and the rule that ids
+# read through a link are the link's (section 3 of the B1 review).
+LINK_STEP = ("links, type_categories. With args.link_id (a picked link's id) levels, family_types, elements, "
+             "counts, type_categories read that link; its ids are not the open model's: never pass them to a tool.")
+
+SELECTIONS_RULE = ('Picks in "Designer\'s selections": value = the name, evidence "mention:<kind>#<id>", source '
+                   'tool if the pack parameter has choices_from or tool:* source, else designer; never re-ask.')
 
 
 def test_the_selections_rule_only_where_asked():
@@ -531,8 +535,20 @@ def test_the_selections_rule_only_where_asked():
                  host_instructions(role="planner"), host_instructions(role="planner", code=False)):
         section = text[text.index("## Designer's selections"):text.index("## Never")]
         assert SELECTIONS_RULE in " ".join(section.split())
+        assert LINK_STEP in " ".join(text.split())                       # a picked link: args.link_id
     assert "## Designer's selections" not in host_instructions(code=False)
     assert "every value in the selections block, is known" in host_instructions(role="analyst")
+
+
+def test_the_planner_and_the_link_note_say_link_ids_are_not_the_open_models():
+    from revit_bridge.snapshot.query import LINK_NOTE
+
+    for code in (True, False):
+        flat = " ".join(host_instructions(role="planner", code=code).split())
+        assert "its ids are not the open model's: never pass them to a tool." in flat, code
+        assert "levels, family_types, elements, counts, type_categories read that link" in flat, code
+    assert "ids read through link_id belong to the linked document" in LINK_NOTE
+    assert "must not be passed to tools that act on the open model" in LINK_NOTE
 
 
 def _wall_spec(level_source: str, level_evidence: str, **start_x):
@@ -585,15 +601,19 @@ def test_the_analyst_routes_with_one_json_object_and_no_tools():
     assert len(text) < len(host_instructions()) / 2
 
 
-def test_the_planner_reads_fills_and_proposes_and_never_reports():
-    text = host_instructions(role="planner", code=False)
-    for part in ("get_project_snapshot", "query(kind, args)", "missing_params(tool, known)", "reconcile(spec, snapshot)",
-                 "5. propose_spec(spec)", "6. Confirmation and execution happen in this host's interface",
-                 "the analyst's routing {route, tool?, facts_needed, note}", "## TaskSpec", "## Notes"):
-        assert part in text, part
-    assert [int(m) for m in re.findall(r"^(\d)\. ", text, flags=re.M)] == [1, 2, 3, 4, 5, 6]
-    for absent in ("Show the spec card", "comes back to you", "Claim success", "validation.checks"):
-        assert absent not in text, absent
+def test_the_planner_reads_fills_and_proposes_and_reports_errors_as_they_are():
+    for code in (True, False):
+        text = host_instructions(role="planner", code=code)
+        for part in ("get_project_snapshot", "query(kind, args)", "missing_params(tool, known)",
+                     "reconcile(spec, snapshot)", "5. propose_spec(spec)",
+                     "6. Confirmation and execution happen in this host's interface",
+                     "the analyst's routing {route, tool?, facts_needed, note}", "## TaskSpec", "## Notes",
+                     # it answers query-route requests itself and sees query errors
+                     "- Claim success on an error or on a failed validation; do not soften errors."):
+            assert part in text, (code, part)
+        assert [int(m) for m in re.findall(r"^(\d)\. ", text, flags=re.M)] == [1, 2, 3, 4, 5, 6]
+        for absent in ("Show the spec card", "comes back to you", "validation.checks"):
+            assert absent not in text, (code, absent)
 
 
 def test_the_supervisor_reports_faithfully_and_answers_with_one_verdict_object():
