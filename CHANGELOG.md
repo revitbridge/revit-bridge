@@ -6,6 +6,22 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Fourteen basic modelling capability packs. Creation: `create_level`,
+  `create_grid`, `create_door`, `create_window`, `create_room`,
+  `create_roof_by_footprint`, `create_ceiling`, each with a `count_delta`
+  validator. On the Revit selection (at most 100 elements, every element
+  checked before any is changed): `set_parameter`, `move_elements`,
+  `delete_selected`, which read their own result back and have no validator,
+  and `change_type`, validated by `param_equals` on the type. Read only:
+  `count_by_level`, `list_types`, `elements_in_link`, at most 200 rows with
+  `Truncated` when rows were left out. Lengths are in mm; a parameter that
+  picks a level, a type, a wall or a link offers the model's choices. Every
+  refusal or error throws, so the add-in rolls its transaction back and
+  nothing is kept. Written for Revit 2021-2027; `create_ceiling` and
+  `set_parameter` need 2022 or later. The eight earlier packs are unchanged.
+
 ## [0.8.2] - 2026-11-19
 
 The journal skill reads cloud-model opens, managed exceptions and the
