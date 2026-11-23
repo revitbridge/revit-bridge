@@ -212,15 +212,18 @@ async def query(kind: str, args: dict | None = None) -> str:
     counts). args.link_id - the id of a loaded link from kind links - makes
     levels, family_types, elements, counts and type_categories read that linked
     model: the reply is in the link's own coordinates and carries the link's
-    origin and rotation. link_id needs an add-in that offers list_model_items
+    origin and rotation; the element, level and type ids in it belong to the
+    linked file and must never be passed to a tool that acts on the open model.
+    link_id needs an add-in that offers list_model_items
     ({"error": "unsupported_addin"} otherwise); unknown_link / link_not_loaded
     when the id is not a loaded link. Categories are BuiltInCategory OST_*
     names, e.g. "OST_Walls" (not "Walls"). Returns {"error": "unknown_kind",
-    "kinds": [...]} for anything else. With such an add-in, levels,
-    family_types, links and type_categories are read without a transaction;
-    the other kinds (and every kind on an older add-in) run inside a Revit
-    transaction on the add-in side: they fail on read-only documents and leave
-    an undo entry."""
+    "kinds": [...]} for anything else. With such an add-in, links,
+    type_categories and the link_id reads of levels, family_types and
+    type_categories are read without a transaction; levels, elements, counts,
+    grids, units and view_elements (and links and type_categories on an older
+    add-in) run C# inside a Revit transaction on the add-in side: they fail on
+    read-only documents and leave an undo entry."""
     try:
         client = await RevitClientPool.get_client()
         return _dumps(await run_query(RevitQueryExecutor(client), kind, args))
