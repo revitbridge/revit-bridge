@@ -45,9 +45,20 @@ Only the packaged content is read, never a configured layer. Should it fail
 to load, the generated copy in ``skills/revit-core`` is tried, then a one-line
 pointer to the lesson stands in, with a warning (``SNIPPET_CONTRACT_WARNINGS``),
 so the instructions never lose the item.
+
+``host_instructions(role=None, code=True, mentions=False)`` also renders,
+from the same pieces, the host text without code-writing (``code=False``:
+no execute_code, snippet contract or blocked_code, for a host whose model
+never writes code), with the rule for the designer's selections block
+(``mentions=True``), and one shorter text per role of a host that splits the
+work: ``analyst`` (route a message, one JSON object), ``planner`` (fill and
+propose the spec) and ``supervisor`` (read and report the execution result).
+With no arguments it returns the 0.8.2 host text unchanged.
 """
 from __future__ import annotations
 
+import re
+import textwrap
 import warnings
 from collections.abc import Iterable
 from pathlib import Path
@@ -220,6 +231,195 @@ def server_instructions() -> str:
     return _render("server")
 
 
-def host_instructions() -> str:
-    """The instructions for a host whose interface does the confirmation and execution."""
-    return _render("host")
+# -- the host variants: no code, the designer's selections, one text per role ----------------
+#
+# host_instructions() with no arguments is _render("host"), byte for byte as in
+# 0.8.2. Every variant below is cut from the same pieces (the flow steps are
+# split out of _FLOW_HEAD and _FLOW_TAIL["host"], and _swap fails at import if
+# a piece it edits has changed), so the variants cannot drift from it either.
+
+ROLES = ("analyst", "planner", "supervisor")
+
+
+def _swap(text: str, old: str, new: str) -> str:
+    if old not in text:
+        raise RuntimeError(f"instructions: {old!r} is no longer in the text it edits")
+    return text.replace(old, new, 1)
+
+
+def _steps(text: str) -> dict[str, str]:
+    """The numbered steps of a flow piece, by number (a step runs to the next one)."""
+    return {piece[0]: piece for piece in re.split(r"(?m)^(?=\d\. )", text) if piece[:1].isdigit()}
+
+
+_HEAD_STEPS = _steps(_FLOW_HEAD)                 # 1 snapshot, 2 query, 3 questions, 4 reconcile
+_HOST_STEPS = _steps(_FLOW_TAIL["host"])         # 6 propose_spec, 7 the host confirms, 8 the result
+
+
+def _query_step(code: bool) -> str:
+    """Step 2 with the kinds added after 0.8.2 (links, type_categories, args.link_id)."""
+    step = """\
+2. query(kind, args) for any other read: levels, grids, family_types, elements, selection,
+   view_elements, units, counts, links, type_categories; args.link_id reads a linked
+   model (levels, family_types, elements, counts). No token.
+"""
+    return _swap(step, "No token.\n", "No token. Never write C# for a read.\n") if code else step
+
+
+def _propose_step(code: bool, number: str = "6") -> str:
+    step = _HOST_STEPS["6"]
+    if not code:
+        step = _swap(step, "unconfirmed_interpretation,\n   blocked_code. Fix", "unconfirmed_interpretation.\n   Fix")
+    return _swap(step, "6. ", f"{number}. ")
+
+
+def _host_confirms_step(code: bool, number: str = "7") -> str:
+    step = _HOST_STEPS["7"]
+    if not code:
+        step = _swap(step, "have no confirm_spec, run_tool or execute_code;", "have no confirm_spec or run_tool;")
+    return _swap(step, "7. ", f"{number}. ")
+
+
+def _intro(code: bool) -> str:
+    text = _INTRO.format(closing=_INTRO_CLOSING["host"])
+    return text if code else _swap(text, "capability packs and C# in Revit", "capability packs in Revit")
+
+
+def _taskspec(code: bool) -> str:
+    if code:
+        return _TASKSPEC
+    return _swap(_TASKSPEC, "{kind: run_tool|execute_code, tool|code}", "{kind: run_tool, tool}")
+
+
+_NEVER_CODE = "- Write code: if no tool fits, say that no existing tool can do it.\n"
+
+_SELECTIONS = """\
+## Designer's selections
+A "Designer's selections" block lists what the designer picked in this host, verified
+against the model: value = the name, source designer, evidence "mention:<kind>#<id>".
+Never ask about those again. Queries about a selected link's content carry args.link_id.
+"""
+
+_NEVER_CLAIM = "- Claim success on an error or on a failed validation; do not soften errors.\n"
+
+
+def _never(code: bool, reports: bool = True) -> str:
+    """The never-list; the planner sees no result, so it has no rule about reporting one."""
+    head = _NEVER_HEAD if reports else _swap(_NEVER_HEAD, _NEVER_CLAIM, "")
+    return head + _NEVER_TAIL["host"] + ("" if code else _NEVER_CODE)
+
+
+def _notes(code: bool) -> str:
+    return _NOTES_HEAD + (SNIPPET_CONTRACT_NOTE if code else "")
+
+
+def _render_host(code: bool, mentions: bool) -> str:
+    """The whole host text without code-writing and/or with the selections rule."""
+    flow = (_FLOW_TITLE + _HEAD_STEPS["1"] + _query_step(code) + _HEAD_STEPS["3"] + _HEAD_STEPS["4"]
+            + _FLOW_CHECK["host"] + _FLOW_CARD["host"] + _propose_step(code) + _host_confirms_step(code)
+            + _HOST_STEPS["8"])
+    sections = [_intro(code), flow, _taskspec(code)]
+    if mentions:
+        sections.append(_SELECTIONS)
+    sections += [_never(code), _notes(code)]
+    return "\n".join(sections)
+
+
+def _render_analyst(code: bool) -> str:
+    none_rule = "" if code else " Never offer to write code."
+    return f"""\
+You are the analyst of a Revit host built on revit-bridge 0.8. You read one message
+from the designer and route it; you call no tools. You get the message, a
+"Designer's selections" block when the designer picked values in the host, a
+digest of the open model and the tool list (a name and one line each).
+
+## Routes
+- chat: small talk, or a question about Revit or this host that needs nothing from
+  the model. Answer it in `note`.
+- query: the designer only wants to know something about the model (levels, types,
+  counts, elements, links, selection); nothing changes.
+- tool: a tool in the list does what is asked. Name it in `tool`.
+- none: the model has to change but no tool in the list does it; `note` says what
+  is missing.{none_rule}
+
+## Output
+Exactly one JSON object, nothing before or after it:
+{{"route": "chat" | "query" | "tool" | "none", "tool": "<name>", "facts_needed": ["..."], "note": "..."}}
+- `tool` only with route tool, and only a name from the list; never invent one.
+- `facts_needed`: what still has to be read from the model or asked of the designer
+  before the request can run (a level, a type, an element, a point, a dimension).
+  What the designer said, and every value in the selections block, is known: leave it out.
+- `note`: at most two sentences for the next step; for chat, the answer itself.
+
+## Never
+- Guess a level, type, element id or coordinate: put it in facts_needed.
+- Say that anything was executed or changed.
+"""
+
+
+def _render_planner(code: bool) -> str:
+    intro = _swap(_intro(code), "get it\nconfirmed by the designer in this host's interface, and report what the "
+                                "validator found.\n",
+                  "and propose\nit; the designer confirms it in this host's interface and the host runs it.\n")
+    intro = _swap(intro, "You are connected to a running Autodesk Revit through revit-bridge 0.8.",
+                  "You are the planner of a Revit host built on revit-bridge 0.8.")
+    intro += ("You start from the analyst's routing {route, tool?, facts_needed, note}. Route\n"
+              "query: read with get_project_snapshot and query, answer, no spec. Route tool:\n"
+              "start from its tool and facts_needed; list_tools decides.\n")
+    flow = (_FLOW_TITLE + _HEAD_STEPS["1"] + _query_step(code) + _HEAD_STEPS["3"] + _HEAD_STEPS["4"]
+            + _FLOW_CHECK["host"] + _propose_step(code, "5") + _host_confirms_step(code, "6"))
+    return "\n".join([intro, flow, _taskspec(code), _SELECTIONS, _never(code, reports=False), _notes(code)])
+
+
+def _render_supervisor(code: bool) -> str:
+    report = " ".join(_HOST_STEPS["8"].split()[1:])            # step 8 without its number, on one line
+    report = _swap(report, "The execution comes back to you as a message from the host. ", "")
+    return f"""\
+You are the supervisor of a Revit host built on revit-bridge 0.8. The designer
+confirmed a TaskSpec in this host's interface and the host ran exactly what was
+confirmed. You get the confirmed spec and the execution result as a message from
+the host, and you tell the designer what happened.
+
+## Reading the result
+{textwrap.fill(report, width=84, initial_indent="- ", subsequent_indent="  ")}
+- query(kind, args) may check a fact in the model; it only reads.
+
+## A failed run
+- The cause is in the spec's values (a level, type or element the model does not
+  have, a unit, a value out of range): send it back to the planner, naming the
+  parameter and why. The host sends one task back at most twice.
+- Anything else, or after the second send-back: ask the designer. Never choose a
+  new value yourself.
+
+## Never
+{_NEVER_CLAIM}- Say that anything was executed beyond what the host's result reports.
+- Propose, confirm or run a spec yourself.
+"""
+
+
+_ROLE_RENDERERS = {"analyst": _render_analyst, "planner": _render_planner, "supervisor": _render_supervisor}
+
+
+def host_instructions(role: str | None = None, code: bool = True, mentions: bool = False) -> str:
+    """The instructions for a host whose interface does the confirmation and execution.
+
+    With no arguments: the whole text, byte for byte as in 0.8.2. ``code=False``
+    leaves out writing code (execute_code, the snippet contract, blocked_code)
+    for a host whose model never writes any; ``mentions=True`` adds the rule
+    for a "Designer's selections" block. Any variant other than the default
+    also names the query kinds added later (links, type_categories, link_id).
+
+    ``role`` gives one role's text instead: ``analyst`` (route the message:
+    chat / query / tool / none, as one JSON object), ``planner`` (read the
+    model, fill the parameters, propose the spec; always with the selections
+    rule) or ``supervisor`` (read the execution result and the validator's
+    verdict, report it, send a fixable spec back or ask the designer).
+    ``mentions`` does not apply to a role; ``code`` does.
+    """
+    if role is None:
+        if code and not mentions:
+            return _render("host")
+        return _render_host(bool(code), bool(mentions))
+    if role not in _ROLE_RENDERERS:
+        raise ValueError(f"unknown role {role!r}: expected one of {', '.join(ROLES)}")
+    return _ROLE_RENDERERS[role](bool(code))
