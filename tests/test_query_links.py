@@ -403,3 +403,34 @@ def test_ids_are_capped_at_200_per_call():
                 await client.disconnect()
             return fake.requests
     assert asyncio.run(go()) == []
+
+
+def test_the_fake_types_follow_the_add_in():
+    """FakeModel against ListModelItemsEventHandler.ReadTypes / ModelItemsRequest.Parse (add-in 207df8a):
+    ids in their order and of any category, the intersection with category, ids: [] gives no rows,
+    no category and no ids is bad_params, ids with type_categories is bad_params."""
+    async def go():
+        async with FakeRevit(NEW) as fake:
+            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=2)
+            ex = RevitQueryExecutor(client)
+            try:
+                by_ids = await ex.list_model_items("types", ids=[431, 401, 431, 999])
+                both = await ex.list_model_items("types", category="OST_Walls", ids=[431, 401])
+                empty = await ex.list_model_items("types", ids=[])
+                errors = []
+                for kind, params in (("types", {}), ("type_categories", {"ids": [1]}), ("links", {"link_id": 501})):
+                    try:
+                        await ex.list_model_items(kind, **params)
+                    except ModelItemsError as exc:
+                        errors.append((exc.code, exc.message))
+            finally:
+                await client.disconnect()
+            return by_ids, both, empty, errors
+    by_ids, both, empty, errors = asyncio.run(go())
+    assert [r["FamilyTypeId"] for r in by_ids.rows] == [431, 401]
+    assert [r["BuiltInCategory"] for r in by_ids.rows] == ["OST_PipeCurves", "OST_Walls"]
+    assert [r["FamilyTypeId"] for r in both.rows] == [401]
+    assert empty.rows == [] and empty.total == 0
+    assert errors == [("bad_params", "kind types needs category or ids."),
+                      ("bad_params", "ids is not used with kind type_categories."),
+                      ("bad_params", "link_id is not used with kind links.")]

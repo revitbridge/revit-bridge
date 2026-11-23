@@ -265,21 +265,26 @@ class FakeModel:
             return self._failed(rid, kind, "unknown_kind", "kind must be one of levels, links, types, type_categories.")
         if self.fail:
             return self._failed(rid, kind, self.fail, f"fake failure {self.fail}")
+        # the add-in's parameter checks and messages (ListModelItemsCommand.cs, ModelItemsRequest.Parse)
         category, link_id, ids = params.get("category"), params.get("link_id"), params.get("ids")
         if category is not None:
             if kind != "types":
                 return self._failed(rid, kind, "bad_params", "category is used with kind types only.")
             if not isinstance(category, str) or not _CATEGORY_SHAPE.match(category) or category == "OST_Nope":
-                return self._failed(rid, kind, "bad_category", f"category must be a BuiltInCategory; got {category}.")
-        if ids is not None and (kind == "type_categories" or not isinstance(ids, list) or len(ids) > 200
-                                or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids)):
-            return self._failed(rid, kind, "bad_params", "ids must be at most 200 element ids (levels, links, types).")
+                return self._failed(rid, kind, "bad_category", "category must be the name of a BuiltInCategory, "
+                                                               f"such as OST_Walls; got {json.dumps(category)}.")
+        if link_id is not None and kind == "links":
+            return self._failed(rid, kind, "bad_params", "link_id is not used with kind links.")
+        if ids is not None:
+            if kind == "type_categories":
+                return self._failed(rid, kind, "bad_params", "ids is not used with kind type_categories.")
+            if (not isinstance(ids, list) or len(ids) > 200
+                    or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids)):
+                return self._failed(rid, kind, "bad_params", "ids must be an array of at most 200 integer element ids.")
         if kind == "types" and category is None and ids is None:
-            return self._failed(rid, kind, "bad_params", "types needs category or ids.")
+            return self._failed(rid, kind, "bad_params", "kind types needs category or ids.")
         doc = self.model
         if link_id is not None:
-            if kind == "links":
-                return self._failed(rid, kind, "bad_params", "link_id is not used with kind links.")
             link = next((l for l in self.model["links"] if l["Id"] == link_id), None)
             if link is None:
                 return self._failed(rid, kind, "unknown_link",
@@ -292,12 +297,16 @@ class FakeModel:
         elif kind == "links":
             rows = self.model["links"]
         elif kind == "types":
-            rows = ([t for group in doc["types"].values() for t in group]
-                    if ids is not None and self.honour_ids or category is None
-                    else doc["types"].get(category, []))
+            # ids: any category, in the order of ids; with category too, only that category's (the
+            # intersection). An add-in that ignores ids lists the category, or every type.
+            rows = (doc["types"].get(category, []) if category is not None
+                    else [t for group in doc["types"].values() for t in group])
+            if ids is not None and self.honour_ids:
+                by_id = {t["FamilyTypeId"]: t for t in rows}
+                rows = [by_id[i] for i in dict.fromkeys(ids) if i in by_id]
         else:
             rows = self._type_categories(doc)
-        if ids is not None and self.honour_ids:
+        if ids is not None and self.honour_ids and kind != "types":
             rows = [r for r in rows if r[_ID_KEYS[kind]] in ids]
         q = (params.get("q") or "").strip().lower()
         if q:
