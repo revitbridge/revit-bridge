@@ -520,17 +520,52 @@ def test_the_variants_share_the_default_steps_verbatim():
             assert '"on F2", is an interpretation the designer must confirm.' in text, args
 
 
+SELECTIONS_RULE = ('value = the name, evidence "mention:<kind>#<id>"; source tool if the pack parameter has '
+                   'choices_from or a tool:* source, else designer. Never re-ask them; a picked link\'s queries '
+                   'carry args.link_id.')
+
+
 def test_the_selections_rule_only_where_asked():
-    rule = 'source designer, evidence "mention:<kind>#<id>"'
     assert "Designer's selections" not in host_instructions()
     for text in (host_instructions(mentions=True), host_instructions(code=False, mentions=True),
                  host_instructions(role="planner"), host_instructions(role="planner", code=False)):
-        section = text[text.index("## Designer's selections"):]
-        assert rule in section and "Never ask about those again." in section
-        assert "Queries about a selected link's content carry args.link_id." in section
-        assert "value = the name" in section
+        section = text[text.index("## Designer's selections"):text.index("## Never")]
+        assert SELECTIONS_RULE in " ".join(section.split())
     assert "## Designer's selections" not in host_instructions(code=False)
     assert "every value in the selections block, is known" in host_instructions(role="analyst")
+
+
+def _wall_spec(level_source: str, level_evidence: str, **start_x):
+    from revit_bridge.spec.models import TaskSpec
+
+    params = [{"name": "start_x", "value": 0, "unit": "mm", "source": "designer", "evidence": "from 0,0",
+               **start_x},
+              {"name": "start_y", "value": 0, "unit": "mm", "source": "designer", "evidence": "from 0,0"},
+              {"name": "end_x", "value": 6000, "unit": "mm", "source": "designer", "evidence": "to 6000,0"},
+              {"name": "end_y", "value": 0, "unit": "mm", "source": "designer", "evidence": "to 6000,0"},
+              {"name": "level_name", "value": "F2", "source": level_source, "evidence": level_evidence}]
+    return TaskSpec.model_validate({"task": "a wall on F2", "action": {"kind": "run_tool", "tool": "create_wall"},
+                                    "parameters": params, "interpretations": [],
+                                    "snapshot_fingerprint": "0" * 16, "language": "en"})
+
+
+def test_the_selections_rule_is_the_rule_validate_spec_applies():
+    """Section 2.4 as amended, pinned against spec/rules.py: a picked level bound to create_wall's
+    level_name (choices_from: levels) is source tool with the mention as evidence; source designer
+    there is still unsourced_choice; a designer-sourced parameter takes source designer."""
+    from revit_bridge.capabilities.store import ToolStore
+    from revit_bridge.spec.rules import validate_spec
+
+    pack = ToolStore().load("create_wall")
+    level = next(p for p in pack.parameters if p["name"] == "level_name")
+    assert level.get("choices_from") == "levels" and str(level.get("source")).startswith("tool:")
+    codes = [(e.code, e.param) for e in validate_spec(_wall_spec("tool", "mention:level#312"), pack)]
+    assert ("unsourced_choice", "level_name") not in codes and codes == []
+    codes = [(e.code, e.param) for e in validate_spec(_wall_spec("designer", "mention:level#312"), pack)]
+    assert codes == [("unsourced_choice", "level_name")]
+    # a parameter the pack declares designer-sourced: source designer with a mention as evidence
+    spec = _wall_spec("tool", "mention:level#312", evidence="mention:level#312")
+    assert validate_spec(spec, pack) == []
 
 
 def test_the_analyst_routes_with_one_json_object_and_no_tools():
@@ -539,7 +574,12 @@ def test_the_analyst_routes_with_one_json_object_and_no_tools():
         assert route in text, route
     assert ('{"route": "chat" | "query" | "tool" | "none", "tool": "<name>", "facts_needed": ["..."], '
             '"note": "..."}') in text
-    assert "Exactly one JSON object" in text and "you call no tools" in text
+    assert "Your reply is exactly one JSON object and nothing else, no text before or after it:" in text
+    assert "you call no tools" in text
+    flat = " ".join(text.split())
+    assert ("`note`: with chat and none, the reply the host shows the designer, in their language; "
+            "with query and tool, at most two sentences for the next step.") in flat
+    assert "`note` tells the designer that no existing tool does it and what is missing." in flat
     for call in ("propose_spec", "missing_params", "reconcile(", "query(", "get_project_snapshot", "list_tools"):
         assert call not in text, call
     assert len(text) < len(host_instructions()) / 2
@@ -556,15 +596,30 @@ def test_the_planner_reads_fills_and_proposes_and_never_reports():
         assert absent not in text, absent
 
 
-def test_the_supervisor_reports_faithfully_and_sends_back_or_asks():
+def test_the_supervisor_reports_faithfully_and_answers_with_one_verdict_object():
     text = host_instructions(role="supervisor")
     assert text == host_instructions(role="supervisor", code=False)      # nothing about code to leave out
+    flat = " ".join(text.split())
     for part in ("`success` is true only when Revit succeeded AND the pack's validator passed",
                  "validation_failed means the model did not change as claimed",
-                 "`validation.checks`, `error` and `evidence_id`", "send it back to the planner",
-                 "at most twice", "ask the designer", "Claim success on an error or on a failed validation",
-                 "query(kind, args) may check a fact in the model; it only reads."):
-        assert part in " ".join(text.split()) or part in text, part
+                 "`validation.checks`, `error` and `evidence_id`", "at most twice", "ask the designer",
+                 "Claim success on an error or on a failed validation",
+                 "query(kind, args) may check a fact in the model; it only reads.",
+                 "Your reply is exactly one JSON object and nothing else, no text before or after it:",
+                 '{"verdict": "done" | "retry" | "ask", "report": "...", "fix": "...", "question": "..."}',
+                 "`report`: what happened, for the designer, in their language, faithful to the result and "
+                 "the validator.",
+                 "- done: Revit succeeded and the validator passed.",
+                 "- retry: it failed and a different parameter value or tool choice can fix it",
+                 "`fix` says what the planner should change.",
+                 "- ask: anything else, after the second retry, or a validator failure you cannot explain "
+                 "(never done). `question` is what to ask the designer",
+                 "- `fix` only with retry, `question` only with ask."):
+        assert part in flat, part
+    for verdict in ('"done"', '"retry"', '"ask"'):
+        assert verdict in text, verdict
+    for key in ('"verdict"', '"report"', '"fix"', '"question"'):
+        assert key in text, key
     for absent in ("propose_spec(", "missing_params", "reconcile(", "## TaskSpec"):
         assert absent not in text, absent
     assert len(text) < len(host_instructions()) / 2

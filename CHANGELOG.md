@@ -34,10 +34,13 @@ change.
 - `host_instructions(role=None, code=True, mentions=False)`: `code=False`
   for a host whose model never writes code (no execute_code, snippet
   contract or blocked_code); `mentions=True` adds the rule for the
-  selections block; `role` gives one shorter text for `analyst` (route a
-  message as one JSON object), `planner` (fill and propose the spec) or
-  `supervisor` (report the execution result, send a fixable spec back or
-  ask the designer).
+  selections block (a picked value is bound by name with evidence
+  `mention:<kind>#<id>`, source `tool` for a pack parameter that takes its
+  value from the model, else `designer`, and is not asked again); `role`
+  gives one shorter text for `analyst` (one JSON object `{route, tool?,
+  facts_needed, note}`; with chat and none `note` is the reply shown to the
+  designer), `planner` (fill and propose the spec) or `supervisor` (one JSON
+  object `{verdict: done | retry | ask, report, fix?, question?}`).
 - `snapshot_digest(snapshot, max_chars=1200)`: a short text of a snapshot
   (document, units, level names, types per category, selection count,
   fingerprint), never longer than `max_chars`.

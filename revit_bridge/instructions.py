@@ -293,11 +293,14 @@ def _taskspec(code: bool) -> str:
 
 _NEVER_CODE = "- Write code: if no tool fits, say that no existing tool can do it.\n"
 
+# Section 2.4 as amended: a picked value bound to a pack parameter that takes its value from the
+# model (choices_from / source tool:*) is source tool, any other binding source designer; the
+# evidence is the mention either way (spec/rules.py accepts exactly this).
 _SELECTIONS = """\
 ## Designer's selections
-A "Designer's selections" block lists what the designer picked in this host, verified
-against the model: value = the name, source designer, evidence "mention:<kind>#<id>".
-Never ask about those again. Queries about a selected link's content carry args.link_id.
+A "Designer's selections" block holds the designer's verified picks: value = the name,
+evidence "mention:<kind>#<id>"; source tool if the pack parameter has choices_from or a
+tool:* source, else designer. Never re-ask them; a picked link's queries carry args.link_id.
 """
 
 _NEVER_CLAIM = "- Claim success on an error or on a failed validation; do not soften errors.\n"
@@ -339,17 +342,18 @@ digest of the open model and the tool list (a name and one line each).
 - query: the designer only wants to know something about the model (levels, types,
   counts, elements, links, selection); nothing changes.
 - tool: a tool in the list does what is asked. Name it in `tool`.
-- none: the model has to change but no tool in the list does it; `note` says what
-  is missing.{none_rule}
+- none: the model has to change but no tool in the list does it; `note` tells the
+  designer that no existing tool does it and what is missing.{none_rule}
 
 ## Output
-Exactly one JSON object, nothing before or after it:
+Your reply is exactly one JSON object and nothing else, no text before or after it:
 {{"route": "chat" | "query" | "tool" | "none", "tool": "<name>", "facts_needed": ["..."], "note": "..."}}
 - `tool` only with route tool, and only a name from the list; never invent one.
 - `facts_needed`: what still has to be read from the model or asked of the designer
   before the request can run (a level, a type, an element, a point, a dimension).
   What the designer said, and every value in the selections block, is known: leave it out.
-- `note`: at most two sentences for the next step; for chat, the answer itself.
+- `note`: with chat and none, the reply the host shows the designer, in their language;
+  with query and tool, at most two sentences for the next step.
 
 ## Never
 - Guess a level, type, element id or coordinate: put it in facts_needed.
@@ -384,12 +388,19 @@ the host, and you tell the designer what happened.
 {textwrap.fill(report, width=84, initial_indent="- ", subsequent_indent="  ")}
 - query(kind, args) may check a fact in the model; it only reads.
 
-## A failed run
-- The cause is in the spec's values (a level, type or element the model does not
-  have, a unit, a value out of range): send it back to the planner, naming the
-  parameter and why. The host sends one task back at most twice.
-- Anything else, or after the second send-back: ask the designer. Never choose a
-  new value yourself.
+## Output
+Your reply is exactly one JSON object and nothing else, no text before or after it:
+{{"verdict": "done" | "retry" | "ask", "report": "...", "fix": "...", "question": "..."}}
+- `report`: what happened, for the designer, in their language, faithful to the result
+  and the validator.
+- done: Revit succeeded and the validator passed.
+- retry: it failed and a different parameter value or tool choice can fix it (a level,
+  type or element the model does not have, a unit, a value out of range). `fix` says
+  what the planner should change. The host sends one task back at most twice.
+- ask: anything else, after the second retry, or a validator failure you cannot
+  explain (never done). `question` is what to ask the designer; never choose a new
+  value yourself.
+- `fix` only with retry, `question` only with ask.
 
 ## Never
 {_NEVER_CLAIM}- Say that anything was executed beyond what the host's result reports.
@@ -410,11 +421,17 @@ def host_instructions(role: str | None = None, code: bool = True, mentions: bool
     also names the query kinds added later (links, type_categories, link_id).
 
     ``role`` gives one role's text instead: ``analyst`` (route the message:
-    chat / query / tool / none, as one JSON object), ``planner`` (read the
-    model, fill the parameters, propose the spec; always with the selections
-    rule) or ``supervisor`` (read the execution result and the validator's
-    verdict, report it, send a fixable spec back or ask the designer).
-    ``mentions`` does not apply to a role; ``code`` does.
+    one JSON object ``{route: chat | query | tool | none, tool?, facts_needed,
+    note}``, ``note`` being the designer's reply with chat and none),
+    ``planner`` (read the model, fill the parameters, propose the spec; always
+    with the selections rule) or ``supervisor`` (read the execution result and
+    the validator's verdict: one JSON object ``{verdict: done | retry | ask,
+    report, fix?, question?}``). ``mentions`` does not apply to a role;
+    ``code`` does.
+
+    The selections rule (section 2.4 as amended): value the name, evidence
+    ``mention:<kind>#<id>``, source tool when the pack parameter has
+    ``choices_from`` or a ``tool:*`` source, else designer; never asked again.
     """
     if role is None:
         if code and not mentions:
