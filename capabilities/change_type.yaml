@@ -19,7 +19,6 @@ code_template: |
   var target = document.GetElement(targetId) as ElementType;
   if (target == null || target.Category == null || target.Category.Id.Value != (long)category)
       return new { Status = "Error", Message = "Target type was not found in the requested category." };
-  var changed = new List<long>();
   var skipped = new List<object>();
   foreach (var id in selected)
   {
@@ -28,9 +27,23 @@ code_template: |
           var element = document.GetElement(id);
           if (element == null || element.Category == null || element.Category.Id.Value != target.Category.Id.Value)
               throw new InvalidOperationException("Selected element is not in the target type category.");
-          if (element.GetTypeId() == targetId) continue;
           if (element.Pinned || !element.IsValidType(targetId))
               throw new InvalidOperationException("Selected element is pinned or cannot use the target type.");
+      }
+      catch (Exception ex) { skipped.Add(new { Id = id.Value, Reason = ex.Message }); }
+  }
+  if (skipped.Count > 0)
+      return new { Status = "Error", Message = "Selection preflight failed. No element types were changed; see Skipped.",
+          ElementIds = new List<long>(), Count = 0, Skipped = skipped };
+  var changed = new List<long>();
+  foreach (var id in selected)
+  {
+      try
+      {
+          var element = document.GetElement(id);
+          if (element == null)
+              throw new InvalidOperationException("Selected element is no longer available.");
+          if (element.GetTypeId() == targetId) continue;
           ElementId replacement = element.ChangeTypeId(targetId);
           var actualId = replacement == ElementId.InvalidElementId ? id : replacement;
           var actual = document.GetElement(actualId);

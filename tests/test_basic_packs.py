@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -142,3 +145,187 @@ def test_preexisting_packs_still_load_and_render(store):
         for fixture in data["fixtures"]:
             code, errors = store.render(name, fixture["params"])
             assert errors == [] and code
+
+
+# Execute the actual rendered snippet with a deliberately small, observable API
+# stand-in. This checks mutation ordering, not Revit's transaction/type behavior.
+CHANGE_TYPE_STUB = r'''
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
+
+public enum BuiltInCategory { OST_Walls = 1, OST_Doors = 2 }
+public readonly record struct ElementId(long Value)
+{
+    public static readonly ElementId InvalidElementId = new(-1);
+}
+public sealed class Category
+{
+    public ElementId Id { get; set; } = new(1);
+}
+public class Element
+{
+    public ElementId Id { get; set; }
+    public Category Category { get; set; } = new();
+    public bool Pinned { get; set; }
+    public bool ValidType { get; set; } = true;
+    public bool CheckThrows { get; set; }
+    public bool ChangeThrows { get; set; }
+    public ElementId TypeId { get; set; } = new(101);
+    public Document Owner { get; set; }
+    public ElementId GetTypeId() => TypeId;
+    public bool IsValidType(ElementId id)
+    {
+        Owner.Trace.Add("check:" + Id.Value);
+        if (CheckThrows) throw new InvalidOperationException("type check failed");
+        return ValidType;
+    }
+    public ElementId ChangeTypeId(ElementId id)
+    {
+        Owner.Trace.Add("change:" + Id.Value);
+        Owner.Changes.Add(Id.Value);
+        if (ChangeThrows) throw new InvalidOperationException("runtime change failed");
+        TypeId = id;
+        return ElementId.InvalidElementId;
+    }
+}
+public sealed class ElementType : Element { }
+public sealed class Document
+{
+    public Dictionary<long, Element> Elements = new();
+    public List<ElementId> Selected = new() { new(1), new(2) };
+    public List<long> Lookups = new();
+    public List<long> Changes = new();
+    public List<string> Trace = new();
+    public Element GetElement(ElementId id)
+    {
+        Lookups.Add(id.Value);
+        return Elements.TryGetValue(id.Value, out var element) ? element : null;
+    }
+}
+public sealed class Selection
+{
+    private readonly Document document;
+    public Selection(Document document) { this.document = document; }
+    public ICollection<ElementId> GetElementIds() => document.Selected;
+}
+public sealed class UIDocument
+{
+    public Selection Selection { get; }
+    public UIDocument(Document document) { Selection = new Selection(document); }
+}
+public static class Program
+{
+    public static object Execute(Document document)
+    {
+        // RENDERED_SNIPPET
+    }
+    public static void Main()
+    {
+        var reports = new Dictionary<string, object>();
+        foreach (string name in new[] {
+            "mixed", "mixed_first", "pinned", "pinned_first",
+            "incompatible", "incompatible_first", "missing", "check_error",
+            "already_target_pinned", "valid", "unchanged_and_valid", "runtime_error"
+        })
+        {
+            var document = new Document();
+            var first = new Element { Id = new(1), Owner = document };
+            var second = new Element { Id = new(2), Owner = document };
+            document.Elements[1] = first;
+            document.Elements[2] = second;
+            document.Elements[201] = new ElementType { Id = new(201), Owner = document };
+            if (name.StartsWith("mixed")) second.Category.Id = new(2);
+            if (name.StartsWith("pinned")) second.Pinned = true;
+            if (name.StartsWith("incompatible")) second.ValidType = false;
+            if (name == "missing") document.Elements.Remove(2);
+            if (name == "check_error") second.CheckThrows = true;
+            if (name == "already_target_pinned") { second.TypeId = new(201); second.Pinned = true; }
+            if (name == "unchanged_and_valid") first.TypeId = new(201);
+            if (name == "runtime_error") first.ChangeThrows = true;
+            if (name.EndsWith("_first")) document.Selected.Reverse();
+            reports[name] = new {
+                Result = Execute(document), document.Changes, document.Trace, document.Lookups,
+                Types = new[] { first.TypeId.Value, second.TypeId.Value }
+            };
+        }
+        Console.WriteLine("REPORT:" + JsonSerializer.Serialize(reports));
+    }
+}
+'''
+
+
+@pytest.fixture(scope="module")
+def change_type_reports(tmp_path_factory):
+    dotnet = os.environ.get("REVIT_BRIDGE_TEST_DOTNET") or shutil.which("dotnet")
+    if not dotnet:
+        pytest.skip("The optional rendered-C# regression requires a .NET 8+ SDK.")
+    directory = tmp_path_factory.mktemp("change_type_csharp")
+    sdks = subprocess.run([dotnet, "--list-sdks"], cwd=directory, capture_output=True, text=True, check=True)
+    majors = [int(value) for value in re.findall(r"^(\d+)\.", sdks.stdout, re.MULTILINE) if int(value) >= 8]
+    if not majors:
+        pytest.skip("The optional rendered-C# regression requires a .NET 8+ SDK.")
+    # Framework reference packs ship with the SDK; prohibit package downloads.
+    (directory / "NuGet.Config").write_text(
+        '<configuration><packageSources><clear /></packageSources></configuration>', encoding="utf-8",
+    )
+    project = directory / "Regression.csproj"
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType>'
+        f'<TargetFramework>net{max(majors)}.0</TargetFramework>'
+        '<Nullable>disable</Nullable></PropertyGroup></Project>', encoding="utf-8",
+    )
+    store = ToolStore(user_dir=directory / "user", builtin_dir=ROOT)
+    code, errors = store.render("change_type", data_for("change_type")["fixtures"][0]["params"])
+    assert errors == [] and code
+    (directory / "Program.cs").write_text(CHANGE_TYPE_STUB.replace("// RENDERED_SNIPPET", code), encoding="utf-8")
+    run = subprocess.run(
+        [dotnet, "run", "--project", str(project), "--configuration", "Release", "--verbosity", "quiet"],
+        cwd=directory, capture_output=True, text=True, timeout=120,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    report = next((line.removeprefix("REPORT:") for line in run.stdout.splitlines() if line.startswith("REPORT:")), None)
+    assert report is not None, run.stdout + run.stderr
+    return json.loads(report)
+
+
+@pytest.mark.parametrize("scenario", (
+    "mixed", "mixed_first", "pinned", "pinned_first", "incompatible", "incompatible_first",
+    "missing", "check_error", "already_target_pinned",
+))
+def test_change_type_preflights_all_selected_elements_without_mutation(change_type_reports, scenario):
+    report = change_type_reports[scenario]
+    assert report["Result"]["Status"] == "Error"
+    assert report["Result"]["Count"] == 0
+    assert report["Result"]["ElementIds"] == []
+    assert report["Result"]["Skipped"][0]["Id"] == 2
+    assert report["Result"]["Skipped"][0]["Reason"]
+    assert report["Changes"] == []
+    assert {1, 2}.issubset(report["Lookups"])
+    assert report["Types"] == [101, 201 if scenario == "already_target_pinned" else 101]
+
+
+def test_change_type_preserves_valid_and_already_matching_inputs(change_type_reports):
+    report = change_type_reports["valid"]
+    assert report["Result"]["Status"] == "Modified"
+    assert report["Result"]["ElementIds"] == [1, 2]
+    assert report["Result"]["Count"] == 2
+    assert report["Result"]["Skipped"] == []
+    assert report["Trace"] == ["check:1", "check:2", "change:1", "change:2"]
+    assert report["Types"] == [201, 201]
+    matching = change_type_reports["unchanged_and_valid"]
+    assert matching["Result"]["Status"] == "Modified"
+    assert matching["Result"]["ElementIds"] == [2]
+    assert matching["Changes"] == [2]
+    assert matching["Types"] == [201, 201]
+
+
+def test_change_type_reports_runtime_errors_and_continues_after_preflight(change_type_reports):
+    report = change_type_reports["runtime_error"]
+    assert report["Result"]["Status"] == "Error"
+    assert report["Result"]["ElementIds"] == [2]
+    assert report["Result"]["Count"] == 1
+    assert report["Result"]["Skipped"] == [{"Id": 1, "Reason": "runtime change failed"}]
+    assert report["Trace"] == ["check:1", "check:2", "change:1", "change:2"]
+    assert report["Types"] == [101, 201]
