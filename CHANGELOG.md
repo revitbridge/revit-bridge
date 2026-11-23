@@ -6,6 +6,51 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+Reads for a host that lets the designer pick model items, and shorter
+instructions for a host that splits the work between roles. Needs nothing
+new from the add-in: with an add-in that offers `list_model_items`, levels,
+types, links and type categories are read without compiling code or opening
+a transaction, and linked models can be read; without it, everything but
+`link_id` works as before. No pack format, TaskSpec, gate or tool name
+change.
+
+### Added
+
+- `query` kinds `links` (every link instance: id, name, type, loaded,
+  document title, origin in mm, rotated; an unloaded link is listed) and
+  `type_categories` (the OST_* categories that have types, with counts).
+- `query` `args.link_id` for `levels`, `family_types`, `elements`, `counts`
+  and `type_categories`: reads that linked model. The reply carries `link`
+  (id, name, document title, origin, rotated), `coordinates: "link"` and a
+  note that values are in the link's own coordinates. Errors
+  `unsupported_addin` (the add-in has no `list_model_items`), `unknown_link`
+  and `link_not_loaded`.
+- `revit_bridge.mentions`: `mention_candidates` (what to offer for `@level`,
+  `@type`, `@link`: `{kind, items, total, truncated}`; types by category,
+  categories first; unloaded links listed but disabled), `resolve_mentions`
+  (check picked `{kind, id}` by id against the open model, resolved and not
+  found apart) and `mention_block` (the fixed "Designer's selections" text,
+  English or Chinese).
+- `host_instructions(role=None, code=True, mentions=False)`: `code=False`
+  for a host whose model never writes code (no execute_code, snippet
+  contract or blocked_code); `mentions=True` adds the rule for the
+  selections block; `role` gives one shorter text for `analyst` (route a
+  message as one JSON object), `planner` (fill and propose the spec) or
+  `supervisor` (report the execution result, send a fixable spec back or
+  ask the designer).
+- `snapshot_digest(snapshot, max_chars=1200)`: a short text of a snapshot
+  (document, units, level names, types per category, selection count,
+  fingerprint), never longer than `max_chars`.
+
+### Changed
+
+- `query` `levels` and `family_types` use the add-in's `list_model_items`
+  when its capability reply lists the method (one `get_bridge_capabilities`
+  per connection); the replies have the same shape, plus `warnings` when the
+  add-in could not read a row. Without the method they take the same path
+  and give the same reply as in 0.8.2.
+- `host_instructions()` with no arguments returns the 0.8.2 text unchanged.
+
 ## [0.8.2] - 2026-11-19
 
 The journal skill reads cloud-model opens, managed exceptions and the

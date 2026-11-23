@@ -206,11 +206,21 @@ async def get_project_snapshot(categories: list[str] | None = None) -> str:
 async def query(kind: str, args: dict | None = None) -> str:
     """Read-only model query, no confirmation needed. kinds: levels, grids,
     family_types (args.categories), elements (args.category, args.limit<=200),
-    selection, view_elements (args.limit<=200), units, counts (args.categories).
-    Categories are BuiltInCategory OST_* names, e.g. "OST_Walls" (not "Walls").
-    Returns {"error": "unknown_kind", "kinds": [...]} for anything else. Runs
-    inside a Revit transaction on the add-in side: fails on read-only
-    documents and leaves an undo entry (a no-transaction path is planned)."""
+    selection, view_elements (args.limit<=200), units, counts (args.categories),
+    links (every linked model instance: id, name, loaded, document_title,
+    origin_mm, rotated), type_categories (the categories that have types, with
+    counts). args.link_id - the id of a loaded link from kind links - makes
+    levels, family_types, elements, counts and type_categories read that linked
+    model: the reply is in the link's own coordinates and carries the link's
+    origin and rotation. link_id needs an add-in that offers list_model_items
+    ({"error": "unsupported_addin"} otherwise); unknown_link / link_not_loaded
+    when the id is not a loaded link. Categories are BuiltInCategory OST_*
+    names, e.g. "OST_Walls" (not "Walls"). Returns {"error": "unknown_kind",
+    "kinds": [...]} for anything else. With such an add-in, levels,
+    family_types, links and type_categories are read without a transaction;
+    the other kinds (and every kind on an older add-in) run inside a Revit
+    transaction on the add-in side: they fail on read-only documents and leave
+    an undo entry."""
     try:
         client = await RevitClientPool.get_client()
         return _dumps(await run_query(RevitQueryExecutor(client), kind, args))
