@@ -1,0 +1,57 @@
+schema_version: 1
+name: "list_types"
+display_name: "List Types"
+description: "List family name, type name and ElementId for any BuiltInCategory, including system types. Returns at most 200 rows."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  try
+  {
+      string categoryName = "{category}";
+      BuiltInCategory category;
+      if (!categoryName.StartsWith("OST_", StringComparison.Ordinal)
+          || !Enum.TryParse(categoryName, out category) || !Enum.IsDefined(typeof(BuiltInCategory), category))
+          return new { Status = "Error", Message = "Unknown BuiltInCategory identifier." };
+      int limit = Math.Max(1, Math.Min(200, {limit}));
+      var types = new FilteredElementCollector(document).OfCategory(category).WhereElementIsElementType();
+      int total = types.GetElementCount();
+      var rows = new List<object>();
+      var skipped = new List<object>();
+      foreach (var element in types.Take(limit))
+      {
+          try
+          {
+              var type = element as ElementType;
+              if (type == null) throw new InvalidOperationException("The collected element is not an ElementType.");
+              rows.Add(new { Id = type.Id.Value, Family = type.FamilyName, Name = type.Name });
+          }
+          catch (Exception ex) { skipped.Add(new { Id = element.Id.Value, Reason = ex.Message }); }
+      }
+      return new { Status = skipped.Count == 0 ? "Ok" : "Error", Category = categoryName, Total = total,
+          Items = rows, Returned = rows.Count, Truncated = total > rows.Count, Skipped = skipped };
+  }
+  catch (Exception ex)
+  {
+      return new { Status = "Error", Message = ex.Message };
+  }
+parameters:
+  - name: "category"
+    type: "string"
+    description: "BuiltInCategory identifier such as OST_Walls"
+    source: "designer"
+    required: true
+  - name: "limit"
+    type: "int"
+    description: "Maximum returned rows, clamped to 1 through 200"
+    source: "default"
+    required: false
+    default: 100
+preconditions: []
+not_for: []
+applies_when: ["list types"]
+validator: {"kind":"count_delta","category":"{category}","expected":0}
+fixtures: [{"name":"basic","params":{"category":"OST_Walls","limit":100},"expect":{"Status":"Ok"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "list types"

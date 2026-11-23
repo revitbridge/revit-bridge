@@ -1,0 +1,76 @@
+schema_version: 1
+name: "create_grid"
+display_name: "Create Grid"
+description: "Create one straight grid between two points, with a unique name."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  ElementId createdId = ElementId.InvalidElementId;
+  try
+  {
+      string name = "{name}";
+      if (string.IsNullOrWhiteSpace(name) || !NamingUtils.IsValidName(name))
+          return new { Status = "Error", Message = "A valid grid name is required." };
+      if (new FilteredElementCollector(document).OfClass(typeof(Grid)).Cast<Grid>().Any(e => e.Name == name))
+          return new { Status = "Error", Message = "A grid with this name already exists." };
+      var start = new XYZ({start_x} / 304.8, {start_y} / 304.8, 0);
+      var end = new XYZ({end_x} / 304.8, {end_y} / 304.8, 0);
+      if (!XYZ.IsWithinLengthLimits(start) || !XYZ.IsWithinLengthLimits(end)
+          || start.DistanceTo(end) <= document.Application.ShortCurveTolerance)
+          return new { Status = "Error", Message = "Grid endpoints are outside the model limits or too close together." };
+      var grid = Grid.Create(document, Line.CreateBound(start, end));
+      createdId = grid.Id;
+      grid.Name = name;
+      return new { Status = "Created", ElementId = grid.Id.Value, Name = grid.Name };
+  }
+  catch (Exception ex)
+  {
+      if (createdId != ElementId.InvalidElementId)
+      {
+          try { document.Delete(createdId); }
+          catch (Exception cleanup)
+          {
+              return new { Status = "Error", Message = ex.Message + " Cleanup failed: " + cleanup.Message, ElementId = createdId.Value };
+          }
+      }
+      return new { Status = "Error", Message = ex.Message };
+  }
+parameters:
+  - name: "name"
+    type: "string"
+    description: "Unique grid name"
+    source: "designer"
+    required: true
+  - name: "start_x"
+    type: "double"
+    description: "Grid start_x (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "start_y"
+    type: "double"
+    description: "Grid start_y (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "end_x"
+    type: "double"
+    description: "Grid end_x (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "end_y"
+    type: "double"
+    description: "Grid end_y (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+preconditions: []
+not_for: []
+applies_when: ["create grid"]
+validator: {"kind":"count_delta","category":"OST_Grids","expected":1}
+fixtures: [{"name":"basic","params":{"name":"A","start_x":0,"start_y":0,"end_x":0,"end_y":10000},"expect":{"Status":"Created"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "create grid"

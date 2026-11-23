@@ -1,0 +1,65 @@
+schema_version: 1
+name: "change_type"
+display_name: "Change Type"
+description: "Change up to 100 selected elements to a type in the same category. Obtain the target type id from list_types; mixed categories and invalid types are refused."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  var selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  if (selected.Count == 0)
+      return new { Status = "Error", Message = "No elements are selected." };
+  if (selected.Count > 100)
+      return new { Status = "Error", Message = "Select at most 100 elements per run." };
+  string categoryName = "{category}";
+  BuiltInCategory category;
+  if (!categoryName.StartsWith("OST_", StringComparison.Ordinal)
+      || !Enum.TryParse(categoryName, out category) || !Enum.IsDefined(typeof(BuiltInCategory), category))
+      return new { Status = "Error", Message = "Unknown BuiltInCategory identifier." };
+  var targetId = new ElementId((long){type_id});
+  var target = document.GetElement(targetId) as ElementType;
+  if (target == null || target.Category == null || target.Category.Id.Value != (long)category)
+      return new { Status = "Error", Message = "Target type was not found in the requested category." };
+  var changed = new List<long>();
+  var skipped = new List<object>();
+  foreach (var id in selected)
+  {
+      try
+      {
+          var element = document.GetElement(id);
+          if (element == null || element.Category == null || element.Category.Id.Value != target.Category.Id.Value)
+              throw new InvalidOperationException("Selected element is not in the target type category.");
+          if (element.GetTypeId() == targetId) continue;
+          if (element.Pinned || !element.IsValidType(targetId))
+              throw new InvalidOperationException("Selected element is pinned or cannot use the target type.");
+          ElementId replacement = element.ChangeTypeId(targetId);
+          var actualId = replacement == ElementId.InvalidElementId ? id : replacement;
+          var actual = document.GetElement(actualId);
+          if (actual == null || actual.GetTypeId() != targetId)
+              throw new InvalidOperationException("Type readback does not match the requested type.");
+          changed.Add(actualId.Value);
+      }
+      catch (Exception ex) { skipped.Add(new { Id = id.Value, Reason = ex.Message }); }
+  }
+  return new { Status = changed.Count > 0 && skipped.Count == 0 ? "Modified" : "Error",
+      Message = changed.Count == 0 ? "No element types were changed." : skipped.Count > 0 ? "Some selected elements could not be changed; see Skipped." : "Element types changed.",
+      ElementIds = changed, Count = changed.Count, Skipped = skipped };
+parameters:
+  - name: "category"
+    type: "string"
+    description: "BuiltInCategory identifier such as OST_Walls"
+    source: "designer"
+    required: true
+  - name: "type_id"
+    type: "integer"
+    description: "Target ElementType id from list_types for the selected category"
+    source: "designer"
+    required: true
+preconditions: []
+not_for: []
+applies_when: ["change type"]
+validator: {"kind":"param_equals","category":"{category}","checks":[{"param_name":"ELEM_TYPE_PARAM","spec_param":"type_id"}]}
+fixtures: [{"name":"basic","params":{"category":"OST_Walls","type_id":201},"expect":{"Status":"Modified"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "change type"

@@ -1,0 +1,41 @@
+schema_version: 1
+name: "delete_selected"
+display_name: "Delete Selected"
+description: "Delete up to 100 selected elements and report all ids Revit actually deleted, including dependent elements. An empty selection is an error."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  var selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  if (selected.Count == 0)
+      return new { Status = "Error", Message = "No elements are selected." };
+  if (selected.Count > 100)
+      return new { Status = "Error", Message = "Select at most 100 elements per run." };
+  try
+  {
+      foreach (var id in selected)
+      {
+          var element = document.GetElement(id);
+          if (element == null || element.Pinned)
+              return new { Status = "Error", Message = "A selected element is missing or pinned; nothing was deleted." };
+      }
+      var deleted = document.Delete(selected);
+      var ids = deleted.Select(id => id.Value).ToList();
+      var surviving = deleted.Where(id => document.GetElement(id) != null).Select(id => id.Value).ToList();
+      return new { Status = ids.Count > 0 && surviving.Count == 0 ? "Deleted" : "Error",
+          Message = surviving.Count == 0 ? "Deleted ids include dependent elements." : "Some reported ids still exist.",
+          ElementIds = ids, Count = ids.Count, SurvivingIds = surviving };
+  }
+  catch (Exception ex)
+  {
+      return new { Status = "Error", Message = ex.Message };
+  }
+parameters: []
+preconditions: []
+not_for: []
+applies_when: ["delete selected"]
+validator: null
+fixtures: [{"name":"basic","params":{},"expect":{"Status":"Deleted"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "delete selected"

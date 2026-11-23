@@ -1,0 +1,82 @@
+schema_version: 1
+name: "create_roof_by_footprint"
+display_name: "Create Roof By Footprint"
+description: "Create a rectangular footprint roof on a named level. Type names must be unique."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  try
+  {
+      var levels = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+          .Where(e => e.Name == "{level_name}").Take(2).ToList();
+      if (levels.Count != 1)
+          return new { Status = "Error", Message = "Level name must match exactly one level." };
+      var level = levels[0];
+      var types = new FilteredElementCollector(document).OfClass(typeof(RoofType)).Cast<RoofType>()
+          .Where(e => e.Name == "{type_name}").Take(2).ToList();
+      if (types.Count != 1)
+          return new { Status = "Error", Message = "Roof type name must match exactly one type." };
+      double x = {x} / 304.8, y = {y} / 304.8;
+      double width = {width} / 304.8, length = {length} / 304.8;
+      if (width <= document.Application.ShortCurveTolerance || length <= document.Application.ShortCurveTolerance
+          || !XYZ.IsWithinLengthLimits(new XYZ(x, y, level.Elevation))
+          || !XYZ.IsWithinLengthLimits(new XYZ(x + width, y + length, level.Elevation)))
+          return new { Status = "Error", Message = "Rectangle dimensions are too small or outside the model limits." };
+      var points = new[] { new XYZ(x, y, level.Elevation), new XYZ(x + width, y, level.Elevation),
+          new XYZ(x + width, y + length, level.Elevation), new XYZ(x, y + length, level.Elevation) };
+      var profile = new CurveArray();
+      for (int i = 0; i < 4; i++) profile.Append(Line.CreateBound(points[i], points[(i + 1) % 4]));
+      ModelCurveArray edges;
+      var roof = document.Create.NewFootPrintRoof(profile, level, types[0], out edges);
+      return new { Status = "Created", ElementId = roof.Id.Value, Level = level.Name, TypeId = types[0].Id.Value };
+  }
+  catch (Exception ex)
+  {
+      return new { Status = "Error", Message = ex.Message };
+  }
+parameters:
+  - name: "type_name"
+    type: "string"
+    description: "Roof type name"
+    source: "tool:family_types"
+    required: true
+    choices_from: "family_types:OST_Roofs"
+  - name: "level_name"
+    type: "string"
+    description: "Level name"
+    source: "tool:levels"
+    required: true
+    choices_from: "levels"
+  - name: "x"
+    type: "double"
+    description: "Roof x (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "y"
+    type: "double"
+    description: "Roof y (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "width"
+    type: "double"
+    description: "Roof width (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "length"
+    type: "double"
+    description: "Roof length (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+preconditions: [{"kind":"levels_min","value":1}]
+not_for: []
+applies_when: ["create roof by footprint"]
+validator: {"kind":"count_delta","category":"OST_Roofs","expected":1}
+fixtures: [{"name":"basic","params":{"type_name":"Generic Roof","level_name":"L2","x":0,"y":0,"width":6000,"length":8000},"expect":{"Status":"Created"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "create roof by footprint"

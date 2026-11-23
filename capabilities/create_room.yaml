@@ -1,0 +1,52 @@
+schema_version: 1
+name: "create_room"
+display_name: "Create Room"
+description: "Place one room at a point on a named level. The level name must be unique."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  try
+  {
+      var levels = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+          .Where(e => e.Name == "{level_name}").Take(2).ToList();
+      if (levels.Count != 1)
+          return new { Status = "Error", Message = "Level name must match exactly one level." };
+      var level = levels[0];
+      var point = new UV({x} / 304.8, {y} / 304.8);
+      if (!XYZ.IsWithinLengthLimits(new XYZ(point.U, point.V, level.Elevation)))
+          return new { Status = "Error", Message = "Location is outside the model limits." };
+      var room = document.Create.NewRoom(level, point);
+      return new { Status = "Created", ElementId = room.Id.Value, Level = level.Name };
+  }
+  catch (Exception ex)
+  {
+      return new { Status = "Error", Message = ex.Message };
+  }
+parameters:
+  - name: "level_name"
+    type: "string"
+    description: "Level name"
+    source: "tool:levels"
+    required: true
+    choices_from: "levels"
+  - name: "x"
+    type: "double"
+    description: "Room insertion X (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "y"
+    type: "double"
+    description: "Room insertion Y (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+preconditions: [{"kind":"levels_min","value":1}]
+not_for: []
+applies_when: ["create room"]
+validator: {"kind":"count_delta","category":"OST_Rooms","expected":1}
+fixtures: [{"name":"basic","params":{"level_name":"L1","x":2000,"y":2000},"expect":{"Status":"Created"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "create room"

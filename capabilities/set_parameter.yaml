@@ -1,0 +1,114 @@
+schema_version: 1
+name: "set_parameter"
+display_name: "Set Parameter"
+description: "Set one parameter on up to 100 selected elements. Use a BuiltInParameter identifier, shared-parameter GUID, or an unambiguous name. Values are text; length values are entered in millimeters. Non-length doubles are refused."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  var selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  if (selected.Count == 0)
+      return new { Status = "Error", Message = "No elements are selected." };
+  if (selected.Count > 100)
+      return new { Status = "Error", Message = "Select at most 100 elements per run." };
+  string parameterName = "{parameter_name}";
+  string value = "{value}";
+  var changed = new List<long>();
+  var skipped = new List<object>();
+  foreach (var id in selected)
+  {
+      try
+      {
+          var element = document.GetElement(id);
+          if (element == null) throw new InvalidOperationException("Element was not found.");
+          Parameter parameter;
+          BuiltInParameter builtin;
+          Guid shared;
+          if (Enum.TryParse(parameterName, out builtin) && Enum.IsDefined(typeof(BuiltInParameter), builtin))
+              parameter = element.get_Parameter(builtin);
+          else if (Guid.TryParse(parameterName, out shared))
+              parameter = element.get_Parameter(shared);
+          else
+          {
+              var matches = element.GetParameters(parameterName);
+              if (matches.Count != 1) throw new InvalidOperationException("Parameter name must match exactly one parameter.");
+              parameter = matches[0];
+          }
+          if (parameter == null || parameter.IsReadOnly)
+              throw new InvalidOperationException("Parameter is missing or read-only.");
+          bool updated = false;
+          if (parameter.StorageType == StorageType.String)
+          {
+              if (parameter.HasValue && parameter.AsString() == value) continue;
+              updated = parameter.Set(value);
+              if (updated) changed.Add(id.Value);
+              if (!parameter.HasValue || parameter.AsString() != value)
+                  throw new InvalidOperationException("Parameter readback does not match the requested text.");
+          }
+          else if (parameter.StorageType == StorageType.Integer)
+          {
+              int number;
+              if (!int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out number))
+                  throw new InvalidOperationException("Parameter requires an integer value.");
+              if (parameter.HasValue && parameter.AsInteger() == number) continue;
+              updated = parameter.Set(number);
+              if (updated) changed.Add(id.Value);
+              if (!parameter.HasValue || parameter.AsInteger() != number)
+                  throw new InvalidOperationException("Parameter readback does not match the requested integer.");
+          }
+          else if (parameter.StorageType == StorageType.ElementId)
+          {
+              long number;
+              if (!long.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out number))
+                  throw new InvalidOperationException("Parameter requires an ElementId.");
+              var target = new ElementId(number);
+              if (number > 0 && document.GetElement(target) == null)
+                  throw new InvalidOperationException("The requested ElementId was not found.");
+              if (parameter.HasValue && parameter.AsElementId() == target) continue;
+              updated = parameter.Set(target);
+              if (updated) changed.Add(id.Value);
+              if (!parameter.HasValue || parameter.AsElementId() != target)
+                  throw new InvalidOperationException("Parameter readback does not match the requested ElementId.");
+          }
+          else if (parameter.StorageType == StorageType.Double)
+          {
+              if (!SpecTypeId.Length.Equals(parameter.Definition.GetDataType()))
+                  throw new InvalidOperationException("Only length double parameters are supported; input is in millimeters.");
+              double millimeters;
+              if (!double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out millimeters)
+                  || double.IsNaN(millimeters) || double.IsInfinity(millimeters))
+                  throw new InvalidOperationException("Parameter requires a finite length in millimeters.");
+              double internalValue = millimeters / 304.8;
+              if (parameter.HasValue && Math.Abs(parameter.AsDouble() - internalValue) <= 1e-9) continue;
+              updated = parameter.Set(internalValue);
+              if (updated) changed.Add(id.Value);
+              if (!parameter.HasValue || Math.Abs(parameter.AsDouble() - internalValue) > 1e-9)
+                  throw new InvalidOperationException("Parameter readback does not match the requested length.");
+          }
+          else throw new InvalidOperationException("This storage type cannot be changed.");
+          if (!updated) throw new InvalidOperationException("Revit refused the parameter value.");
+      }
+      catch (Exception ex) { skipped.Add(new { Id = id.Value, Reason = ex.Message }); }
+  }
+  return new { Status = changed.Count > 0 && skipped.Count == 0 ? "Modified" : "Error",
+      Message = changed.Count == 0 ? "No parameters were changed." : skipped.Count > 0 ? "Some selected elements could not be changed; see Skipped." : "Parameters updated.",
+      ElementIds = changed, Count = changed.Count, Skipped = skipped };
+parameters:
+  - name: "parameter_name"
+    type: "string"
+    description: "BuiltInParameter identifier, shared parameter GUID, or unique parameter name"
+    source: "designer"
+    required: true
+  - name: "value"
+    type: "string"
+    description: "Text, integer, ElementId, or length in millimeters according to the parameter storage type"
+    source: "designer"
+    required: true
+preconditions: []
+not_for: []
+applies_when: ["set parameter"]
+validator: null
+fixtures: [{"name":"basic","params":{"parameter_name":"ALL_MODEL_INSTANCE_COMMENTS","value":"Reviewed"},"expect":{"Status":"Modified"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "set parameter"

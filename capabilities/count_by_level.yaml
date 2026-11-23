@@ -1,0 +1,75 @@
+schema_version: 1
+name: "count_by_level"
+display_name: "Count By Level"
+description: "Count instances of a category by level, returning at most 200 level rows. Elements without a level are reported separately. At most 5000 instances are inspected per run."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  try
+  {
+      string categoryName = "{category}";
+      BuiltInCategory category;
+      if (!categoryName.StartsWith("OST_", StringComparison.Ordinal)
+          || !Enum.TryParse(categoryName, out category) || !Enum.IsDefined(typeof(BuiltInCategory), category))
+          return new { Status = "Error", Message = "Unknown BuiltInCategory identifier." };
+      int limit = Math.Max(1, Math.Min(200, {limit}));
+      var elements = new FilteredElementCollector(document).OfCategory(category).WhereElementIsNotElementType().Take(5001).ToList();
+      if (elements.Count > 5000)
+          return new { Status = "Error", Message = "This query supports at most 5000 instances per category to keep Revit responsive.", Truncated = true };
+      var counts = new Dictionary<long, int>();
+      var skipped = new List<object>();
+      foreach (var element in elements)
+      {
+          try
+          {
+              long key = element.LevelId.Value;
+              int count;
+              counts.TryGetValue(key, out count);
+              counts[key] = count + 1;
+          }
+          catch (Exception ex) { skipped.Add(new { Id = element.Id.Value, Reason = ex.Message }); }
+      }
+      var rows = new List<object>();
+      var levels = new FilteredElementCollector(document).OfClass(typeof(Level));
+      int total = levels.GetElementCount();
+      foreach (var level in levels.Cast<Level>().Take(limit))
+      {
+          try
+          {
+              int count;
+              counts.TryGetValue(level.Id.Value, out count);
+              rows.Add(new { Id = level.Id.Value, Name = level.Name, Count = count });
+          }
+          catch (Exception ex) { skipped.Add(new { Id = level.Id.Value, Reason = ex.Message }); }
+      }
+      int unassigned;
+      counts.TryGetValue(ElementId.InvalidElementId.Value, out unassigned);
+      return new { Status = skipped.Count == 0 ? "Ok" : "Error", Category = categoryName, Total = total,
+          ElementCount = elements.Count, WithoutLevel = unassigned, Items = rows, Returned = rows.Count,
+          Truncated = total > rows.Count, Skipped = skipped };
+  }
+  catch (Exception ex)
+  {
+      return new { Status = "Error", Message = ex.Message };
+  }
+parameters:
+  - name: "category"
+    type: "string"
+    description: "BuiltInCategory identifier such as OST_Walls"
+    source: "designer"
+    required: true
+  - name: "limit"
+    type: "int"
+    description: "Maximum returned rows, clamped to 1 through 200"
+    source: "default"
+    required: false
+    default: 100
+preconditions: []
+not_for: []
+applies_when: ["count by level"]
+validator: {"kind":"count_delta","category":"{category}","expected":0}
+fixtures: [{"name":"basic","params":{"category":"OST_Walls","limit":100},"expect":{"Status":"Ok"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "count by level"

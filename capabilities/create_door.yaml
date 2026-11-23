@@ -1,0 +1,84 @@
+schema_version: 1
+name: "create_door"
+display_name: "Create Door"
+description: "Place one wall-hosted door. Type names must be unique within the category."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  ElementId createdId = ElementId.InvalidElementId;
+  try
+  {
+      var wall = document.GetElement(new ElementId((long){wall_id})) as Wall;
+      if (wall == null)
+          return new { Status = "Error", Message = "Host wall was not found." };
+      var level = document.GetElement(wall.LevelId) as Level;
+      if (level == null)
+          return new { Status = "Error", Message = "The wall has no usable level." };
+      var symbols = new FilteredElementCollector(document).OfClass(typeof(FamilySymbol))
+          .OfCategory(BuiltInCategory.OST_Doors).Cast<FamilySymbol>()
+          .Where(e => e.Name == "{type_name}").Take(2).ToList();
+      if (symbols.Count != 1)
+          return new { Status = "Error", Message = "Type name must match exactly one loaded family type in this category." };
+      var symbol = symbols[0];
+      if (symbol.Family.FamilyPlacementType != FamilyPlacementType.OneLevelBasedHosted)
+          return new { Status = "Error", Message = "Choose a wall-hosted family type." };
+      var location = new XYZ({x} / 304.8, {y} / 304.8, level.Elevation);
+      if (!XYZ.IsWithinLengthLimits(location))
+          return new { Status = "Error", Message = "Location is outside the model limits." };
+      var wallCurve = wall.Location as LocationCurve;
+      var projected = wallCurve == null ? null : wallCurve.Curve.Project(location);
+      if (projected == null || projected.XYZPoint.DistanceTo(new XYZ(location.X, location.Y, projected.XYZPoint.Z)) > Math.Max(wall.Width / 2.0, document.Application.ShortCurveTolerance))
+          return new { Status = "Error", Message = "The location must lie on the host wall." };
+      if (!symbol.IsActive) { symbol.Activate(); document.Regenerate(); }
+      var instance = document.Create.NewFamilyInstance(location, symbol, wall, level, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+      createdId = instance.Id;
+      if (instance.Host == null || instance.Host.Id != wall.Id)
+          throw new InvalidOperationException("The new instance was not hosted by the requested wall.");
+      return new { Status = "Created", ElementId = instance.Id.Value, HostId = wall.Id.Value, TypeId = symbol.Id.Value, Level = level.Name };
+  }
+  catch (Exception ex)
+  {
+      if (createdId != ElementId.InvalidElementId)
+      {
+          try { document.Delete(createdId); }
+          catch (Exception cleanup)
+          {
+              return new { Status = "Error", Message = ex.Message + " Cleanup failed: " + cleanup.Message, ElementId = createdId.Value };
+          }
+      }
+      return new { Status = "Error", Message = ex.Message };
+  }
+parameters:
+  - name: "wall_id"
+    type: "integer"
+    description: "Host wall ElementId"
+    source: "tool:elements"
+    required: true
+    choices_from: "elements:OST_Walls"
+  - name: "type_name"
+    type: "string"
+    description: "Loaded wall-hosted type name"
+    source: "tool:family_types"
+    required: true
+    choices_from: "family_types:OST_Doors"
+  - name: "x"
+    type: "double"
+    description: "Insertion X (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "y"
+    type: "double"
+    description: "Insertion Y (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+preconditions: [{"kind":"levels_min","value":1}]
+not_for: []
+applies_when: ["create door"]
+validator: {"kind":"count_delta","category":"OST_Doors","expected":1}
+fixtures: [{"name":"basic","params":{"wall_id":101,"type_name":"Single 900","x":1500,"y":0},"expect":{"Status":"Created"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "create door"

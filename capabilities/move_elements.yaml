@@ -1,0 +1,85 @@
+schema_version: 1
+name: "move_elements"
+display_name: "Move Elements"
+description: "Move up to 100 selected elements by a nonzero vector in millimeters. Pinned elements are refused; actual moved element ids are returned."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  var selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  if (selected.Count == 0)
+      return new { Status = "Error", Message = "No elements are selected." };
+  if (selected.Count > 100)
+      return new { Status = "Error", Message = "Select at most 100 elements per run." };
+  try
+  {
+      var vector = new XYZ({x} / 304.8, {y} / 304.8, {z} / 304.8);
+      if (!XYZ.IsWithinLengthLimits(vector) || vector.GetLength() <= 1e-9)
+          return new { Status = "Error", Message = "Move vector must be finite, within model limits, and nonzero." };
+      var before = new Dictionary<long, XYZ>();
+      foreach (var id in selected)
+      {
+          var element = document.GetElement(id);
+          if (element == null || element.Pinned)
+              return new { Status = "Error", Message = "A selected element is missing or pinned; nothing was moved.", Id = id.Value };
+          var point = element.Location as LocationPoint;
+          var curve = element.Location as LocationCurve;
+          XYZ position = point != null ? point.Point : curve != null ? curve.Curve.Evaluate(0.5, true) : null;
+          if (position == null || !XYZ.IsWithinLengthLimits(position + vector))
+              return new { Status = "Error", Message = "A selected element has no verifiable location or a destination outside model limits; nothing was moved.", Id = id.Value };
+          before[id.Value] = position;
+      }
+      // One operation prevents moving a host and its selected dependents separately.
+      ElementTransformUtils.MoveElements(document, selected, vector);
+      document.Regenerate();
+      var changed = new List<long>();
+      var skipped = new List<object>();
+      foreach (var id in selected)
+      {
+          try
+          {
+              var moved = document.GetElement(id);
+              var point = moved == null ? null : moved.Location as LocationPoint;
+              var curve = moved == null ? null : moved.Location as LocationCurve;
+              XYZ after = point != null ? point.Point : curve != null ? curve.Curve.Evaluate(0.5, true) : null;
+              if (after != null && after.DistanceTo(before[id.Value]) > 1e-9) changed.Add(id.Value);
+              if (after == null || after.DistanceTo(before[id.Value] + vector) > 1e-6)
+                  throw new InvalidOperationException("Location readback does not match the requested translation.");
+          }
+          catch (Exception ex) { skipped.Add(new { Id = id.Value, Reason = ex.Message }); }
+      }
+      return new { Status = changed.Count > 0 && skipped.Count == 0 ? "Modified" : "Error",
+          Message = changed.Count == 0 ? "No elements were moved." : skipped.Count > 0 ? "Some selected elements did not reach their requested positions; see Skipped." : "Elements moved.",
+          ElementIds = changed, Count = changed.Count, Skipped = skipped };
+  }
+  catch (Exception ex)
+  {
+      return new { Status = "Error", Message = ex.Message };
+  }
+parameters:
+  - name: "x"
+    type: "double"
+    description: "Translation x (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "y"
+    type: "double"
+    description: "Translation y (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "z"
+    type: "double"
+    description: "Translation z (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+preconditions: []
+not_for: []
+applies_when: ["move elements"]
+validator: null
+fixtures: [{"name":"basic","params":{"x":1000,"y":0,"z":0},"expect":{"Status":"Modified"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "move elements"

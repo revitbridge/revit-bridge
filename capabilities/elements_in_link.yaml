@@ -1,0 +1,65 @@
+schema_version: 1
+name: "elements_in_link"
+display_name: "Elements In Link"
+description: "Count instances of a category in one loaded link instance and list the first rows, up to 200. IDs belong to the linked document; no geometry is returned."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  try
+  {
+      string categoryName = "{category}";
+      BuiltInCategory category;
+      if (!categoryName.StartsWith("OST_", StringComparison.Ordinal)
+          || !Enum.TryParse(categoryName, out category) || !Enum.IsDefined(typeof(BuiltInCategory), category))
+          return new { Status = "Error", Message = "Unknown BuiltInCategory identifier." };
+      var link = document.GetElement(new ElementId((long){link_id})) as RevitLinkInstance;
+      if (link == null)
+          return new { Status = "Error", Message = "The link instance was not found." };
+      var linkedDocument = link.GetLinkDocument();
+      if (linkedDocument == null)
+          return new { Status = "Error", Message = "The link is not loaded." };
+      int limit = Math.Max(1, Math.Min(200, {limit}));
+      var elements = new FilteredElementCollector(linkedDocument).OfCategory(category).WhereElementIsNotElementType();
+      int total = elements.GetElementCount();
+      var rows = new List<object>();
+      var skipped = new List<object>();
+      foreach (var element in elements.Take(limit))
+      {
+          try { rows.Add(new { Id = element.Id.Value, Name = element.Name, TypeId = element.GetTypeId().Value }); }
+          catch (Exception ex) { skipped.Add(new { Id = element.Id.Value, Reason = ex.Message }); }
+      }
+      return new { Status = skipped.Count == 0 ? "Ok" : "Error", LinkId = link.Id.Value, LinkName = link.Name,
+          Category = categoryName, Total = total, Items = rows, Returned = rows.Count,
+          Truncated = total > rows.Count, Skipped = skipped };
+  }
+  catch (Exception ex)
+  {
+      return new { Status = "Error", Message = ex.Message };
+  }
+parameters:
+  - name: "link_id"
+    type: "integer"
+    description: "Link instance ElementId"
+    source: "tool:elements"
+    required: true
+    choices_from: "elements:OST_RvtLinks"
+  - name: "category"
+    type: "string"
+    description: "BuiltInCategory identifier such as OST_Walls"
+    source: "designer"
+    required: true
+  - name: "limit"
+    type: "int"
+    description: "Maximum returned rows, clamped to 1 through 200"
+    source: "default"
+    required: false
+    default: 100
+preconditions: []
+not_for: []
+applies_when: ["elements in link"]
+validator: {"kind":"count_delta","category":"OST_RvtLinks","expected":0}
+fixtures: [{"name":"basic","params":{"link_id":301,"category":"OST_Walls","limit":100},"expect":{"Status":"Ok"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "elements in link"

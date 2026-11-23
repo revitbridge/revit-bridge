@@ -1,0 +1,100 @@
+schema_version: 1
+name: "create_ceiling"
+display_name: "Create Ceiling"
+description: "Create a rectangular ceiling on a named level with an offset in millimeters."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  ElementId createdId = ElementId.InvalidElementId;
+  try
+  {
+      var levels = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+          .Where(e => e.Name == "{level_name}").Take(2).ToList();
+      if (levels.Count != 1)
+          return new { Status = "Error", Message = "Level name must match exactly one level." };
+      var level = levels[0];
+      var types = new FilteredElementCollector(document).OfClass(typeof(CeilingType)).Cast<CeilingType>()
+          .Where(e => e.Name == "{type_name}").Take(2).ToList();
+      if (types.Count != 1)
+          return new { Status = "Error", Message = "Ceiling type name must match exactly one type." };
+      double x = {x} / 304.8, y = {y} / 304.8;
+      double width = {width} / 304.8, length = {length} / 304.8;
+      if (width <= document.Application.ShortCurveTolerance || length <= document.Application.ShortCurveTolerance
+          || !XYZ.IsWithinLengthLimits(new XYZ(x, y, level.Elevation))
+          || !XYZ.IsWithinLengthLimits(new XYZ(x + width, y + length, level.Elevation)))
+          return new { Status = "Error", Message = "Rectangle dimensions are too small or outside the model limits." };
+      var points = new[] { new XYZ(x, y, level.Elevation), new XYZ(x + width, y, level.Elevation),
+          new XYZ(x + width, y + length, level.Elevation), new XYZ(x, y + length, level.Elevation) };
+      var profile = new List<Curve>();
+      for (int i = 0; i < 4; i++) profile.Add(Line.CreateBound(points[i], points[(i + 1) % 4]));
+      var ceiling = Ceiling.Create(document, new List<CurveLoop> { CurveLoop.Create(profile) }, types[0].Id, level.Id);
+      createdId = ceiling.Id;
+      var height = ceiling.get_Parameter(BuiltInParameter.CEILING_HEIGHTABOVELEVEL_PARAM);
+      if (height == null || height.IsReadOnly || !(height.HasValue && Math.Abs(height.AsDouble() - {height} / 304.8) <= 1e-9) && !height.Set({height} / 304.8))
+          throw new InvalidOperationException("The ceiling height could not be set.");
+      return new { Status = "Created", ElementId = ceiling.Id.Value, Level = level.Name, TypeId = types[0].Id.Value };
+  }
+  catch (Exception ex)
+  {
+      if (createdId != ElementId.InvalidElementId)
+      {
+          try { document.Delete(createdId); }
+          catch (Exception cleanup)
+          {
+              return new { Status = "Error", Message = ex.Message + " Cleanup failed: " + cleanup.Message, ElementId = createdId.Value };
+          }
+      }
+      return new { Status = "Error", Message = ex.Message };
+  }
+parameters:
+  - name: "type_name"
+    type: "string"
+    description: "Ceiling type name"
+    source: "tool:family_types"
+    required: true
+    choices_from: "family_types:OST_Ceilings"
+  - name: "level_name"
+    type: "string"
+    description: "Level name"
+    source: "tool:levels"
+    required: true
+    choices_from: "levels"
+  - name: "x"
+    type: "double"
+    description: "Ceiling x (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "y"
+    type: "double"
+    description: "Ceiling y (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "width"
+    type: "double"
+    description: "Ceiling width (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "length"
+    type: "double"
+    description: "Ceiling length (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+  - name: "height"
+    type: "double"
+    description: "Ceiling height (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+preconditions: [{"kind":"levels_min","value":1}]
+not_for: []
+applies_when: ["create ceiling"]
+validator: {"kind":"count_delta","category":"OST_Ceilings","expected":1}
+fixtures: [{"name":"basic","params":{"type_name":"Plain Ceiling","level_name":"L1","x":0,"y":0,"width":6000,"length":8000,"height":2700},"expect":{"Status":"Created"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "create ceiling"

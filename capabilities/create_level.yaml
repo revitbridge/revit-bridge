@@ -1,0 +1,56 @@
+schema_version: 1
+name: "create_level"
+display_name: "Create Level"
+description: "Create one level with a unique name and an elevation in millimeters."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  ElementId createdId = ElementId.InvalidElementId;
+  try
+  {
+      string name = "{name}";
+      if (string.IsNullOrWhiteSpace(name) || !NamingUtils.IsValidName(name))
+          return new { Status = "Error", Message = "A valid level name is required." };
+      if (new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>().Any(e => e.Name == name))
+          return new { Status = "Error", Message = "A level with this name already exists." };
+      double elevation = {elevation} / 304.8;
+      if (double.IsNaN(elevation) || double.IsInfinity(elevation))
+          return new { Status = "Error", Message = "Elevation must be finite." };
+      var level = Level.Create(document, elevation);
+      createdId = level.Id;
+      level.Name = name;
+      return new { Status = "Created", ElementId = level.Id.Value, Name = level.Name, ElevationMm = level.Elevation * 304.8 };
+  }
+  catch (Exception ex)
+  {
+      if (createdId != ElementId.InvalidElementId)
+      {
+          try { document.Delete(createdId); }
+          catch (Exception cleanup)
+          {
+              return new { Status = "Error", Message = ex.Message + " Cleanup failed: " + cleanup.Message, ElementId = createdId.Value };
+          }
+      }
+      return new { Status = "Error", Message = ex.Message };
+  }
+parameters:
+  - name: "name"
+    type: "string"
+    description: "Unique level name"
+    source: "designer"
+    required: true
+  - name: "elevation"
+    type: "double"
+    description: "Level elevation (mm)"
+    source: "designer"
+    required: true
+    unit: "mm"
+preconditions: []
+not_for: []
+applies_when: ["create level"]
+validator: {"kind":"count_delta","category":"OST_Levels","expected":1}
+fixtures: [{"name":"basic","params":{"name":"L2","elevation":3000},"expect":{"Status":"Created"}}]
+approved_by: null
+approved_at: null
+created_at: "2026-01-01T00:00:00"
+source_query: "create level"
