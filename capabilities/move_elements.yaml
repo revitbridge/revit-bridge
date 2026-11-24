@@ -13,7 +13,7 @@ description: >-
 version: "1.0.0"
 revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
   // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
   // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
@@ -77,7 +77,20 @@ code_template: |
           + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
 
   // 2. Move them in one call (a host and its selected dependents move together), then read back.
-  ElementTransformUtils.MoveElements(document, selected, vector);
+  // Revit's own refusals of this selection (API docs: ArgumentException for elements it cannot
+  // take, InvalidOperationException when it cannot move them all) are the designer's to fix.
+  try
+  {
+      ElementTransformUtils.MoveElements(document, selected, vector);
+  }
+  catch (Autodesk.Revit.Exceptions.ArgumentException ex) when (!(ex is Autodesk.Revit.Exceptions.ArgumentNullException))
+  {
+      throw new InvalidOperationException("REFUSED: Revit would not move the selection: " + ex.Message);
+  }
+  catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+  {
+      throw new InvalidOperationException("REFUSED: Revit would not move the selection: " + ex.Message);
+  }
   document.Regenerate();
   var moved = new List<long>();
   var stayed = new List<long>();

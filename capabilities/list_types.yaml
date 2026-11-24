@@ -10,7 +10,7 @@ version: "1.0.0"
 revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
   // Read only.
-  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
   // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
   // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;

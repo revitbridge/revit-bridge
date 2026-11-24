@@ -12,7 +12,7 @@ description: >-
 version: "1.0.0"
 revit_versions: ["2024", "2025", "2026", "2027"]
 code_template: |
-  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
   // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
   // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
@@ -20,6 +20,13 @@ code_template: |
   string categoryName = "{category}";
   string typeText = "{type_id}";
   const int MaxSelected = 100;
+
+  // 0. Revit 2024 or later: the param_equals validator reads ids with ElementId's 64-bit property. This code
+  // compiles on 2021 and 2023 too, and there the change would be kept and then fail validation.
+  int revitYear;
+  if (int.TryParse(document.Application.VersionNumber, System.Globalization.NumberStyles.Integer, invariant, out revitYear)
+      && revitYear < 2024)
+      throw new InvalidOperationException("REFUSED: This tool needs Revit 2024 or later; this is Revit " + revitYear + ".");
 
   // 1. The category and the target type.
   BuiltInCategory category;

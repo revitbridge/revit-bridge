@@ -14,7 +14,7 @@ description: >-
 version: "1.0.0"
 revit_versions: ["2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
   // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
   // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   // Definition.GetDataType exists from Revit 2022 (the add-in builds 2023 on): on 2021 this code does
@@ -188,17 +188,30 @@ code_template: |
           alreadySet.Add(idOf(step.Item1));
           continue;
       }
+      // Revit's own refusal of the value (API docs: InvalidOperationException for a read-only
+      // parameter, ArgumentException for a value it cannot take) is the designer's to fix.
       bool accepted;
-      if (step.Item3 is string)
-          accepted = step.Item2.Set((string)step.Item3);
-      else if (step.Item3 is int)
-          accepted = step.Item2.Set((int)step.Item3);
-      else if (step.Item3 is double)
-          accepted = step.Item2.Set((double)step.Item3);
-      else
-          accepted = step.Item2.Set((ElementId)step.Item3);
+      try
+      {
+          if (step.Item3 is string)
+              accepted = step.Item2.Set((string)step.Item3);
+          else if (step.Item3 is int)
+              accepted = step.Item2.Set((int)step.Item3);
+          else if (step.Item3 is double)
+              accepted = step.Item2.Set((double)step.Item3);
+          else
+              accepted = step.Item2.Set((ElementId)step.Item3);
+      }
+      catch (Autodesk.Revit.Exceptions.ArgumentException ex) when (!(ex is Autodesk.Revit.Exceptions.ArgumentNullException))
+      {
+          throw new InvalidOperationException("REFUSED: Revit would not set \"" + parameterName + "\" on element " + idOf(step.Item1) + ": " + ex.Message);
+      }
+      catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+      {
+          throw new InvalidOperationException("REFUSED: Revit would not set \"" + parameterName + "\" on element " + idOf(step.Item1) + ": " + ex.Message);
+      }
       if (!accepted)
-          throw new InvalidOperationException("REFUSED: Revit refused the value \"" + valueText + "\" for element " + idOf(step.Item1) + "; nothing was changed.");
+          throw new InvalidOperationException("REFUSED: Revit refused the value \"" + valueText + "\" for element " + idOf(step.Item1) + "; nothing was kept.");
       changed.Add(idOf(step.Item1));
   }
   document.Regenerate();

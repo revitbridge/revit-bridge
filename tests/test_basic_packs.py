@@ -52,6 +52,8 @@ FIRST_YEAR = {
 }
 MARKER = "REFUSED: "
 THROW = "throw new InvalidOperationException("
+# Revit exceptions a pack may catch: only to throw them on as a refusal of the designer's input.
+CAUGHT = ("Autodesk.Revit.Exceptions.ArgumentException", "Autodesk.Revit.Exceptions.InvalidOperationException")
 # Throws that are failures of the pack (it tried and the outcome is wrong), by the start of their
 # message; every other throw is a refusal and carries the marker.
 FAILURES = {
@@ -59,7 +61,7 @@ FAILURES = {
     "create_window": ['"Revit returned no window', '"Revit did not place the window',
                       "\"The window's sill height cannot be set", '"Revit refused the sill height',
                       '"Revit did not keep the sill height'],
-    "create_room": ['"Revit returned no room', '"Revit refused the room name'],
+    "create_room": ['"Revit returned no room', "\"The room's name parameter cannot be set"],
     "create_roof_by_footprint": ['"Revit did not create the roof'],
     "create_ceiling": ['"Revit returned no ceiling', "\"The ceiling's height above the level cannot be set",
                        '"Revit refused the height', '"Revit did not keep the height'],
@@ -229,12 +231,42 @@ def test_refusals_carry_the_marker_and_failures_do_not(name):
 
 @pytest.mark.parametrize("name", NAMES)
 def test_no_catch_swallows_an_error(name):
+    """Only Revit's own refusals of designer input are caught, and each is thrown on as a refusal."""
     code = code_of(name)
     for caught in re.findall(r"\bcatch\s*\(([^)]*)\)", code):
-        assert caught.split()[0] == "Autodesk.Revit.Exceptions.ArgumentException", (name, caught)
+        assert caught.split()[0] in CAUGHT, (name, caught)
     for body in blocks_after(code, "catch"):
-        assert "throw new InvalidOperationException(" in body, (name, body)
+        assert body.strip("{} \n").startswith(THROW + '"' + MARKER), (name, body)
+        assert body.count(";") == 1, (name, body)                  # nothing but the rethrow
     assert not re.search(r"\bcatch\s*\{", code)
+
+
+@pytest.mark.parametrize("name, call, caught", [
+    # API docs: MoveElements throws ArgumentException and InvalidOperationException for a selection it
+    # cannot move; Delete documents ArgumentException ("cannot be deleted") - its ModificationForbidden-
+    # Exception stays a failure; Parameter.Set throws InvalidOperationException (read-only) and, for a
+    # double, ArgumentException. ArgumentNullException (a null argument: a pack bug) is let through.
+    ("move_elements", "ElementTransformUtils.MoveElements(", ["ArgumentException", "InvalidOperationException"]),
+    ("delete_selected", "document.Delete(", ["ArgumentException"]),
+    ("set_parameter", "step.Item2.Set(", ["ArgumentException", "InvalidOperationException"]),
+])
+def test_revit_refusing_the_designers_input_is_a_refusal(name, call, caught):
+    code = code_of(name)
+    tries = [m.end() for m in re.finditer(r"\btry\s*\n\s*\{", code)]
+    assert len(tries) == 1, name
+    after = code[tries[0]:]
+    assert call in after[:after.index("catch")], name
+    assert re.findall(r"catch \(Autodesk\.Revit\.Exceptions\.(\w+) ex\)", after) == caught, name
+    for match in re.finditer(r"catch \(Autodesk\.Revit\.Exceptions\.ArgumentException ex\)", after):
+        assert after[match.end():].startswith(" when (!(ex is Autodesk.Revit.Exceptions.ArgumentNullException))"), name
+
+
+def test_change_type_refuses_before_revit_2024():
+    code = code_of("change_type")
+    guard = code.index("document.Application.VersionNumber")
+    assert guard < code.index("new UIDocument(document)") and guard < code.index("ChangeTypeId(")
+    assert "revitYear < 2024" in code
+    assert THROW + '"REFUSED: This tool needs Revit 2024 or later; this is Revit " + revitYear' in code
 
 
 @pytest.mark.parametrize("name", NAMES)
