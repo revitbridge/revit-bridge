@@ -220,3 +220,29 @@ def test_param_equals_reads_back_values_with_length_tolerance():
 
     with pytest.raises(ValidatorError, match="no parameter 'height'"):
         run(handler([]), lambda c: validator.after(c, spec(), cfg, {}, {"ElementId": 7}))
+
+
+# -- what goes into a probe's C# ---------------------------------------------------------------
+
+def test_probe_values_stay_inside_their_literal():
+    """B3: a category is a whole OST_* name (``match`` let "OST_Walls\\n" through, even from a
+    {param} reference), and a param_equals name from the pack is escaped like a template value."""
+    for category in ("OST_Walls\n", "OST_Walls\"); x(); //", " OST_Walls"):
+        with pytest.raises(ValidatorError, match="must be an OST_"):
+            asyncio.run(CountDelta().before(None, spec(), {"kind": "count_delta", "category": category}))
+        with pytest.raises(ValidatorError, match="must be an OST_"):
+            asyncio.run(CreatedIds().after(None, spec(category=category), {"category": "{category}"}, {},
+                                           {"ElementId": 7}))
+
+    def handler(request):
+        if request["method"] == "send_code_to_revit":
+            return FakeRevit.code_result(request["id"], [])
+        return FakeRevit.default_handler(request)
+
+    cfg = {"kind": "param_equals", "category": "OST_Walls",
+           "checks": [{"param_name": 'Mark" }) { } x(); //', "spec_param": "mark"},
+                      {"param_name": "two\nlines\\", "spec_param": "mark"}]}
+    report, fake = run(handler, lambda c: ParamEquals().after(c, spec(mark="m"), cfg, {}, {"ElementId": 7}))
+    assert report.passed is False
+    code = fake.requests[-1]["params"]["code"]
+    assert 'new string[] { "Mark\\" }) { } x(); //", "two\\nlines\\\\" }' in code
