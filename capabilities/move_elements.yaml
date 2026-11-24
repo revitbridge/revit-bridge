@@ -5,7 +5,8 @@ description: >-
   Move the elements selected in Revit (at most 100) together by one vector in mm. Every selected
   element is checked first; pinned elements, element types, views, levels (moving one moves
   everything on it) and elements without a position in the model stop the run and nothing is
-  moved. Grids may be moved, in plan. After the move every element's
+  moved. Grids are not moved by this tool: a grid in the selection stops the run. After the
+  move every element's
   position is read back: one that stayed where it was (a door kept by its wall, a constrained
   element) also stops the run and nothing is moved. Elements that moved by a different amount
   (for example a wall stretched by its joins) are listed under NotAsRequested. Returns the ids
@@ -66,6 +67,9 @@ code_template: |
       if (element is ElementType) { problems.Add(idOf(id) + " is a type, not an element in the model"); continue; }
       if (element is View) { problems.Add(idOf(id) + " is a view"); continue; }
       if (element is Level) { problems.Add(idOf(id) + " is a level; moving it would move everything on it"); continue; }
+      // A grid has neither a location point nor a location line; this tool has no verified way to move one.
+      if (element is Grid)
+          throw new InvalidOperationException("REFUSED: Grids are not moved by this tool (element " + idOf(id) + " is a grid). Deselect the grids and run it again.");
       if (element.Pinned) { problems.Add(idOf(id) + " is pinned; unpin it in Revit first"); continue; }
       XYZ position = PositionOf(element);
       if (position == null) { problems.Add(idOf(id) + " has no position in the model"); continue; }
@@ -149,6 +153,7 @@ not_for:
   - "rotate"
   - "mirror"
   - "move level"
+  - "move grid"
 applies_when:
   - "move elements"
   - "move selected"

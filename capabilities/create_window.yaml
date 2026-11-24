@@ -100,7 +100,8 @@ code_template: |
           + " mm from an end of wall " + wallText + (widthParameter != null ? " and the window is " + toMm(2 * halfWidth) + " mm wide." : "."));
 
   // 4. Vertically: sill and head inside the wall's extent, when the wall's box is known; the head
-  // only when the type's height is readable too. ProjectElevation is the level's height in model
+  // only when the type's height is readable too (on Revit 2026 the window's insertion Z was the
+  // level's ProjectElevation plus the sill). ProjectElevation is the level's height in model
   // coordinates (the box's) whatever the level type's elevation base.
   Parameter heightParameter = lengthOf(symbol, BuiltInParameter.WINDOW_HEIGHT, BuiltInParameter.FAMILY_HEIGHT_PARAM);
   BoundingBoxXYZ wallBox = wall.get_BoundingBox(null);

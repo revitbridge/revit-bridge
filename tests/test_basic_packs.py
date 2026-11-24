@@ -407,7 +407,27 @@ def test_selection_tools_refuse_what_would_reach_beyond_the_selection():
         code = code_of(name)
         for check in refused:
             assert f"if ({check})" in code, (name, check)
-    assert "element is Grid" not in code_of("move_elements")         # grids move, in plan
+
+
+def test_move_refuses_grids_before_looking_for_a_position():
+    """A grid has neither a location point nor a location line (seen on Revit 2026): the pack has no
+    verified way to move one, so a grid in the selection is refused by name, not as 'no position'."""
+    data = data_for("move_elements")
+    code = data["code_template"]
+    grid = code.index("if (element is Grid)")
+    assert code.index("if (element is Level)") < grid < code.index("XYZ position = PositionOf(element);")
+    assert code[grid:].split("\n", 1)[1].lstrip().startswith(THROW + '"REFUSED: Grids are not moved by this tool')
+    assert "Grids are not moved by this tool" in data["description"] and "move grid" in data["not_for"]
+
+
+def test_a_collection_revit_fills_is_passed_as_an_instance():
+    """NewFootPrintRoof needs an instance for its out array: uninitialised it throws ArgumentNullException
+    (Revit 2026). No pack declares a Revit-filled collection without new."""
+    code = code_of("create_roof_by_footprint")
+    assert "ModelCurveArray edges = new ModelCurveArray();" in code
+    for name in NAMES:
+        assert not re.search(r"^\s*(?:ModelCurveArray|CurveArray|ElementSet|ElementArray|ReferenceArray)\s+\w+\s*;",
+                             code_of(name), re.MULTILINE), name
 
 
 def test_move_asks_for_every_distance():

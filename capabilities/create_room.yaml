@@ -28,7 +28,8 @@ code_template: |
       throw new InvalidOperationException("REFUSED: There is no level named \"" + levelName + "\". Pick a level from the list.");
   double x = toFeet("X", "{x}");
   double y = toFeet("Y", "{y}");
-  // ProjectElevation: the level's height in model coordinates whatever its type's elevation base.
+  // ProjectElevation: the level's height in model coordinates whatever its type's elevation base
+  // (on Revit 2026 the room's Z was the level's ProjectElevation).
   double z = level.ProjectElevation;
   if (!XYZ.IsWithinLengthLimits(new XYZ(x, y, z)))
       throw new InvalidOperationException("REFUSED: The point is outside the model's limits.");

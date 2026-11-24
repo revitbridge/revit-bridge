@@ -46,8 +46,9 @@ code_template: |
       Status = "Created",
       ElementId = long.Parse(level.Id.ToString(), invariant),
       Name = level.Name,
-      // Elevation follows the level type's elevation base; ProjectElevation does not. Both are
-      // reported until the real-machine check settles which one Level.Create takes.
+      // Level.Create takes the elevation from the model's internal origin: on Revit 2026, with a
+      // level type whose elevation base is the survey point, the input came back as ProjectElevation
+      // while Elevation (which follows the level type's elevation base) differed. Both are reported.
       ElevationMm = Math.Round(UnitUtils.ConvertFromInternalUnits(level.Elevation, UnitTypeId.Millimeters), 1),
       ProjectElevationMm = Math.Round(UnitUtils.ConvertFromInternalUnits(level.ProjectElevation, UnitTypeId.Millimeters), 1)
   };
@@ -59,7 +60,7 @@ parameters:
     required: true
   - name: elevation
     type: double
-    description: Elevation of the new level (mm)
+    description: Elevation of the new level from the model's internal origin (mm)
     unit: mm
     source: designer
     required: true

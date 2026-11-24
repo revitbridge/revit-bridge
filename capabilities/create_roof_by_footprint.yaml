@@ -58,7 +58,9 @@ code_template: |
   for (int i = 0; i < 4; i++)
       footprint.Append(Line.CreateBound(corners[i], corners[(i + 1) % 4]));
 
-  ModelCurveArray edges;
+  // Revit fills this array and needs an instance: passed uninitialised, NewFootPrintRoof throws
+  // ArgumentNullException (seen on Revit 2026).
+  ModelCurveArray edges = new ModelCurveArray();
   FootPrintRoof roof = document.Create.NewFootPrintRoof(footprint, level, roofType, out edges);
   if (roof == null)
       throw new InvalidOperationException("Revit did not create the roof; nothing was changed.");

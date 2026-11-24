@@ -57,7 +57,9 @@ code_template: |
       throw new InvalidOperationException("REFUSED: Width and length must both be more than zero mm.");
   if (height < 0)
       throw new InvalidOperationException("REFUSED: The height above the level must be zero or more mm.");
-  double z = level.ProjectElevation;   // the level's height in model coordinates, whatever its elevation base
+  // The level's height in model coordinates, whatever its elevation base (on Revit 2026 the
+  // ceiling sat at the level's ProjectElevation plus its height offset).
+  double z = level.ProjectElevation;
   XYZ[] corners =
   {
       new XYZ(x, y, z), new XYZ(x + width, y, z), new XYZ(x + width, y + length, z), new XYZ(x, y + length, z)

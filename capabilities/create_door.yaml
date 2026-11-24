@@ -99,7 +99,8 @@ code_template: |
       symbol.Activate();
       document.Regenerate();
   }
-  // ProjectElevation: the level's height in model coordinates whatever its type's elevation base.
+  // ProjectElevation: the level's height in model coordinates whatever its type's elevation base
+  // (on Revit 2026 the door's insertion Z was the level's ProjectElevation).
   FamilyInstance door = document.Create.NewFamilyInstance(new XYZ(onWall.X, onWall.Y, level.ProjectElevation), symbol, wall, level,
       Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
   if (door == null)
