@@ -78,6 +78,22 @@ the new arguments are optional.
 - `server_instructions()`, and `host_instructions()` with no arguments,
   return the 0.8.2 texts but for the version: they say revit-bridge 0.9.
 
+### Security
+
+- A capability pack parameter sent as a JSON array or object was written
+  into the C# code with Python's `str()`, unescaped, so a value for a string
+  parameter could close its string literal and add code that compiled and
+  passed the sandbox review. Every parameter now takes one string, number
+  or boolean: a list or an object is refused for every type, null counts as
+  not given (the default applies, or the parameter is missing), a numeric
+  parameter refuses a boolean and a non-finite number, a boolean parameter
+  takes true or false. `escape_param_value` raises `TypeError` for anything
+  else (`render` returns it as an error) and also escapes the line ends
+  U+0085, U+2028 and U+2029, NUL and lone surrogates; validator probes escape
+  `param_equals` parameter names and match categories whole. Strings
+  without those characters and finite numbers render to the same code as
+  before.
+
 ## [0.8.2] - 2026-11-19
 
 The journal skill reads cloud-model opens, managed exceptions and the

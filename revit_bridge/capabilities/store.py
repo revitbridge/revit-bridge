@@ -29,6 +29,7 @@ the v1 layout.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field, fields
 from datetime import datetime
@@ -41,7 +42,7 @@ from revit_bridge.paths import (
     builtin_capabilities_dir,
     user_capabilities_dir,
 )
-from revit_bridge.capabilities.schema import PACK_SCHEMA_VERSION, validate_pack
+from revit_bridge.capabilities.schema import NUMERIC_TYPES, PACK_SCHEMA_VERSION, validate_pack
 from revit_bridge.capabilities.usage import USAGE_FILE, UsageStore, empty_usage
 
 __all__ = [
@@ -61,6 +62,7 @@ DISABLED_SUFFIX = ".disabled"
 
 # A ``{name}`` token in a code template; substituted by ``render``.
 PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_]\w*)\}")
+_BOOLEAN_TYPES = frozenset({"bool", "boolean"})
 
 # Fields of a v1 pack file, in the order they are written. Parameter ``source``
 # values are "designer", "tool:<kind>", "answer" or "default".
@@ -82,19 +84,78 @@ def default_capabilities_dir() -> Path:
     return user_capabilities_dir()
 
 
+# What a regular C# string literal cannot hold as written: the quote, the backslash and the
+# characters C# reads as a line end (CR, LF, U+0085, U+2028, U+2029). NUL and lone UTF-16
+# surrogates are escaped too, so the text reaches Revit unchanged.
+_CS_ESCAPES = {
+    "\\": "\\\\", '"': '\\"', "\r": "\\r", "\n": "\\n", "\x00": "\\0",
+    "\x85": "\\u0085", "\N{LINE SEPARATOR}": "\\u2028", "\N{PARAGRAPH SEPARATOR}": "\\u2029",
+}
+_CS_ESCAPE_RE = re.compile('[\\\\"\r\n\x00\x85\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}\ud800-\udfff]')
+
+
+def _cs_escape(match: re.Match) -> str:
+    char = match.group()
+    return _CS_ESCAPES.get(char) or f"\\u{ord(char):04x}"
+
+
+def _value_kind(value) -> str:
+    """How a refused parameter value is named in an error: ``a list``, ``an object``, ``null``."""
+    if value is None:
+        return "null"
+    if isinstance(value, (list, tuple)):
+        return "a list"
+    if isinstance(value, dict):
+        return "an object"
+    return f"a value of type {type(value).__name__}"
+
+
 def escape_param_value(value) -> str:
     """Make a parameter value safe inside a C# string literal (P0-3).
 
     Placeholders in code templates sit between double quotes; a value carrying
-    a quote, backslash or newline would otherwise terminate the literal and
-    inject code. Non-strings are rendered with ``str``.
+    a quote, backslash or line end would otherwise terminate the literal and
+    inject code. Only a single value is written: a string escaped, a number as
+    Python writes it, a boolean as ``True`` / ``False``. Anything else (a list,
+    an object, None) raises TypeError: its text would reach the code unescaped.
     """
     if isinstance(value, str):
-        return (value.replace("\\", "\\\\")
-                     .replace('"', '\\"')
-                     .replace("\r", "\\r")
-                     .replace("\n", "\\n"))
-    return str(value)
+        return _CS_ESCAPE_RE.sub(_cs_escape, value)
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, int):
+        return int.__repr__(value)
+    if isinstance(value, float):
+        return float.__repr__(value)
+    raise TypeError(f"must be a single value, got {_value_kind(value)}")
+
+
+def _value_problem(value, ptype: str) -> str | None:
+    """Why ``value`` cannot fill a parameter of type ``ptype``; None when it can.
+
+    Every type takes one value: a string, a number or a boolean, never a list,
+    an object or anything else. A numeric type takes a finite number, or a
+    string that reads as one, and no boolean; a boolean type takes true / false
+    or the strings "true" / "false". Other types (string, unknown) take any of
+    the three, as before.
+    """
+    if not isinstance(value, (str, int, float)):          # bool is an int
+        return f"must be a single value, got {_value_kind(value)}"
+    if ptype in NUMERIC_TYPES:
+        if isinstance(value, bool):
+            return f"expects {ptype}, got {value!r}"
+        try:
+            number = float(value)
+        except OverflowError:
+            return f"expects {ptype}, got a number out of range"
+        except ValueError:
+            return f"expects {ptype}, got {value!r}"
+        if not math.isfinite(number):
+            return f"expects {ptype}, got {value!r} (not a finite number)"
+    elif ptype in _BOOLEAN_TYPES:
+        if not (isinstance(value, bool) or (isinstance(value, str) and value.lower() in ("true", "false"))):
+            return f"expects {ptype} (true or false), got {value!r}"
+    return None
 
 
 @dataclass
@@ -598,6 +659,12 @@ class ToolStore:
           - valid: True if all checks pass
           - errors: list of human-readable error strings
           - filled_params: params dict with defaults filled in
+
+        A value of None counts as not given (its default applies, or it is
+        missing). Every value given must be a single string, number or boolean
+        that fits the declared type (``_value_problem``): a list or an object
+        is refused for every type, a boolean or a non-finite number for a
+        numeric one.
         """
         tool = self.load(name)
         if not tool:
@@ -614,6 +681,8 @@ class ToolStore:
             kind = source.split(":", 1)[0]
             has_default = "default" in pdef
 
+            if pname in params and params[pname] is None:
+                del params[pname]                  # null is no value: treated as not given
             if pname not in params:
                 # Values that must come from Revit: never guessed, never defaulted
                 if kind in ("tool", "query", "interactive"):
@@ -644,14 +713,9 @@ class ToolStore:
                     errors.append(f"Missing required parameter: {pname}")
                 continue
 
-            # Type coercion check for numeric types
-            if ptype in ("double", "number", "float", "int", "integer"):
-                try:
-                    float(params[pname])
-                except (ValueError, TypeError):
-                    errors.append(
-                        f"Parameter '{pname}' expects {ptype}, got {params[pname]!r}"
-                    )
+            problem = _value_problem(params[pname], ptype)
+            if problem:
+                errors.append(f"Parameter '{pname}' {problem}")
 
         return (len(errors) == 0, errors, params)
 
@@ -664,7 +728,9 @@ class ToolStore:
         survives substitution is refused too: a leftover placeholder would
         otherwise be shipped to Revit as C#. Templates therefore cannot use
         ``$"{x}"`` interpolation with a bare identifier unless ``x`` is a
-        declared parameter.
+        declared parameter. A value that cannot be written into the code
+        (``escape_param_value``: a list, an object, None - possible only for a
+        placeholder the pack does not declare) is refused the same way.
         """
         tool = self.load(name)
         if not tool:
@@ -676,7 +742,16 @@ class ToolStore:
 
         code = tool.code_template
         for k, v in filled.items():
-            code = code.replace(f"{{{k}}}", escape_param_value(v))
+            token = f"{{{k}}}"
+            if token not in code:
+                continue
+            try:
+                text = escape_param_value(v)
+            except TypeError as exc:
+                return None, [f"Parameter '{k}' {exc}"]
+            except ValueError as exc:              # an int too long to write out
+                return None, [f"Parameter '{k}' cannot be written into the code: {exc}"]
+            code = code.replace(token, text)
         leftover = sorted(set(PLACEHOLDER_RE.findall(code)))
         if leftover:
             return None, [
