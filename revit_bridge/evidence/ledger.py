@@ -26,9 +26,10 @@ A read-back check (``verify_execution``) is a line of its own with
 (the execution it checked) and ``verification_id`` (the plan it used).
 Those ``OPTIONAL_FIELDS`` are written only when a record carries them, so
 every other line keeps exactly ``RECORD_FIELDS``. Likewise a ``run_tool``
-line whose pack refused the input in Revit (nothing changed;
-``revit_bridge.execution.refusal_message``) ends with ``"refused": true``
-(``REFUSED_FIELD``); no other line has that key.
+line whose pack refused the input in Revit (nothing kept;
+``revit_bridge.execution.refusal_message``) carries ``"refused": true``
+(``REFUSED_FIELD``, written only when the record's value is exactly True);
+no other line has that key.
 
 A dry run (``dry_run_code``, rolled back, no confirmation) is a line with
 ``action: "dry_run"`` and ``RECORD_FIELDS`` only: ``tool`` and every

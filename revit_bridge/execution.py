@@ -32,13 +32,15 @@ lessons for them: ``call get_guidance(stage="fix", exceptions=[...])`` and
 what to do after (``failure_hint``, E3); a pack's retry advice follows it.
 Without such a name the ``hint`` is what it was. The reply keeps its keys.
 
-A pack refuses - nothing was changed and the designer can fix the input - by
-throwing ``InvalidOperationException`` whose own message starts with
-``REFUSAL_MARKER`` (``refusal_message``). ``run_pack`` then answers
-``refused: true`` with the text after the marker as ``error``, no hint, a
-ledger line that says ``refused``, and leaves the pack's usage counters alone:
-a refusal is neither a success nor a failure of the pack. Any other exception
-is a failure as before, with the same reply.
+A pack refuses - nothing is kept (the add-in rolls back) and the designer can
+fix the input - by throwing ``InvalidOperationException`` whose own message
+starts with ``REFUSAL_MARKER`` (``refusal_message``). The rule holds for every
+pack, built-in or the user's. ``run_pack`` then answers ``refused: true`` with
+the text after the marker as ``error``, no hint, a ledger line that says
+``refused``, and leaves the pack's usage counters alone: a refusal is neither
+a success nor a failure of the pack. ``revalidate`` answers ``not_executed``
+for such a line. Any other exception is a failure as before, with the same
+reply.
 
 ``client`` needs ``send_code(code, parameters, confirm=None)`` - a client
 that receives ``confirm`` sends it in the request params, waits at least
@@ -94,11 +96,13 @@ REFUSAL_MARKER = "REFUSED: "
 # The add-in's errorMessage for a snippet that threw: its prefix ("execution failed: " in Chinese),
 # the thrown exception's type - the full name from add-in 0.3.0, the short name before - and its
 # message, then each inner exception after " ---> ". Only the thrown exception's own message counts:
-# the marker in the middle of a message, or on an inner exception, is not a refusal.
+# the marker in the middle of a message, or on an inner exception, is not a refusal. The message is
+# cut only at " ---> " followed by an exception type name and ": ", so a designer's text with an
+# arrow in it stays whole.
 _REFUSAL_RE = re.compile(
     r"\A\s*(?:\u6267\u884c\u5931\u8d25: )?(?:System\.)?InvalidOperationException: "
     + re.escape(REFUSAL_MARKER)
-    + r"(?P<message>.*?)(?: ---> [A-Za-z_][\w.`]*: .*)?\Z",
+    + r"(?P<message>.*?)(?: ---> (?:[A-Za-z_]\w*\.)*\w*Exception(?:`\d+)?: .*)?\Z",
     re.DOTALL,
 )
 
@@ -129,7 +133,7 @@ class ExecutionResult(BaseModel):
     preconditions_failed: list[str] = Field(default_factory=list)
     hint: str | None = None
     refusal: dict | None = None          # confirmation_required / confirmation_invalid payload as is
-    refused: bool = False                # the pack refused in Revit: nothing changed, input to fix
+    refused: bool = False                # the pack refused in Revit: nothing kept, input to fix
 
     @model_serializer(mode="wrap")
     def _drop_refused_unless_true(self, handler):
@@ -427,8 +431,8 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     its result is still a failed validation). The last three still leave their
     ledger line.
 
-    A refusal thrown by the pack in Revit (``refusal_message``: nothing was
-    changed, the designer can fix the input) is not evidence against the pack
+    A refusal thrown by the pack in Revit (``refusal_message``: nothing is
+    kept, the designer can fix the input) is not evidence against the pack
     either: ``refused: true``, ``error`` is the text after the marker, no hint,
     the usage counters are not touched (not reset either), and the ledger line
     carries ``refused: true``.
@@ -623,13 +627,18 @@ async def revalidate(*, store: ToolStore, ledger: Ledger, client, evidence_id: s
     Returns the ValidationReport (plus ``evidence_id`` and ``tool``) or
     ``{"error": ...}`` when the record, its pack or a validator is missing,
     or (``scope_mismatch``) when ``scope`` is given and the record belongs
-    to another one. Transport failures propagate to the caller.
+    to another one, or (``not_executed``, as ``verify`` says) when the pack
+    refused: nothing was kept, so there is nothing to assert. Other failed
+    records are re-checked as before. Transport failures propagate to the caller.
     """
     record = ledger.get(evidence_id)
     if record is None:
         return {"error": "unknown_evidence", "evidence_id": evidence_id}
     if scope is not None and record.get("scope") != scope:
         return {"error": "scope_mismatch", "evidence_id": evidence_id}
+    if record.get("refused") is True:
+        return {"error": "not_executed", "evidence_id": evidence_id,
+                "message": "the pack refused the input; nothing was kept"}
     if record.get("action") != "run_tool" or not record.get("tool"):
         return {"error": "no_validator", "message": "only run_tool executions carry a validator"}
     pack = store.load(record["tool"])
