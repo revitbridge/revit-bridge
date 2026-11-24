@@ -96,7 +96,7 @@ REFUSAL_MARKER = "REFUSED: "
 # message, then each inner exception after " ---> ". Only the thrown exception's own message counts:
 # the marker in the middle of a message, or on an inner exception, is not a refusal.
 _REFUSAL_RE = re.compile(
-    r"\A\s*(?:执行失败: )?(?:System\.)?InvalidOperationException: "
+    r"\A\s*(?:\u6267\u884c\u5931\u8d25: )?(?:System\.)?InvalidOperationException: "
     + re.escape(REFUSAL_MARKER)
     + r"(?P<message>.*?)(?: ---> [A-Za-z_][\w.`]*: .*)?\Z",
     re.DOTALL,
