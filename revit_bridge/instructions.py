@@ -53,7 +53,8 @@ never writes code), with the rule for the designer's selections block
 (``mentions=True``), and one shorter text per role of a host that splits the
 work: ``analyst`` (route a message, one JSON object), ``planner`` (fill and
 propose the spec) and ``supervisor`` (read and report the execution result).
-With no arguments it returns the 0.8.2 host text unchanged.
+With no arguments it returns the 0.8.2 host text, only the version in its
+first line changed.
 """
 from __future__ import annotations
 
@@ -91,7 +92,7 @@ SNIPPET_CONTRACT_SUMMARY = _CONTRACT.summary if _CONTRACT is not None else FALLB
 SNIPPET_CONTRACT_USINGS = _CONTRACT.usings() if _CONTRACT is not None else None    # check_code's CS0246 hint
 
 _INTRO = """\
-You are connected to a running Autodesk Revit through revit-bridge 0.8. The server
+You are connected to a running Autodesk Revit through revit-bridge 0.9. The server
 runs capability packs and C# in Revit; it never calls a model. You turn the
 designer's words into a TaskSpec in which every parameter has a source, {closing}
 """
@@ -233,10 +234,11 @@ def server_instructions() -> str:
 
 # -- the host variants: no code, the designer's selections, one text per role ----------------
 #
-# host_instructions() with no arguments is _render("host"), byte for byte as in
-# 0.8.2. Every variant below is cut from the same pieces (the flow steps are
-# split out of _FLOW_HEAD and _FLOW_TAIL["host"], and _swap fails at import if
-# a piece it edits has changed), so the variants cannot drift from it either.
+# host_instructions() with no arguments is _render("host"), the 0.8.2 text but for
+# the version in its first line. Every variant below is cut from the same pieces
+# (the flow steps are split out of _FLOW_HEAD and _FLOW_TAIL["host"], and _swap
+# fails at import if a piece it edits has changed), so the variants cannot drift
+# from it either.
 
 ROLES = ("analyst", "planner", "supervisor")
 
@@ -334,7 +336,7 @@ def _render_host(code: bool, mentions: bool) -> str:
 def _render_analyst(code: bool) -> str:
     none_rule = "" if code else " Never offer to write code."
     return f"""\
-You are the analyst of a Revit host built on revit-bridge 0.8. You read one message
+You are the analyst of a Revit host built on revit-bridge 0.9. You read one message
 from the designer and route it; you call no tools. You get the message, a
 "Designer's selections" block when the designer picked values in the host, a
 digest of the open model and the tool list (a name and one line each).
@@ -368,8 +370,8 @@ def _render_planner(code: bool) -> str:
     intro = _swap(_intro(code), "get it\nconfirmed by the designer in this host's interface, and report what the "
                                 "validator found.\n",
                   "and propose\nit; the designer confirms it in this host's interface and the host runs it.\n")
-    intro = _swap(intro, "You are connected to a running Autodesk Revit through revit-bridge 0.8.",
-                  "You are the planner of a Revit host built on revit-bridge 0.8.")
+    intro = _swap(intro, "You are connected to a running Autodesk Revit through revit-bridge 0.9.",
+                  "You are the planner of a Revit host built on revit-bridge 0.9.")
     intro += ("You start from the analyst's routing {route, tool?, facts_needed, note}. Route\n"
               "query: read with get_project_snapshot and query, answer, no spec. Route tool:\n"
               "start from its tool and facts_needed; list_tools decides.\n")
@@ -382,7 +384,7 @@ def _render_supervisor(code: bool) -> str:
     report = " ".join(_HOST_STEPS["8"].split()[1:])            # step 8 without its number, on one line
     report = _swap(report, "The execution comes back to you as a message from the host. ", "")
     return f"""\
-You are the supervisor of a Revit host built on revit-bridge 0.8. The designer
+You are the supervisor of a Revit host built on revit-bridge 0.9. The designer
 confirmed a TaskSpec in this host's interface and the host ran exactly what was
 confirmed. You get the confirmed spec and the execution result as a message from
 the host, and you tell the designer what happened.
@@ -417,11 +419,12 @@ _ROLE_RENDERERS = {"analyst": _render_analyst, "planner": _render_planner, "supe
 def host_instructions(role: str | None = None, code: bool = True, mentions: bool = False) -> str:
     """The instructions for a host whose interface does the confirmation and execution.
 
-    With no arguments: the whole text, byte for byte as in 0.8.2. ``code=False``
-    leaves out writing code (execute_code, the snippet contract, blocked_code)
-    for a host whose model never writes any; ``mentions=True`` adds the rule
-    for a "Designer's selections" block. Any variant other than the default
-    also names the query kinds added later (links, type_categories, link_id).
+    With no arguments: the whole text, as in 0.8.2 but for the version in its
+    first line. ``code=False`` leaves out writing code (execute_code, the
+    snippet contract, blocked_code) for a host whose model never writes any;
+    ``mentions=True`` adds the rule for a "Designer's selections" block. Any
+    variant other than the default also names the query kinds added later
+    (links, type_categories, link_id).
 
     ``role`` gives one role's text instead: ``analyst`` (route the message:
     one JSON object ``{route: chat | query | tool | none, tool?, facts_needed,

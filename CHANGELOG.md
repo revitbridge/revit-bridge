@@ -6,49 +6,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
-Reads for a host that lets the designer pick model items, and shorter
-instructions for a host that splits the work between roles. Needs nothing
-new from the add-in: with an add-in that offers `list_model_items`, links,
-type categories, the type picker and checks by id are read without compiling
-code or opening a transaction, and linked models can be read; without it,
-everything but `link_id` works. Reads that existed in 0.8.2 send the same
-requests and give the same replies. No pack format, TaskSpec, gate or tool
-name change.
-
 ### Added
 
-- `query` kinds `links` (every link instance: id, name, type, loaded,
-  document title, origin in mm, rotated; an unloaded link is listed) and
-  `type_categories` (the OST_* categories that have types, with counts).
-- `query` `args.link_id` for `levels`, `family_types`, `elements`, `counts`
-  and `type_categories`: reads that linked model. The reply carries `link`
-  (id, name, document title, origin, rotated), `coordinates: "link"` and a
-  note that values are in the link's own coordinates and that element, level
-  and type ids read through a link belong to the linked file, not to the
-  open model. Errors `unsupported_addin` (the add-in has no
-  `list_model_items`), `unknown_link` and `link_not_loaded`.
-- `revit_bridge.mentions`: `mention_candidates` (what to offer for `@level`,
-  `@type`, `@link`: `{kind, items, total, truncated}`; types by category,
-  categories first; unloaded links listed but disabled), `resolve_mentions`
-  (check picked `{kind, id}` by id against the open model, resolved and not
-  found apart; an id that is not a whole number in Int64 range is
-  `invalid`; an add-in whose capability cannot be read is an error, never
-  "not found") and `mention_block` (the fixed "Designer's selections" text,
-  English or Chinese; names quoted, control, format and separator characters
-  escaped).
-- `host_instructions(role=None, code=True, mentions=False)`: `code=False`
-  for a host whose model never writes code (no execute_code, snippet
-  contract or blocked_code); `mentions=True` adds the rule for the
-  selections block (a picked value is bound by name with evidence
-  `mention:<kind>#<id>`, source `tool` for a pack parameter that takes its
-  value from the model, else `designer`, and is not asked again); `role`
-  gives one shorter text for `analyst` (one JSON object `{route, tool?,
-  facts_needed, note}`; with chat and none `note` is the reply shown to the
-  designer), `planner` (fill and propose the spec) or `supervisor` (one JSON
-  object `{verdict: done | retry | ask, report, fix?, question?}`).
-- `snapshot_digest(snapshot, max_chars=1200)`: a short text of a snapshot
-  (document, units, level names, types per category, selection count,
-  fingerprint), never longer than `max_chars`.
 - Fourteen basic modelling capability packs. Creation: `create_level`,
   `create_grid`, `create_door`, `create_window`, `create_room`,
   `create_roof_by_footprint`, `create_ceiling`, each with a `count_delta`
@@ -73,16 +32,93 @@ name change.
   refusals never make a pack unhealthy; the ledger line ends with
   `refused: true`. Every other result and ledger line is unchanged.
 
+## [0.9.0] - 2026-11-23
+
+Reads for a host that lets the designer pick model items, and one
+instruction text per role for a host that splits the work between roles.
+Needs nothing new from the add-in: with an add-in that offers
+`list_model_items`, links, type categories, the type picker and checks by id
+are read without compiling code or opening a transaction, and linked models
+can be read; without it, everything but `link_id` works. Reads that 0.8.2
+accepted send the same requests and give the same replies. No pack format,
+TaskSpec, gate or tool name change.
+
+Upgrade: `uvx --refresh revit-bridge`; in Claude Code,
+`/plugin marketplace update revit-bridge`. The server and host instructions
+now say revit-bridge 0.9. Hosts: no public name was removed or renamed, and
+the new arguments are optional.
+
+### Added
+
+- `query` kinds `links` (every link instance: id, name, type, loaded,
+  document title, origin in mm, rotated; an unloaded link is listed) and
+  `type_categories` (the OST_* categories that have types, with counts; on
+  an add-in without `list_model_items`, only the categories `family_types`
+  can list there).
+- `query` `args.link_id` for `levels`, `family_types`, `elements`, `counts`
+  and `type_categories`: reads that linked model. The reply carries `link`
+  (id, name, document title, origin, rotated), `coordinates: "link"` and a
+  note that values are in the link's own coordinates and that element, level
+  and type ids read through a link belong to the linked file, not to the
+  open model. Errors `unsupported_addin` (the add-in has no
+  `list_model_items`), `unknown_link` and `link_not_loaded`.
+- `revit_bridge.mentions`: `mention_candidates` (what to offer for `@level`,
+  `@type`, `@link`: `{kind, items, total, truncated}`; types by category,
+  categories first; unloaded links listed but disabled), `resolve_mentions`
+  (check picked `{kind, id}` by id against the open model, resolved and not
+  found apart; an id that is not a positive whole number in Int64 range is
+  `invalid`; an add-in whose capability cannot be read is an error, never
+  "not found") and `mention_block` (the fixed "Designer's selections" text,
+  English or Chinese; names quoted, control, format and separator characters
+  escaped).
+- `host_instructions(role=None, code=True, mentions=False)`: `code=False`
+  for a host whose model never writes code (no execute_code, snippet
+  contract or blocked_code); `mentions=True` adds the rule for the
+  selections block (a picked value is bound by name with evidence
+  `mention:<kind>#<id>`, source `tool` for a pack parameter that takes its
+  value from the model, else `designer`, and is not asked again); `role`
+  gives the text of one role: `analyst` (one JSON object `{route, tool?,
+  facts_needed, note}`; with chat and none `note` is the reply shown to the
+  designer), `planner` (fill and propose the spec) or `supervisor` (one JSON
+  object `{verdict: done | retry | ask, report, fix?, question?}`).
+- `snapshot_digest(snapshot, max_chars=1200)`: a short text of a snapshot
+  (document, units, level names, the number of types per category,
+  selection count, fingerprint), never longer than `max_chars`.
+
 ### Changed
 
 - Category names (`CATEGORY_RE`, `revit_bridge.snapshot`) take digits and
   underscores after `OST_` (`OST_[A-Za-z0-9_]+`, always matched whole), as
-  the add-in does; a dot, a space, a quote or a line break is still refused.
+  the add-in does: `query` and `get_project_snapshot` accept a name such as
+  `OST_IOS_GeoSite`, which 0.8.2 refused. A dot, a space, a quote or a line
+  break within the name is still refused.
 - `query` `levels`, `family_types`, `counts`, `elements` and `grids` without
   `link_id` send the same requests and give the same replies as in 0.8.2, on
   every add-in. A transport failure (connection refused or closed) raises
   on every query path, `link_id` reads included.
-- `host_instructions()` with no arguments returns the 0.8.2 text unchanged.
+- `query` error replies name the additions: `unknown_kind` lists `links` and
+  `type_categories` among the kinds, and `invalid_args` for an unexpected
+  argument lists `link_id` among the allowed arguments of the kinds that
+  take it. The `query` tool's description names the new kinds and
+  `link_id`.
+- `server_instructions()`, and `host_instructions()` with no arguments,
+  return the 0.8.2 texts but for the version: they say revit-bridge 0.9.
+
+### Security
+
+- A capability pack parameter sent as a JSON array or object was written
+  into the C# code with Python's `str()`, unescaped, so a value for a string
+  parameter could close its string literal and add code that compiled and
+  passed the sandbox review. Every parameter now takes one string, number
+  or boolean: a list or an object is refused for every type, null counts as
+  not given (the default applies, or the parameter is missing), a numeric
+  parameter refuses a boolean and a non-finite number, a boolean parameter
+  takes true or false. `escape_param_value` raises `TypeError` for anything
+  else (`render` returns it as an error) and also escapes the line ends
+  U+0085, U+2028 and U+2029, NUL and lone surrogates; validator probes escape
+  `param_equals` parameter names and match categories whole. Strings
+  without those characters and finite numbers render to the same code as
+  before.
 
 ## [0.8.2] - 2026-11-19
 
@@ -1250,7 +1286,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/revitbridge/revit-bridge/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/revitbridge/revit-bridge/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/revitbridge/revit-bridge/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/revitbridge/revit-bridge/compare/v0.7.1...v0.8.0

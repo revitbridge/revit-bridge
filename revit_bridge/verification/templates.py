@@ -119,7 +119,7 @@ def check_template(template: Any, params: Any) -> tuple[dict | None, list[str]]:
     normal: dict[str, Any] = {}
     if "category" in params:
         category = params["category"]
-        if not isinstance(category, str) or not CATEGORY_RE.match(category):
+        if not isinstance(category, str) or not CATEGORY_RE.fullmatch(category):
             problems.append(f'params.category must be a BuiltInCategory OST_* name such as "OST_Walls", '
                             f"got {category!r}")
         normal["category"] = category

@@ -201,6 +201,23 @@ def test_run_pack_early_refusals_carry_the_payload(host):
     assert host["gate"].peek(token).used_at is None and host["gate"].peek(nope).used_at is None
 
 
+def test_run_pack_refuses_a_list_for_a_string_parameter_before_revit(host):
+    """B3: a confirmed list value never becomes code; nothing reaches Revit, the token stays."""
+    breakout = ['x"; document.Delete(new ElementId(5L)); return null; //']
+    token = wall_token(host["gate"], level_name=breakout)
+
+    async def scenario(client, fake):
+        out = await run_pack(client=client, name="create_wall", params={**WALL, "level_name": breakout},
+                             token=token, host="web", **host)
+        assert fake.requests == []
+        return out
+
+    out = with_fake(counting_handler(1, 2), scenario)
+    assert out.success is False and out.error == (
+        "Parameter validation failed: Parameter 'level_name' must be a single value, got a list")
+    assert host["gate"].peek(token).used_at is None
+
+
 # -- run_code ----------------------------------------------------------------------------------
 
 def test_run_code_from_a_web_host(host):

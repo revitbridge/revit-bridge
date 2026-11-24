@@ -6,7 +6,7 @@ import json
 import pytest
 import yaml
 
-from revit_bridge.capabilities.store import ToolStore, default_capabilities_dir, normalize_pack
+from revit_bridge.capabilities.store import ToolStore, default_capabilities_dir, escape_param_value, normalize_pack
 from revit_bridge.paths import builtin_capabilities_dir, user_capabilities_dir
 
 BUILTIN_NAMES = {
@@ -412,6 +412,138 @@ def test_query_source_round_trips_through_choices_and_validation(tmp_path):
     valid, errors, filled = store.validate_params("probe", {"level_name": "L1"})
     assert valid and filled == {"level_name": "L1"}
     assert store.render_code("probe", {"level_name": "L1"}) == 'return "L1";'
+
+
+# -- parameter values: one scalar that fits the type, escaped for a C# literal -----------------
+
+BREAKOUT = ['x"; document.Delete(new ElementId(5L)); return null; //']
+NOT_SCALARS = ((BREAKOUT, "a list"), ({"a": 'b"; x(); //'}, "an object"), (("t",), "a list"),
+               ({"x"}, "a value of type set"), (b"x", "a value of type bytes"))
+
+
+def _typed_probe(store: ToolStore) -> None:
+    store.solidify(
+        name="probe",
+        code='string levelName = "{name}"; double h = {h}; bool flag = bool.Parse("{flag}");\nreturn levelName;',
+        parameters=[
+            {"name": "name", "type": "string", "source": "designer", "required": True},
+            {"name": "h", "type": "double", "source": "designer", "required": False, "default": 3000},
+            {"name": "flag", "type": "bool", "source": "designer", "required": False, "default": False},
+        ],
+    )
+
+
+def test_a_list_or_an_object_never_reaches_the_code(tmp_path):
+    """B3: a string parameter sent as a JSON array was written with str(), whose quote closed the
+    C# literal; the rest compiled as code and passed the sandbox. Refused before rendering now,
+    for every parameter type."""
+    store = ToolStore(user_dir=tmp_path / "user")
+    _typed_probe(store)
+    for value, kind in NOT_SCALARS:
+        for pname in ("name", "h", "flag"):
+            params = {"name": "L1", pname: value}
+            valid, errors, _ = store.validate_params("probe", params)
+            assert not valid and errors == [f"Parameter '{pname}' must be a single value, got {kind}"]
+            assert store.render("probe", params) == (None, errors)
+
+
+def test_render_refuses_what_it_cannot_write_without_validation(tmp_path):
+    """Defence in depth: a hand-written pack whose placeholder is not declared gets no type check,
+    so render itself refuses a value escape_param_value cannot write - a result, never a raise."""
+    store = ToolStore(user_dir=tmp_path / "user")
+    store.user_dir.mkdir(parents=True)
+    (store.user_dir / "handmade.yaml").write_text(
+        "name: handmade\ncode_template: 'string levelName = \"{name}\"; return levelName;'\n", encoding="utf-8")
+    for value, kind in (*NOT_SCALARS, (None, "null")):
+        assert store.render("handmade", {"name": value}) == (
+            None, [f"Parameter 'name' must be a single value, got {kind}"])
+        with pytest.raises(TypeError, match=f"must be a single value, got {kind}"):
+            escape_param_value(value)
+    assert store.render("handmade", {"name": 'L1"'}) == ('string levelName = "L1\\""; return levelName;', [])
+    # a value no placeholder asks for is written nowhere and refused nowhere, as before
+    assert store.render("handmade", {"name": "L1", "extra": [1], "other": None})[1] == []
+
+
+def test_null_is_a_value_not_given(tmp_path):
+    """None was written as the text None; it now means "not given": the default, or missing."""
+    store = ToolStore(user_dir=tmp_path / "user")
+    _typed_probe(store)
+    for pname in ("h", "flag"):
+        assert store.validate_params("probe", {"name": "L1", pname: None}) \
+            == store.validate_params("probe", {"name": "L1"})
+    assert store.validate_params("probe", {"name": None}) == store.validate_params("probe", {}) \
+        == (False, ["Missing required parameter: name"], {"h": 3000, "flag": False})
+    assert store.render("probe", {"name": None}) == (None, ["Missing required parameter: name"])
+
+    wall = {"start_x": 0, "start_y": 0, "end_x": 5000, "end_y": 0}
+    assert store.validate_params("create_wall", {**wall, "level_name": None}) \
+        == store.validate_params("create_wall", wall)
+    assert store.render("create_wall", {**wall, "level_name": "L1", "height": None}) \
+        == store.render("create_wall", {**wall, "level_name": "L1"})
+
+
+def test_a_number_is_a_finite_number_and_never_a_boolean(tmp_path):
+    store = ToolStore(user_dir=tmp_path / "user")
+    _typed_probe(store)
+    for value in (True, False, float("nan"), float("inf"), float("-inf"), "nan", "inf", "-Infinity",
+                  10 ** 400, "twelve"):
+        valid, errors, _ = store.validate_params("probe", {"name": "L1", "h": value})
+        assert not valid and len(errors) == 1, (value, errors)
+        assert errors[0].startswith("Parameter 'h' expects double, got "), errors
+    for value, text in ((3000, "3000"), (12.5, "12.5"), ("3000", "3000"), (" 42 ", " 42 "), ("1e3", "1e3"),
+                        (-0.5, "-0.5"), (3000.0, "3000.0")):
+        code, errors = store.render("probe", {"name": "L1", "h": value})
+        assert errors == [] and f"double h = {text};" in code, (value, errors)
+
+
+def test_a_boolean_is_true_or_false_and_a_string_takes_any_single_value(tmp_path):
+    store = ToolStore(user_dir=tmp_path / "user")
+    _typed_probe(store)
+    for value, text in ((True, "True"), (False, "False"), ("true", "true"), ("False", "False")):
+        code, errors = store.render("probe", {"name": "L1", "flag": value})
+        assert errors == [] and f'bool.Parse("{text}")' in code, (value, errors)
+    for value in (1, 0, 1.0, "yes", ""):
+        assert store.validate_params("probe", {"name": "L1", "flag": value})[1] == [
+            f"Parameter 'flag' expects bool (true or false), got {value!r}"]
+    for value, text in ((2, "2"), (2.5, "2.5"), (True, "True"), ("", "")):       # as before
+        code, errors = store.render("probe", {"name": value})
+        assert errors == [] and f'string levelName = "{text}";' in code, (value, errors)
+
+
+def test_every_character_that_ends_a_csharp_literal_or_line_is_escaped(tmp_path):
+    """C# ends a regular string literal at CR, LF, U+0085, U+2028 and U+2029; NUL and a lone
+    surrogate are escaped too. Everything else is written as given."""
+    ends = "a\x85b\N{LINE SEPARATOR}c\N{PARAGRAPH SEPARATOR}d"
+    assert escape_param_value(ends) == "a\\u0085b\\u2028c\\u2029d"
+    assert escape_param_value("a\x00b\ud800c\udfff") == "a\\0b\\ud800c\\udfff"
+    assert escape_param_value('a"b\\c\r\nd') == 'a\\"b\\\\c\\r\\nd'                       # as before
+    plain = "tab\there \N{CJK UNIFIED IDEOGRAPH-6807} \N{GRINNING FACE} {x} $@'"
+    assert escape_param_value(plain) == plain
+    assert (escape_param_value(True), escape_param_value(3000.0), escape_param_value(-7)) == ("True", "3000.0", "-7")
+
+    store = ToolStore(user_dir=tmp_path / "user")
+    _typed_probe(store)
+    code, errors = store.render("probe", {"name": "x\r\n" + ends + "\x00\ud800"})
+    assert errors == [] and code.count("\n") == 1
+    assert not any(ch in code for ch in "\r\x85\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}\x00\ud800")
+    assert code.startswith('string levelName = "x\\r\\na\\u0085b\\u2028c\\u2029d\\0\\ud800";')
+
+
+def test_every_built_in_fixture_renders_as_before():
+    """Known-good values are written as they always were: a number with str(), a plain string as is."""
+    store = ToolStore()
+    rendered = 0
+    for tool in store.list_tools():
+        for fixture in tool.fixtures:
+            params = dict(fixture.get("params") or {})
+            code, errors = store.render(tool.name, params)
+            assert errors == [], (tool.name, errors)
+            expected = tool.code_template
+            for key, value in store.validate_params(tool.name, params)[2].items():
+                expected = expected.replace("{" + key + "}", str(value))
+            assert code == expected, tool.name
+            rendered += 1
+    assert rendered == 25                 # 6 from the earlier packs, 19 from the basic packs
 
 
 def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):
