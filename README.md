@@ -58,7 +58,9 @@ settings through environment variables (see Configure), for example in the
 **Your own host** — the same flow is a package API: `revit_bridge.execution`
 (`run_pack`, `run_code`, `revalidate`) with your own `ToolStore`, `Gate`,
 `Ledger` and Revit client, plus `revit_bridge.host_instructions()` for a host
-whose interface does the confirmation.
+whose interface does the confirmation (`role`, `code` and `mentions` give a
+text per role, one without code-writing, one with the designer's selections)
+and `revit_bridge.mentions` for levels, types and links the designer picks.
 
 From a checkout: `uv sync` then `uv run revit-bridge`.
 

@@ -23,7 +23,10 @@ uvx --from . revit-bridge check   # read the open document's title through the a
   skills list|install` (copy bundled skill folders into a directory, `--profile addin|bridge|all`).
 - `revit_bridge/execution.py` — the execution flow as a package API (`run_pack`, `run_code`, `revalidate`,
   `ExecutionResult`), shared by the MCP server and the web host; `instructions.py` — the model instructions
-  (`server_instructions()` / `host_instructions()` from one text).
+  (`server_instructions()` / `host_instructions()` from one text; `host_instructions(role, code, mentions)`
+  cuts the host text per role, without code-writing or with the selections rule).
+- `revit_bridge/mentions.py` - the designer's picks of levels, types and links: `mention_candidates`,
+  `resolve_mentions` (checked by id against the open model), `mention_block` (the selections text).
 - `revit_bridge/checking.py` — `check_code`: compile C# in Revit without running it (local `sandbox.review`
   first, then the add-in's `check_code_in_revit`); the reply adds `hints` and `guidance` lessons.
 - `revit_bridge/dry_run.py` - `dry_run_code`: run C# in Revit and always roll it back (`sandbox.review`, the
@@ -35,7 +38,7 @@ uvx --from . revit-bridge check   # read the open document's title through the a
 - `revit_bridge/revit/` — TCP JSON-RPC client, connection pool, settings from `REVIT_BRIDGE_*`, sandbox,
   `probe.py` (`check_connection`, `PING_PROBE`).
 - `revit_bridge/snapshot/` — query atoms, model queries (`query.py`, incl. the `query` tool kinds),
-  `project.py` (`ProjectSnapshot`, `take_snapshot`).
+  `project.py` (`ProjectSnapshot`, `take_snapshot`, `snapshot_digest`).
 - `revit_bridge/paths.py` — per-user data root (`REVIT_BRIDGE_DATA_DIR`), user/built-in pack directories,
   `auth_dir()`, `skills_dir()`; `revit_bridge/jsonfile.py` — the locked read-modify-write both JSON stores use.
 - `revit_bridge/capabilities/` — capability pack store (built-in v1 packs in `capabilities/` at repo root, user
