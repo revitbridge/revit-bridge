@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from revit_bridge.capabilities.store import ToolStore, escape_param_value
 from revit_bridge.revit.client import RevitClient
+from revit_bridge.snapshot.atoms import AtomResolver
 from revit_bridge.snapshot.query import RevitQueryExecutor, detect_length_unit
 
 from tests.fake_revit import FakeRevit
@@ -91,3 +93,18 @@ def test_rendered_parameters_cannot_break_out_of_string_literals(tmp_path):
     )
     code = store.render_code("probe", {"level_name": 'L1"; System.IO.File.Delete("x"); var z = "'})
     assert code == 'var name = "L1\\"; System.IO.File.Delete(\\"x\\"); var z = \\""; return name;'
+
+
+def test_atom_prompts_are_escaped_like_parameter_values():
+    """An interactive atom's prompt sits in a C# literal too: a line end in it is escaped (B3)."""
+    class Capture:
+        def __init__(self):
+            self.codes = []
+
+        async def send_code(self, code, parameters=None, confirm=None):
+            self.codes.append(code)
+            return SimpleNamespace(success=False, result=None, error="not run")
+
+    client = Capture()
+    asyncio.run(AtomResolver(client).resolve("pick_point", prompt='Pick "here"\nthen \\ there'))
+    assert 'PickPoint("Pick \\"here\\"\\nthen \\\\ there");' in client.codes[0]

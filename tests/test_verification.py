@@ -269,6 +269,7 @@ def test_compare_without_a_tolerance_is_what_packs_always_had():
     ("count", {"category": "OST_Walls"}, "template must be one of created_ids, count_delta, param_equals"),
     ("created_ids", {}, "params.category is required"),
     ("created_ids", {"category": "Walls"}, 'params.category must be a BuiltInCategory OST_* name'),
+    ("created_ids", {"category": "OST_Walls\n"}, 'params.category must be a BuiltInCategory OST_* name'),
     ("created_ids", {"category": "OST_Walls", "expected": 1}, "params.expected is not a key here"),
     ("count_delta", {"category": "OST_Walls"}, "params.expected is required"),
     ("count_delta", {"category": "OST_Walls", "expected": 1.5}, "params.expected must be an integer"),

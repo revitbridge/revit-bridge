@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 
+from revit_bridge.capabilities.store import escape_param_value
 from revit_bridge.spec.models import TaskSpec
 from revit_bridge.validators.base import (
     Check,
@@ -23,8 +24,9 @@ MM_PER_UNIT = {"mm": 1.0, "m": 1000.0, "feet": 304.8}   # a spec value's unit ->
 
 
 def _category(cfg: dict, spec: TaskSpec) -> str:
+    # The name goes into the probe's C# literal: ``fullmatch``, as ``match`` lets "OST_Walls\n" through
     category = resolve(cfg.get("category"), spec)
-    if not isinstance(category, str) or not CATEGORY_RE.match(category):
+    if not isinstance(category, str) or not CATEGORY_RE.fullmatch(category):
         raise ValidatorError(f"validator category must be an OST_* name, got {category!r}")
     return category
 
@@ -164,7 +166,8 @@ class ParamEquals:
             if spec_param not in values:
                 raise ValidatorError(f"param_equals: spec has no parameter {spec_param!r}")
             wanted.append((name, spec_param))
-        names = ", ".join(f'"{name}"' for name, _ in wanted)
+        # pack configuration or a verification check: escaped like a template value
+        names = ", ".join(f'"{escape_param_value(name)}"' for name, _ in wanted)
         code = (
             f'var rows = new List<object>();\n'
             f'foreach (var raw in new long[] {{ {_ids_literal(ids)} }}) {{\n'
