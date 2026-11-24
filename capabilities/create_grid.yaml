@@ -5,36 +5,37 @@ description: Create one straight grid line between two points (mm) with a new, u
   Refusals (empty, invalid or taken name, points that are not numbers, the same point twice)
   stop the run and change nothing.
 version: "1.0.0"
-revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
-  // The bridge already opened the transaction; none is opened here.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<string, string, double> toFeet = (label, text) =>
   {
       double mm;
       if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
           || double.IsNaN(mm) || double.IsInfinity(mm))
-          throw new InvalidOperationException(label + " must be a number in mm, got \"" + text + "\".");
+          throw new InvalidOperationException("REFUSED: " + label + " must be a number in mm, got \"" + text + "\".");
       return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
   };
   string gridName = "{name}";
 
   if (string.IsNullOrWhiteSpace(gridName))
-      throw new InvalidOperationException("Give the new grid a name.");
+      throw new InvalidOperationException("REFUSED: Give the new grid a name.");
   if (!NamingUtils.IsValidName(gridName))
-      throw new InvalidOperationException("\"" + gridName + "\" cannot be a grid name: Revit does not allow characters such as : ; [ ] | < > ? ` ~ or braces in names.");
+      throw new InvalidOperationException("REFUSED: \"" + gridName + "\" cannot be a grid name: Revit does not allow characters such as : ; [ ] | < > ? ` ~ or braces in names.");
   Grid clash = new FilteredElementCollector(document).OfClass(typeof(Grid)).Cast<Grid>()
       .FirstOrDefault(g => g.Name == gridName);
   if (clash != null)
-      throw new InvalidOperationException("A grid named \"" + gridName + "\" already exists. Choose another name.");
+      throw new InvalidOperationException("REFUSED: A grid named \"" + gridName + "\" already exists. Choose another name.");
 
   XYZ start = new XYZ(toFeet("Start X", "{start_x}"), toFeet("Start Y", "{start_y}"), 0);
   XYZ end = new XYZ(toFeet("End X", "{end_x}"), toFeet("End Y", "{end_y}"), 0);
   if (!XYZ.IsWithinLengthLimits(start) || !XYZ.IsWithinLengthLimits(end))
-      throw new InvalidOperationException("A grid point is outside the model's limits.");
+      throw new InvalidOperationException("REFUSED: A grid point is outside the model's limits.");
   if (start.DistanceTo(end) < document.Application.ShortCurveTolerance)
-      throw new InvalidOperationException("The start and end points are the same or too close together; a grid needs two different points.");
+      throw new InvalidOperationException("REFUSED: The start and end points are the same or too close together; a grid needs two different points.");
 
   Grid grid = Grid.Create(document, Line.CreateBound(start, end));
   try
@@ -43,7 +44,7 @@ code_template: |
   }
   catch (Autodesk.Revit.Exceptions.ArgumentException ex)
   {
-      throw new InvalidOperationException("Revit refused the grid name \"" + gridName + "\": " + ex.Message);
+      throw new InvalidOperationException("REFUSED: Revit refused the grid name \"" + gridName + "\": " + ex.Message);
   }
 
   return new

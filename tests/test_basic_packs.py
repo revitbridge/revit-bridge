@@ -43,8 +43,31 @@ CREATES = {
 }
 SELECTION = ("set_parameter", "move_elements", "change_type", "delete_selected")
 QUERIES = ("count_by_level", "list_types", "elements_in_link")
-ALL_YEARS = ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
-FROM_2022 = ("create_ceiling", "set_parameter")      # Ceiling.Create, Definition.GetDataType
+# The years the add-in builds (no 2022) from 2021 on; 2020 has no UnitTypeId.
+ALL_YEARS = ["2021", "2023", "2024", "2025", "2026", "2027"]
+FIRST_YEAR = {
+    "create_ceiling": "2023",      # Ceiling.Create is 2022+, and there is no 2022 add-in
+    "set_parameter": "2023",       # Definition.GetDataType, SpecTypeId.Boolean are 2022+
+    "change_type": "2024",         # its param_equals validator reads ids with ElementId.Value
+}
+MARKER = "REFUSED: "
+THROW = "throw new InvalidOperationException("
+# Throws that are failures of the pack (it tried and the outcome is wrong), by the start of their
+# message; every other throw is a refusal and carries the marker.
+FAILURES = {
+    "create_door": ['"Revit returned no door', '"Revit did not place the door'],
+    "create_window": ['"Revit returned no window', '"Revit did not place the window',
+                      "\"The window's sill height cannot be set", '"Revit refused the sill height',
+                      '"Revit did not keep the sill height'],
+    "create_room": ['"Revit returned no room', '"Revit refused the room name'],
+    "create_roof_by_footprint": ['"Revit did not create the roof'],
+    "create_ceiling": ['"Revit returned no ceiling', "\"The ceiling's height above the level cannot be set",
+                       '"Revit refused the height', '"Revit did not keep the height'],
+    "set_parameter": ['"Element " + idOf(step.Item1) + " did not keep the value'],
+    "move_elements": ['"Element " + idOf(id) + " cannot be found after the move'],
+    "change_type": ['"Element " + idOf(id) + " did not take type'],
+    "delete_selected": ['"Revit did not delete '],
+}
 
 PLACEHOLDER = re.compile(r"\{[A-Za-z_]\w*\}")
 STRING_LITERAL = re.compile(r'"(?:[^"\\\r\n]|\\["\\rn])*"')
@@ -174,7 +197,7 @@ def helper_spans(code: str) -> list[tuple[int, int]]:
 @pytest.mark.parametrize("name", NAMES)
 def test_every_refusal_throws_and_the_snippet_returns_only_its_result(name):
     code = code_of(name)
-    assert "throw new InvalidOperationException(" in code
+    assert THROW in code
     assert 'Status = "Error"' not in code
     spans = helper_spans(code)
     returns = [m.start() for m in re.finditer(r"\breturn\b", code)
@@ -183,6 +206,25 @@ def test_every_refusal_throws_and_the_snippet_returns_only_its_result(name):
     assert code[returns[0]:].startswith("return new") and code[:returns[0]].endswith("\n"), name
     statuses = re.findall(r'Status = "(\w+)"', code)
     assert len(statuses) == 1 and statuses[0] in {"Created", "Changed", "Moved", "Deleted", "Ok"}, (name, statuses)
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_refusals_carry_the_marker_and_failures_do_not(name):
+    """Refusal: nothing changed, the designer can fix the input. Failure: the pack tried and the
+    outcome is wrong. The classification of every throw site is listed in FAILURES."""
+    code = code_of(name)
+    refusals, failures = 0, []
+    for match in re.finditer(re.escape(THROW), code):
+        argument = code[match.end():]
+        if argument.startswith('"' + MARKER):
+            refusals += 1
+        else:
+            failures.append(next((f for f in FAILURES.get(name, []) if argument.startswith(f)), argument[:60]))
+    assert refusals >= 1, name
+    assert failures == FAILURES.get(name, []), (name, failures)
+    # The marker opens a message and is never built in the middle of one (the header comment names it once).
+    assert code.count(MARKER) == refusals + 1, name
+    assert '"REFUSED: "' in "\n".join(code.split("\n")[:4]), name
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -232,12 +274,41 @@ def test_element_ids_compile_on_every_declared_year(name):
 @pytest.mark.parametrize("name", NAMES)
 def test_declared_revit_years(name):
     data = data_for(name)
-    if name in FROM_2022:
-        assert data["revit_versions"] == ALL_YEARS[1:]
-        assert "Revit 2022 or later" in data["description"]
-        assert any("Revit 2022 or later" in item.get("text", "") for item in data["preconditions"])
-    else:
-        assert data["revit_versions"] == ALL_YEARS
+    first = FIRST_YEAR.get(name, "2021")
+    assert data["revit_versions"] == [year for year in ALL_YEARS if year >= first]
+    assert "2022" not in data["revit_versions"]                    # the add-in has no 2022 build
+    if name in FIRST_YEAR:
+        said = f"Revit {first} or later"
+        assert said in data["description"], name
+        assert any(said in item.get("text", "") for item in data["preconditions"]), name
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_heights_against_a_level_use_its_project_elevation(name):
+    """``Level.Elevation`` follows the level type's elevation base; a comparison with model coordinates
+    or a placement uses ``ProjectElevation``. ``Elevation`` is only reported (``ElevationMm``)."""
+    for line in code_of(name).splitlines():
+        if re.search(r"\b\w+\.Elevation\b", line):
+            assert "ElevationMm = " in line, (name, line)
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_messages_name_no_internal_enum_and_parameter_types_are_spelled_once(name):
+    data = data_for(name)
+    assert not re.search(r"\+\s*[\w.]*(?:Kind|PlacementType|StorageType)\s*\+", data["code_template"]), name
+    # integer, as the earlier packs spell it (delete_elements_by_category, modify_wall_height)
+    assert {p["type"] for p in data["parameters"]} <= {"string", "double", "integer"}, name
+
+
+@pytest.mark.parametrize("name", ("create_door", "create_window", "create_room", "create_ceiling"))
+def test_a_created_element_is_null_checked_before_use(name):
+    code = code_of(name)
+    created = re.search(r"^[\w.]+ (\w+) = (?=document\.Create\.NewFamilyInstance\(|document\.Create\.NewRoom\(|Ceiling\.Create\()",
+                        code, re.MULTILINE)
+    assert created, name
+    after = code[created.end():]
+    statement_end = after.index(";")
+    assert after[statement_end:].lstrip(";\n ").startswith(f"if ({created.group(1)} == null)"), name
 
 
 # -- parameters from the model ---------------------------------------------------------------------
@@ -288,12 +359,34 @@ def test_validators_prove_creation_type_change_and_read_only():
 def test_selection_tools_refuse_an_empty_or_large_selection_and_report_ids(name):
     code = code_of(name)
     assert "new UIDocument(document).Selection.GetElementIds()" in code
-    assert "if (selected.Count == 0)\n    throw new InvalidOperationException(\"Nothing is selected in Revit." in code
+    assert "if (selected.Count == 0)\n    throw new InvalidOperationException(\"REFUSED: Nothing is selected in Revit." in code
     assert "const int MaxSelected = 100;" in code and "if (selected.Count > MaxSelected)" in code
     assert "ElementIds =" in code and "Count =" in code
     # every element is checked before the first change
     assert code.index("problems.Count > 0") < min(
         code.index(call) for call in (".Set(", "MoveElements(", "ChangeTypeId(", "document.Delete(") if call in code)
+
+
+def test_selection_tools_refuse_what_would_reach_beyond_the_selection():
+    # A type would change or delete every element of it; a level would take everything on it along.
+    for name, refused in (("set_parameter", ("element is ElementType",)),
+                          ("delete_selected", ("element is ElementType", "element is View", "element is Level")),
+                          ("move_elements", ("element is ElementType", "element is View", "element is Level"))):
+        code = code_of(name)
+        for check in refused:
+            assert f"if ({check})" in code, (name, check)
+    assert "element is Grid" not in code_of("move_elements")         # grids move, in plan
+
+
+def test_move_asks_for_every_distance():
+    for param in data_for("move_elements")["parameters"]:
+        assert param["source"] == "designer" and param["required"] is True and "default" not in param
+    assert 'REFUSED: The move is zero' in code_of("move_elements")
+
+
+def test_a_window_sill_at_or_above_the_wall_top_is_refused_without_the_type_height():
+    code = code_of("create_window")
+    assert "if (wallBox != null && bottom >= wallBox.Max.Z - tolerance)" in code
 
 
 @pytest.mark.parametrize("name", QUERIES)
@@ -326,7 +419,8 @@ def test_the_eight_earlier_packs_still_load_and_render(store):
 
 # -- through the execution flow with a fake add-in ----------------------------------------------------
 
-THROWN = 'A level named "L3" already exists. Choose another name.'
+TAKEN = 'A level named "L3" already exists. Choose another name.'
+LEVEL = {"name": "L3", "elevation": 6000}
 
 
 def token_for(gate: Gate, tool: str, params: dict) -> str:
@@ -353,7 +447,7 @@ def fake_addin(pack_reply, counts=(4, 5)):
             return FakeRevit.code_result(rid, {
                 "Document": {"Title": "Project1", "RevitVersion": "2026", "IsWorkshared": False},
                 "Levels": [{"Id": 1, "Name": "L1", "ElevationMm": 0.0}], "CategoryNames": {}, "Warnings": []})
-        if "Every refusal throws" in code:                           # the pack itself
+        if 'whose message starts with "REFUSED: "' in code:         # the pack itself
             state["ran"] = True
             return pack_reply(rid)
         if "GetElementCount" in code:                                # count_delta's probe
@@ -362,42 +456,86 @@ def fake_addin(pack_reply, counts=(4, 5)):
     return handler
 
 
-def run(tmp_path, tool: str, params: dict, handler):
-    store = ToolStore(user_dir=tmp_path / "user", builtin_dir=ROOT)
-    gate, ledger = Gate(tmp_path / "pending"), Ledger(tmp_path / "evidence")
-    token = token_for(gate, tool, params)
+class Host:
+    """One host's store, gate and ledger, kept across runs."""
 
-    async def go():
-        async with FakeRevit(handler) as fake:
-            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=2)
-            try:
-                return await execution.run_pack(store=store, gate=gate, ledger=ledger, client=client, name=tool,
-                                                params=dict(params), token=token, host="web")
-            finally:
-                await client.disconnect()
-    result = asyncio.run(go())
-    return result, store, gate, token
+    def __init__(self, tmp_path):
+        self.store = ToolStore(user_dir=tmp_path / "user", builtin_dir=ROOT)
+        self.gate, self.ledger = Gate(tmp_path / "pending"), Ledger(tmp_path / "evidence")
+
+    def run(self, tool: str, params: dict, handler):
+        token = token_for(self.gate, tool, params)
+
+        async def go():
+            async with FakeRevit(handler) as fake:
+                client = RevitClient(host="127.0.0.1", port=fake.port, timeout=2)
+                try:
+                    return await execution.run_pack(store=self.store, gate=self.gate, ledger=self.ledger, client=client,
+                                                    name=tool, params=dict(params), token=token, host="web")
+                finally:
+                    await client.disconnect()
+        return asyncio.run(go()), token
 
 
-def test_a_refusal_thrown_in_revit_is_a_failed_run_and_the_validator_does_not_run(tmp_path):
-    reply = lambda rid: FakeRevit.thrown(rid, "System.InvalidOperationException", THROWN)
-    result, store, gate, token = run(tmp_path, "create_level", {"name": "L3", "elevation": 6000}, fake_addin(reply))
-    assert result.success is False and THROWN in result.error
-    assert result.validation is None and result.result is None
-    assert gate.peek(token).used_at                                   # it reached Revit
-    assert store.load("create_level").failure_count == 1
+def thrown(exception: str, message: str):
+    return lambda rid: FakeRevit.thrown(rid, exception, message)
+
+
+def test_a_refusal_is_refused_not_failed_and_leaves_the_counters_alone(tmp_path):
+    host = Host(tmp_path)
+    result, token = host.run("create_level", LEVEL, fake_addin(thrown("System.InvalidOperationException", MARKER + TAKEN)))
+    assert result.success is False and result.refused is True
+    assert result.error == TAKEN                                      # the text after the marker, for the designer
+    assert result.hint is None and result.validation is None and result.result is None
+    assert host.gate.peek(token).used_at                              # it reached Revit
+    tool = host.store.load("create_level")
+    assert tool.failure_count == 0 and tool.execution_count == 0
+    line = host.ledger.get(result.evidence_id)
+    assert line["refused"] is True and line["success"] is False and line["error"] == TAKEN
+    assert result.model_dump()["refused"] is True
+
+
+def test_three_refusals_in_a_row_do_not_make_the_pack_unhealthy(tmp_path):
+    host = Host(tmp_path)
+    for _ in range(3):
+        result, _ = host.run("create_level", LEVEL, fake_addin(thrown("System.InvalidOperationException", MARKER + TAKEN)))
+        assert result.refused is True
+    assert host.store.load("create_level").failure_count == 0
+    assert host.store.health_check("create_level")["recommendation"] == "use_tool"
+    created = lambda rid: FakeRevit.code_result(rid, {"Status": "Created", "ElementId": 4242, "Name": "L3"})
+    result, _ = host.run("create_level", LEVEL, fake_addin(created))  # the pack still runs
+    assert result.success is True and result.validation.passed is True
+    assert host.store.load("create_level").execution_count == 1
+
+
+@pytest.mark.parametrize("exception, message", [
+    ("System.InvalidOperationException", "Revit did not place the door in wall 101; nothing was created."),
+    ("System.InvalidOperationException", "Sequence contains no elements " + MARKER + TAKEN),   # marker not at the start
+    ("Autodesk.Revit.Exceptions.InvalidOperationException", MARKER + TAKEN),                # not the pack's exception
+    ("System.ArgumentException", MARKER + TAKEN),
+])
+def test_any_other_exception_still_counts_as_a_failure(tmp_path, exception, message):
+    host = Host(tmp_path)
+    result, _ = host.run("create_level", LEVEL, fake_addin(thrown(exception, message)))
+    assert result.success is False and result.refused is False and "refused" not in result.model_dump()
+    assert result.error == FakeRevit.THROWN_PREFIX + exception + ": " + message      # as before
+    assert result.hint is not None and execution.RETRY_HINT in result.hint
+    assert host.store.load("create_level").failure_count == 1
+    assert "refused" not in host.ledger.get(result.evidence_id)
 
 
 def test_a_created_level_passes_its_count_delta(tmp_path):
-    reply = lambda rid: FakeRevit.code_result(rid, {"Status": "Created", "ElementId": 4242, "Name": "L3"})
-    result, store, _, _ = run(tmp_path, "create_level", {"name": "L3", "elevation": 6000}, fake_addin(reply))
-    assert result.success is True and result.error is None
+    host = Host(tmp_path)
+    created = lambda rid: FakeRevit.code_result(rid, {"Status": "Created", "ElementId": 4242, "Name": "L3"})
+    result, _ = host.run("create_level", LEVEL, fake_addin(created))
+    assert result.success is True and result.error is None and "refused" not in result.model_dump()
     assert result.validation.validator == "count_delta" and result.validation.passed is True
-    assert store.load("create_level").execution_count == 1
+    assert host.store.load("create_level").execution_count == 1
 
 
-def test_an_empty_selection_refused_in_revit_fails_a_pack_without_validator(tmp_path):
+def test_an_empty_selection_is_a_refusal_for_a_pack_without_validator(tmp_path):
     message = "Nothing is selected in Revit. Select the elements first, then run the tool again."
-    reply = lambda rid: FakeRevit.thrown(rid, "System.InvalidOperationException", message)
-    result, _, _, _ = run(tmp_path, "delete_selected", {}, fake_addin(reply))
-    assert result.success is False and message in result.error and result.validation is None
+    host = Host(tmp_path)
+    result, _ = host.run("delete_selected", {}, fake_addin(thrown("System.InvalidOperationException", MARKER + message)))
+    assert result.refused is True and result.error == message and result.validation is None
+    assert host.store.load("delete_selected").failure_count == 0

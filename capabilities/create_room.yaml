@@ -5,17 +5,18 @@ description: Place one room on a level at a point (mm) inside an area closed by 
   separation lines, optionally with a name. Refusals (no such level, a point that is not
   enclosed or already in a room on that level) stop the run and change nothing.
 version: "1.0.0"
-revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
-  // The bridge already opened the transaction; none is opened here.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<string, string, double> toFeet = (label, text) =>
   {
       double mm;
       if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
           || double.IsNaN(mm) || double.IsInfinity(mm))
-          throw new InvalidOperationException(label + " must be a number in mm, got \"" + text + "\".");
+          throw new InvalidOperationException("REFUSED: " + label + " must be a number in mm, got \"" + text + "\".");
       return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
   };
   string levelName = "{level_name}";
@@ -24,23 +25,27 @@ code_template: |
   Level level = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
       .FirstOrDefault(l => l.Name == levelName);
   if (level == null)
-      throw new InvalidOperationException("There is no level named \"" + levelName + "\". Pick a level from the list.");
+      throw new InvalidOperationException("REFUSED: There is no level named \"" + levelName + "\". Pick a level from the list.");
   double x = toFeet("X", "{x}");
   double y = toFeet("Y", "{y}");
-  if (!XYZ.IsWithinLengthLimits(new XYZ(x, y, level.Elevation)))
-      throw new InvalidOperationException("The point is outside the model's limits.");
+  // ProjectElevation: the level's height in model coordinates whatever its type's elevation base.
+  double z = level.ProjectElevation;
+  if (!XYZ.IsWithinLengthLimits(new XYZ(x, y, z)))
+      throw new InvalidOperationException("REFUSED: The point is outside the model's limits.");
 
   // A room already at this point on this level would make a second, overlapping room.
   double probeHeight = UnitUtils.ConvertToInternalUnits(1000, UnitTypeId.Millimeters);
-  Autodesk.Revit.DB.Architecture.Room existing = document.GetRoomAtPoint(new XYZ(x, y, level.Elevation + probeHeight));
+  Autodesk.Revit.DB.Architecture.Room existing = document.GetRoomAtPoint(new XYZ(x, y, z + probeHeight));
   if (existing != null && existing.LevelId.Equals(level.Id))
-      throw new InvalidOperationException("There is already a room at that point on level " + levelName + " ("
+      throw new InvalidOperationException("REFUSED: There is already a room at that point on level " + levelName + " ("
           + existing.Name + "). Nothing was created.");
 
   Autodesk.Revit.DB.Architecture.Room room = document.Create.NewRoom(level, new UV(x, y));
+  if (room == null)
+      throw new InvalidOperationException("Revit returned no room; nothing was created.");
   document.Regenerate();
   if (room.Location == null || room.Area <= 0)
-      throw new InvalidOperationException("The point is not inside an area closed by walls or room separation lines on level "
+      throw new InvalidOperationException("REFUSED: The point is not inside an area closed by walls or room separation lines on level "
           + levelName + ". Nothing was created.");
   if (!string.IsNullOrWhiteSpace(roomName))
   {

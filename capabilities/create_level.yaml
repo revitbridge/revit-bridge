@@ -5,30 +5,31 @@ description: Create one level with a new, unique name at an elevation in mm. Onl
   is created, no plan view. Refusals (empty, invalid or taken name, elevation that is not a
   number) stop the run and change nothing.
 version: "1.0.0"
-revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
-  // The bridge already opened the transaction; none is opened here.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   string levelName = "{name}";
   string elevationText = "{elevation}";
 
   if (string.IsNullOrWhiteSpace(levelName))
-      throw new InvalidOperationException("Give the new level a name.");
+      throw new InvalidOperationException("REFUSED: Give the new level a name.");
   if (!NamingUtils.IsValidName(levelName))
-      throw new InvalidOperationException("\"" + levelName + "\" cannot be a level name: Revit does not allow characters such as : ; [ ] | < > ? ` ~ or braces in names.");
+      throw new InvalidOperationException("REFUSED: \"" + levelName + "\" cannot be a level name: Revit does not allow characters such as : ; [ ] | < > ? ` ~ or braces in names.");
   Level clash = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
       .FirstOrDefault(l => l.Name == levelName);
   if (clash != null)
-      throw new InvalidOperationException("A level named \"" + levelName + "\" already exists. Choose another name.");
+      throw new InvalidOperationException("REFUSED: A level named \"" + levelName + "\" already exists. Choose another name.");
 
   double elevationMm;
   if (!double.TryParse(elevationText, System.Globalization.NumberStyles.Float, invariant, out elevationMm)
       || double.IsNaN(elevationMm) || double.IsInfinity(elevationMm))
-      throw new InvalidOperationException("The elevation must be a number in mm, got \"" + elevationText + "\".");
+      throw new InvalidOperationException("REFUSED: The elevation must be a number in mm, got \"" + elevationText + "\".");
   double elevation = UnitUtils.ConvertToInternalUnits(elevationMm, UnitTypeId.Millimeters);
   if (!XYZ.IsWithinLengthLimits(new XYZ(0, 0, elevation)))
-      throw new InvalidOperationException("The elevation " + elevationText + " mm is outside the model's limits.");
+      throw new InvalidOperationException("REFUSED: The elevation " + elevationText + " mm is outside the model's limits.");
 
   Level level = Level.Create(document, elevation);
   try
@@ -37,7 +38,7 @@ code_template: |
   }
   catch (Autodesk.Revit.Exceptions.ArgumentException ex)
   {
-      throw new InvalidOperationException("Revit refused the level name \"" + levelName + "\": " + ex.Message);
+      throw new InvalidOperationException("REFUSED: Revit refused the level name \"" + levelName + "\": " + ex.Message);
   }
 
   return new
@@ -45,7 +46,10 @@ code_template: |
       Status = "Created",
       ElementId = long.Parse(level.Id.ToString(), invariant),
       Name = level.Name,
-      ElevationMm = Math.Round(UnitUtils.ConvertFromInternalUnits(level.Elevation, UnitTypeId.Millimeters), 1)
+      // Elevation follows the level type's elevation base; ProjectElevation does not. Both are
+      // reported until the real-machine check settles which one Level.Create takes.
+      ElevationMm = Math.Round(UnitUtils.ConvertFromInternalUnits(level.Elevation, UnitTypeId.Millimeters), 1),
+      ProjectElevationMm = Math.Round(UnitUtils.ConvertFromInternalUnits(level.ProjectElevation, UnitTypeId.Millimeters), 1)
   };
 parameters:
   - name: name

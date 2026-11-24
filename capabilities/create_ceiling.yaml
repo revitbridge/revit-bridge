@@ -3,24 +3,27 @@ name: create_ceiling
 display_name: Create Ceiling
 description: >-
   Create one ceiling on a level from a rectangle given by its corner (x, y) and its
-  width along X and length along Y, at a height above the level, all in mm. Needs Revit 2022 or
-  later (the API cannot create ceilings before 2022). The ceiling type is a ceiling type name;
+  width along X and length along Y, at a height above the level, all in mm. Needs Revit 2023 or
+  later (the API cannot create ceilings before 2022, and the add-in has no 2022 build). The
+  ceiling type is a ceiling type name;
   when two families have a type of that name, give it as "Family: Type". Refusals (no such level
   or type, a width or length that is not more than zero, a negative height) stop the run and
   change nothing.
 version: "1.0.0"
-revit_versions: ["2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
-  // The bridge already opened the transaction; none is opened here.
-  // Ceiling.Create exists from Revit 2022: on 2021 this code does not compile and nothing runs.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  // Ceiling.Create exists from Revit 2022 (the add-in builds 2023 on): on 2021 this code does not
+  // compile and nothing runs.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<string, string, double> toFeet = (label, text) =>
   {
       double mm;
       if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
           || double.IsNaN(mm) || double.IsInfinity(mm))
-          throw new InvalidOperationException(label + " must be a number in mm, got \"" + text + "\".");
+          throw new InvalidOperationException("REFUSED: " + label + " must be a number in mm, got \"" + text + "\".");
       return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
   };
   Func<double, double> toMm = feet => Math.Round(UnitUtils.ConvertFromInternalUnits(feet, UnitTypeId.Millimeters), 1);
@@ -34,14 +37,14 @@ code_template: |
   Level level = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
       .FirstOrDefault(l => l.Name == levelName);
   if (level == null)
-      throw new InvalidOperationException("There is no level named \"" + levelName + "\". Pick a level from the list.");
+      throw new InvalidOperationException("REFUSED: There is no level named \"" + levelName + "\". Pick a level from the list.");
   var types = new FilteredElementCollector(document).OfClass(typeof(CeilingType)).Cast<CeilingType>()
       .Where(t => t.Name == typeName || t.FamilyName + ": " + t.Name == typeName)
       .ToList();
   if (types.Count == 0)
-      throw new InvalidOperationException("There is no ceiling type named \"" + typeName + "\". Pick a ceiling type from the list.");
+      throw new InvalidOperationException("REFUSED: There is no ceiling type named \"" + typeName + "\". Pick a ceiling type from the list.");
   if (types.Count > 1)
-      throw new InvalidOperationException(types.Count + " ceiling types are named \"" + typeName + "\" (families: "
+      throw new InvalidOperationException("REFUSED: " + types.Count + " ceiling types are named \"" + typeName + "\" (families: "
           + string.Join(", ", types.Select(t => t.FamilyName).Distinct()) + "). Give the type as \"Family: Type\".");
   CeilingType ceilingType = types[0];
 
@@ -51,21 +54,23 @@ code_template: |
   double length = toFeet("Length", "{length}");
   double height = toFeet("Height", "{height}");
   if (width <= tolerance || length <= tolerance)
-      throw new InvalidOperationException("Width and length must both be more than zero mm.");
+      throw new InvalidOperationException("REFUSED: Width and length must both be more than zero mm.");
   if (height < 0)
-      throw new InvalidOperationException("The height above the level must be zero or more mm.");
-  double z = level.Elevation;
+      throw new InvalidOperationException("REFUSED: The height above the level must be zero or more mm.");
+  double z = level.ProjectElevation;   // the level's height in model coordinates, whatever its elevation base
   XYZ[] corners =
   {
       new XYZ(x, y, z), new XYZ(x + width, y, z), new XYZ(x + width, y + length, z), new XYZ(x, y + length, z)
   };
   if (!corners.All(c => XYZ.IsWithinLengthLimits(c)) || !XYZ.IsWithinLengthLimits(new XYZ(x, y, z + height)))
-      throw new InvalidOperationException("The ceiling reaches outside the model's limits.");
+      throw new InvalidOperationException("REFUSED: The ceiling reaches outside the model's limits.");
   var edges = new List<Curve>();
   for (int i = 0; i < 4; i++)
       edges.Add(Line.CreateBound(corners[i], corners[(i + 1) % 4]));
 
   Ceiling ceiling = Ceiling.Create(document, new List<CurveLoop> { CurveLoop.Create(edges) }, ceilingType.Id, level.Id);
+  if (ceiling == null)
+      throw new InvalidOperationException("Revit returned no ceiling; nothing was created.");
   Parameter offset = ceiling.get_Parameter(BuiltInParameter.CEILING_HEIGHTABOVELEVEL_PARAM);
   if (offset == null || offset.IsReadOnly)
       throw new InvalidOperationException("The ceiling's height above the level cannot be set; nothing was created.");
@@ -134,7 +139,7 @@ preconditions:
     value: 1
   - kind: category_present
     category: OST_Ceilings
-  - text: "Revit 2022 or later: the API has no way to create a ceiling before 2022"
+  - text: "Revit 2023 or later: the API has no way to create a ceiling before 2022 and the add-in has no 2022 build"
 not_for:
   - "ceiling type"
   - "ceiling grid"

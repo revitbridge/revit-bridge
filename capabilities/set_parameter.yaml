@@ -7,16 +7,18 @@ description: >-
   ALL_MODEL_INSTANCE_COMMENTS), its shared parameter GUID, or the name Revit shows. The value is
   text: lengths in mm, whole numbers, yes or no for Yes/No parameters, an element id for
   parameters that hold one, anything for text parameters. Every selected element is checked
-  first; if any cannot take the value (no such parameter, read-only, wrong kind of value) the
-  run stops and nothing is changed. Needs Revit 2022 or later. Returns the ids actually changed
+  first; if any cannot take the value (a type in the selection, no such parameter, read-only,
+  wrong kind of value) the run stops and nothing is changed. Needs Revit 2023 or later. Returns the ids actually changed
   (elements that already had the value are listed under AlreadySet); there is no validator,
   the tool reads every value back itself.
 version: "1.0.0"
-revit_versions: ["2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
-  // The bridge already opened the transaction; none is opened here.
-  // Definition.GetDataType exists from Revit 2022: on 2021 this code does not compile and nothing runs.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  // Definition.GetDataType exists from Revit 2022 (the add-in builds 2023 on): on 2021 this code does
+  // not compile and nothing runs.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
   string parameterName = "{parameter_name}";
@@ -26,12 +28,12 @@ code_template: |
   const double ReadBackTolerance = 1e-6;
 
   if (string.IsNullOrWhiteSpace(parameterName))
-      throw new InvalidOperationException("Name the parameter to set.");
+      throw new InvalidOperationException("REFUSED: Name the parameter to set.");
   List<ElementId> selected = new UIDocument(document).Selection.GetElementIds().ToList();
   if (selected.Count == 0)
-      throw new InvalidOperationException("Nothing is selected in Revit. Select the elements first, then run the tool again.");
+      throw new InvalidOperationException("REFUSED: Nothing is selected in Revit. Select the elements first, then run the tool again.");
   if (selected.Count > MaxSelected)
-      throw new InvalidOperationException(selected.Count + " elements are selected; this tool changes at most " + MaxSelected + " per run. Select fewer.");
+      throw new InvalidOperationException("REFUSED: " + selected.Count + " elements are selected; this tool changes at most " + MaxSelected + " per run. Select fewer.");
 
   // The parameter: a BuiltInParameter identifier, a shared parameter GUID, or the name Revit shows.
   BuiltInParameter builtIn = BuiltInParameter.INVALID;
@@ -158,6 +160,11 @@ code_template: |
           problems.Add(idOf(id) + " no longer exists");
           continue;
       }
+      if (element is ElementType)
+      {
+          problems.Add(idOf(id) + " is a type; changing it would change every element of that type");
+          continue;
+      }
       string why;
       Parameter parameter = Find(element, out why);
       object value = parameter == null ? null : ValueFor(parameter, out why);
@@ -167,7 +174,7 @@ code_template: |
           plan.Add(Tuple.Create(id, parameter, value));
   }
   if (problems.Count > 0)
-      throw new InvalidOperationException("Nothing was changed: " + problems.Count + " of " + selected.Count
+      throw new InvalidOperationException("REFUSED: Nothing was changed: " + problems.Count + " of " + selected.Count
           + " selected elements cannot take the value \"" + valueText + "\". " + string.Join("; ", problems.Take(5))
           + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
 
@@ -191,7 +198,7 @@ code_template: |
       else
           accepted = step.Item2.Set((ElementId)step.Item3);
       if (!accepted)
-          throw new InvalidOperationException("Revit refused the value \"" + valueText + "\" for element " + idOf(step.Item1) + "; nothing was changed.");
+          throw new InvalidOperationException("REFUSED: Revit refused the value \"" + valueText + "\" for element " + idOf(step.Item1) + "; nothing was changed.");
       changed.Add(idOf(step.Item1));
   }
   document.Regenerate();
@@ -222,7 +229,7 @@ parameters:
     required: true
 preconditions:
   - text: "select the elements in Revit first (at most 100)"
-  - text: "Revit 2022 or later"
+  - text: "Revit 2023 or later (Definition.GetDataType; the add-in has no 2022 build)"
 not_for:
   - "type parameter"
   - "change type"

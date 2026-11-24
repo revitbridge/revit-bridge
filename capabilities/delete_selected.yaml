@@ -8,19 +8,20 @@ description: >-
   (a wall's doors and windows, for example); those ids are listed under AlsoDeleted. Returns
   the ids deleted; there is no validator, the tool checks that every one is gone.
 version: "1.0.0"
-revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
-  // The bridge already opened the transaction; none is opened here.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
   const int MaxSelected = 100;
 
   List<ElementId> selected = new UIDocument(document).Selection.GetElementIds().ToList();
   if (selected.Count == 0)
-      throw new InvalidOperationException("Nothing is selected in Revit. Select the elements first, then run the tool again.");
+      throw new InvalidOperationException("REFUSED: Nothing is selected in Revit. Select the elements first, then run the tool again.");
   if (selected.Count > MaxSelected)
-      throw new InvalidOperationException(selected.Count + " elements are selected; this tool deletes at most " + MaxSelected + " per run. Select fewer.");
+      throw new InvalidOperationException("REFUSED: " + selected.Count + " elements are selected; this tool deletes at most " + MaxSelected + " per run. Select fewer.");
 
   // 1. Check every selected element before deleting any.
   var problems = new List<string>();
@@ -34,7 +35,7 @@ code_template: |
       if (element.Pinned) { problems.Add(idOf(id) + " is pinned; unpin it in Revit first"); continue; }
   }
   if (problems.Count > 0)
-      throw new InvalidOperationException("Nothing was deleted: " + problems.Count + " of " + selected.Count + " selected elements cannot be deleted by this tool. "
+      throw new InvalidOperationException("REFUSED: Nothing was deleted: " + problems.Count + " of " + selected.Count + " selected elements cannot be deleted by this tool. "
           + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
 
   // 2. Delete, then check that every selected element is gone.

@@ -8,17 +8,18 @@ description: >-
   of that name, give it as "Family: Type". Refusals (no such level or type, a width or length
   that is not more than zero) stop the run and change nothing.
 version: "1.0.0"
-revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
-  // The bridge already opened the transaction; none is opened here.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<string, string, double> toFeet = (label, text) =>
   {
       double mm;
       if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
           || double.IsNaN(mm) || double.IsInfinity(mm))
-          throw new InvalidOperationException(label + " must be a number in mm, got \"" + text + "\".");
+          throw new InvalidOperationException("REFUSED: " + label + " must be a number in mm, got \"" + text + "\".");
       return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
   };
   Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
@@ -29,14 +30,14 @@ code_template: |
   Level level = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
       .FirstOrDefault(l => l.Name == levelName);
   if (level == null)
-      throw new InvalidOperationException("There is no level named \"" + levelName + "\". Pick a level from the list.");
+      throw new InvalidOperationException("REFUSED: There is no level named \"" + levelName + "\". Pick a level from the list.");
   var types = new FilteredElementCollector(document).OfClass(typeof(RoofType)).Cast<RoofType>()
       .Where(t => t.Name == typeName || t.FamilyName + ": " + t.Name == typeName)
       .ToList();
   if (types.Count == 0)
-      throw new InvalidOperationException("There is no roof type named \"" + typeName + "\". Pick a roof type from the list.");
+      throw new InvalidOperationException("REFUSED: There is no roof type named \"" + typeName + "\". Pick a roof type from the list.");
   if (types.Count > 1)
-      throw new InvalidOperationException(types.Count + " roof types are named \"" + typeName + "\" (families: "
+      throw new InvalidOperationException("REFUSED: " + types.Count + " roof types are named \"" + typeName + "\" (families: "
           + string.Join(", ", types.Select(t => t.FamilyName).Distinct()) + "). Give the type as \"Family: Type\".");
   RoofType roofType = types[0];
 
@@ -45,14 +46,14 @@ code_template: |
   double width = toFeet("Width", "{width}");
   double length = toFeet("Length", "{length}");
   if (width <= tolerance || length <= tolerance)
-      throw new InvalidOperationException("Width and length must both be more than zero mm.");
-  double z = level.Elevation;
+      throw new InvalidOperationException("REFUSED: Width and length must both be more than zero mm.");
+  double z = level.ProjectElevation;   // the level's height in model coordinates, whatever its elevation base
   XYZ[] corners =
   {
       new XYZ(x, y, z), new XYZ(x + width, y, z), new XYZ(x + width, y + length, z), new XYZ(x, y + length, z)
   };
   if (!corners.All(c => XYZ.IsWithinLengthLimits(c)))
-      throw new InvalidOperationException("The rectangle reaches outside the model's limits.");
+      throw new InvalidOperationException("REFUSED: The rectangle reaches outside the model's limits.");
   CurveArray footprint = new CurveArray();
   for (int i = 0; i < 4; i++)
       footprint.Append(Line.CreateBound(corners[i], corners[(i + 1) % 4]));

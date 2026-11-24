@@ -9,17 +9,18 @@ description: >-
   wall or too close to its ends, a window that would stick out of the wall) stop the run and
   change nothing.
 version: "1.0.0"
-revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
-  // The bridge already opened the transaction; none is opened here.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<string, string, double> toFeet = (label, text) =>
   {
       double mm;
       if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
           || double.IsNaN(mm) || double.IsInfinity(mm))
-          throw new InvalidOperationException(label + " must be a number in mm, got \"" + text + "\".");
+          throw new InvalidOperationException("REFUSED: " + label + " must be a number in mm, got \"" + text + "\".");
       return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
   };
   Func<double, double> toMm = feet => Math.Round(UnitUtils.ConvertFromInternalUnits(feet, UnitTypeId.Millimeters), 1);
@@ -40,22 +41,24 @@ code_template: |
   // 1. The host wall, by id: it must exist, be a wall, and be a basic wall with a location line.
   int wallNumber;
   if (!int.TryParse(wallText, System.Globalization.NumberStyles.Integer, invariant, out wallNumber) || wallNumber <= 0)
-      throw new InvalidOperationException("The host wall must be given by its element id (a whole number from 1 to 2147483647), got \"" + wallText + "\".");
+      throw new InvalidOperationException("REFUSED: The host wall must be given by its element id (a whole number from 1 to 2147483647), got \"" + wallText + "\".");
   // ElementId(int) on 2021-2023, obsolete on 2024-2025, gone from 2026 (the int then converts to
   // ElementId(Int64)): one line for every year, without the 2024-2025 warning.
   #pragma warning disable 618
   Wall wall = document.GetElement(new ElementId(wallNumber)) as Wall;
   #pragma warning restore 618
   if (wall == null)
-      throw new InvalidOperationException("There is no wall with id " + wallText + " in this model. Pick a wall from the list.");
+      throw new InvalidOperationException("REFUSED: There is no wall with id " + wallText + " in this model. Pick a wall from the list.");
   if (wall.WallType.Kind != WallKind.Basic)
-      throw new InvalidOperationException("Wall " + wallText + " is a " + wall.WallType.Kind + " wall; this tool places windows in basic walls only.");
+      throw new InvalidOperationException("REFUSED: Wall " + wallText + " is a "
+          + (wall.WallType.Kind == WallKind.Curtain ? "curtain" : wall.WallType.Kind == WallKind.Stacked ? "stacked" : "special")
+          + " wall; this tool places windows in basic walls only.");
   LocationCurve wallLocation = wall.Location as LocationCurve;
   if (wallLocation == null || wallLocation.Curve == null)
-      throw new InvalidOperationException("Wall " + wallText + " has no location line.");
+      throw new InvalidOperationException("REFUSED: Wall " + wallText + " has no location line.");
   Level level = document.GetElement(wall.LevelId) as Level;
   if (level == null)
-      throw new InvalidOperationException("Wall " + wallText + " has no base level.");
+      throw new InvalidOperationException("REFUSED: Wall " + wallText + " has no base level.");
 
   // 2. The window type, by name or "Family: Type", among loaded window types.
   var types = new FilteredElementCollector(document).OfClass(typeof(FamilySymbol))
@@ -63,47 +66,51 @@ code_template: |
       .Where(s => s.Name == typeName || s.FamilyName + ": " + s.Name == typeName)
       .ToList();
   if (types.Count == 0)
-      throw new InvalidOperationException("No loaded window type is named \"" + typeName + "\". Pick a window type from the list, or load its family first.");
+      throw new InvalidOperationException("REFUSED: No loaded window type is named \"" + typeName + "\". Pick a window type from the list, or load its family first.");
   if (types.Count > 1)
-      throw new InvalidOperationException(types.Count + " window types are named \"" + typeName + "\" (families: "
+      throw new InvalidOperationException("REFUSED: " + types.Count + " window types are named \"" + typeName + "\" (families: "
           + string.Join(", ", types.Select(s => s.FamilyName).Distinct()) + "). Give the type as \"Family: Type\".");
   FamilySymbol symbol = types[0];
   if (symbol.Family.FamilyPlacementType != FamilyPlacementType.OneLevelBasedHosted)
-      throw new InvalidOperationException("Window type \"" + typeName + "\" is not placed in a wall (" + symbol.Family.FamilyPlacementType + "); pick a wall-hosted window type.");
+      throw new InvalidOperationException("REFUSED: Window type \"" + typeName + "\" is not a window that is placed in a wall; pick a wall-hosted window type.");
 
   // 3. The point: on the wall (within its thickness of the location line), not past its ends.
   double x = toFeet("X", "{x}");
   double y = toFeet("Y", "{y}");
   double sill = toFeet("Sill height", "{sill_height}");
   if (sill < 0)
-      throw new InvalidOperationException("The sill height must be zero or more mm above the level.");
+      throw new InvalidOperationException("REFUSED: The sill height must be zero or more mm above the level.");
   Curve line = wallLocation.Curve;
   XYZ asked = new XYZ(x, y, line.GetEndPoint(0).Z);
   if (!XYZ.IsWithinLengthLimits(asked))
-      throw new InvalidOperationException("The point is outside the model's limits.");
+      throw new InvalidOperationException("REFUSED: The point is outside the model's limits.");
   IntersectionResult nearest = line.Project(asked);
   if (nearest == null)
-      throw new InvalidOperationException("The point could not be projected onto wall " + wallText + ".");
+      throw new InvalidOperationException("REFUSED: The point could not be projected onto wall " + wallText + ".");
   XYZ onWall = nearest.XYZPoint;
   double offWall = onWall.DistanceTo(asked);
   if (offWall > wall.Width + tolerance)
-      throw new InvalidOperationException("The point is " + toMm(offWall) + " mm from wall " + wallText + "; give a point on the wall (it is " + toMm(wall.Width) + " mm thick).");
+      throw new InvalidOperationException("REFUSED: The point is " + toMm(offWall) + " mm from wall " + wallText + "; give a point on the wall (it is " + toMm(wall.Width) + " mm thick).");
   double toStart = onWall.DistanceTo(line.GetEndPoint(0));
   double toEnd = onWall.DistanceTo(line.GetEndPoint(1));
   Parameter widthParameter = lengthOf(symbol, BuiltInParameter.WINDOW_WIDTH, BuiltInParameter.FAMILY_WIDTH_PARAM);
   double halfWidth = widthParameter != null ? widthParameter.AsDouble() / 2.0 : 0.0;
   if (Math.Min(toStart, toEnd) < halfWidth + tolerance)
-      throw new InvalidOperationException("The window does not fit there: the point is " + toMm(Math.Min(toStart, toEnd))
+      throw new InvalidOperationException("REFUSED: The window does not fit there: the point is " + toMm(Math.Min(toStart, toEnd))
           + " mm from an end of wall " + wallText + (widthParameter != null ? " and the window is " + toMm(2 * halfWidth) + " mm wide." : "."));
 
-  // 4. Vertically: sill and head inside the wall's extent, when the wall's box and the type's height are known.
+  // 4. Vertically: sill and head inside the wall's extent, when the wall's box is known; the head
+  // only when the type's height is readable too. ProjectElevation is the level's height in model
+  // coordinates (the box's) whatever the level type's elevation base.
   Parameter heightParameter = lengthOf(symbol, BuiltInParameter.WINDOW_HEIGHT, BuiltInParameter.FAMILY_HEIGHT_PARAM);
   BoundingBoxXYZ wallBox = wall.get_BoundingBox(null);
-  double bottom = level.Elevation + sill;
+  double bottom = level.ProjectElevation + sill;
   if (wallBox != null && bottom < wallBox.Min.Z - tolerance)
-      throw new InvalidOperationException("A sill " + toMm(sill) + " mm above level " + level.Name + " is below the bottom of wall " + wallText + ".");
+      throw new InvalidOperationException("REFUSED: A sill " + toMm(sill) + " mm above level " + level.Name + " is below the bottom of wall " + wallText + ".");
+  if (wallBox != null && bottom >= wallBox.Max.Z - tolerance)
+      throw new InvalidOperationException("REFUSED: A sill " + toMm(sill) + " mm above level " + level.Name + " is at or above the top of wall " + wallText + ". Lower the sill.");
   if (wallBox != null && heightParameter != null && bottom + heightParameter.AsDouble() > wallBox.Max.Z + tolerance)
-      throw new InvalidOperationException("The window does not fit: its head would be " + toMm(bottom + heightParameter.AsDouble() - wallBox.Max.Z)
+      throw new InvalidOperationException("REFUSED: The window does not fit: its head would be " + toMm(bottom + heightParameter.AsDouble() - wallBox.Max.Z)
           + " mm above the top of wall " + wallText + ". Lower the sill or pick a shorter type.");
 
   // 5. Place it, set and read back the sill, check that the wall hosts it.
@@ -114,6 +121,8 @@ code_template: |
   }
   FamilyInstance window = document.Create.NewFamilyInstance(new XYZ(onWall.X, onWall.Y, bottom), symbol, wall, level,
       Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+  if (window == null)
+      throw new InvalidOperationException("Revit returned no window; nothing was created.");
   document.Regenerate();
   if (window.Host == null || !window.Host.Id.Equals(wall.Id))
       throw new InvalidOperationException("Revit did not place the window in wall " + wallText + "; nothing was created.");

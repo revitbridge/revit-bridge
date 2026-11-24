@@ -7,12 +7,14 @@ description: >-
   selected element is checked first; an element of another category, in a group, or that
   cannot take the type stops the run and nothing is changed. Elements that already have the
   type are listed under AlreadyThisType; if all have it, nothing is changed and the run says
-  so. The validator reads the type back from every changed element.
+  so. The validator reads the type back from every changed element; it needs Revit 2024 or
+  later (its read-back uses ElementId.Value), so the tool is for Revit 2024 or later.
 version: "1.0.0"
-revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2024", "2025", "2026", "2027"]
 code_template: |
-  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
-  // The bridge already opened the transaction; none is opened here.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
   string categoryName = "{category}";
@@ -23,11 +25,11 @@ code_template: |
   BuiltInCategory category;
   if (!categoryName.StartsWith("OST_", StringComparison.Ordinal) || !Enum.TryParse(categoryName, out category)
       || !Enum.IsDefined(typeof(BuiltInCategory), category))
-      throw new InvalidOperationException("\"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
+      throw new InvalidOperationException("REFUSED: \"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
   ElementId categoryId = new ElementId(category);
   int typeNumber;
   if (!int.TryParse(typeText, System.Globalization.NumberStyles.Integer, invariant, out typeNumber) || typeNumber <= 0)
-      throw new InvalidOperationException("The type must be given by its id (a whole number from list_types, 1 to 2147483647), got \"" + typeText + "\".");
+      throw new InvalidOperationException("REFUSED: The type must be given by its id (a whole number from list_types, 1 to 2147483647), got \"" + typeText + "\".");
   // ElementId(int) on 2021-2023, obsolete on 2024-2025, gone from 2026 (the int then converts to
   // ElementId(Int64)): one line for every year, without the 2024-2025 warning.
   #pragma warning disable 618
@@ -35,16 +37,16 @@ code_template: |
   #pragma warning restore 618
   ElementType target = document.GetElement(typeId) as ElementType;
   if (target == null)
-      throw new InvalidOperationException("There is no type with id " + typeText + " in this model. Look the type up with list_types.");
+      throw new InvalidOperationException("REFUSED: There is no type with id " + typeText + " in this model. Look the type up with list_types.");
   if (target.Category == null || !target.Category.Id.Equals(categoryId))
-      throw new InvalidOperationException("Type " + typeText + " (" + target.Name + ") is not a " + categoryName + " type.");
+      throw new InvalidOperationException("REFUSED: Type " + typeText + " (" + target.Name + ") is not a " + categoryName + " type.");
 
   // 2. Check every selected element before changing any.
   List<ElementId> selected = new UIDocument(document).Selection.GetElementIds().ToList();
   if (selected.Count == 0)
-      throw new InvalidOperationException("Nothing is selected in Revit. Select the elements first, then run the tool again.");
+      throw new InvalidOperationException("REFUSED: Nothing is selected in Revit. Select the elements first, then run the tool again.");
   if (selected.Count > MaxSelected)
-      throw new InvalidOperationException(selected.Count + " elements are selected; this tool changes at most " + MaxSelected + " per run. Select fewer.");
+      throw new InvalidOperationException("REFUSED: " + selected.Count + " elements are selected; this tool changes at most " + MaxSelected + " per run. Select fewer.");
   var problems = new List<string>();
   var toChange = new List<ElementId>();
   var already = new List<long>();
@@ -59,10 +61,10 @@ code_template: |
       toChange.Add(id);
   }
   if (problems.Count > 0)
-      throw new InvalidOperationException("Nothing was changed: " + problems.Count + " of " + selected.Count + " selected elements cannot change to "
+      throw new InvalidOperationException("REFUSED: Nothing was changed: " + problems.Count + " of " + selected.Count + " selected elements cannot change to "
           + target.Name + ". " + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
   if (toChange.Count == 0)
-      throw new InvalidOperationException("Nothing was changed: all " + selected.Count + " selected elements already have type " + target.Name + ".");
+      throw new InvalidOperationException("REFUSED: Nothing was changed: all " + selected.Count + " selected elements already have type " + target.Name + ".");
 
   // 3. Change, then read every type back. In rare cases (a curtain panel and a basic wall) Revit
   // replaces the element and ChangeTypeId returns the new element's id; follow it then.
@@ -100,6 +102,7 @@ parameters:
     required: true
 preconditions:
   - text: "select the elements in Revit first (at most 100), all of the given category"
+  - text: "Revit 2024 or later: the param_equals validator reads ids with ElementId.Value"
 not_for:
   - "create type"
   - "duplicate type"

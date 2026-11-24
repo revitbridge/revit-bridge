@@ -3,24 +3,26 @@ name: move_elements
 display_name: Move Elements
 description: >-
   Move the elements selected in Revit (at most 100) together by one vector in mm. Every selected
-  element is checked first; pinned elements, element types, views and elements without a
-  position in the model stop the run and nothing is moved. After the move every element's
+  element is checked first; pinned elements, element types, views, levels (moving one moves
+  everything on it) and elements without a position in the model stop the run and nothing is
+  moved. Grids may be moved, in plan. After the move every element's
   position is read back: one that stayed where it was (a door kept by its wall, a constrained
   element) also stops the run and nothing is moved. Elements that moved by a different amount
   (for example a wall stretched by its joins) are listed under NotAsRequested. Returns the ids
   moved; there is no validator, the tool reads every position back itself.
 version: "1.0.0"
-revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // Every refusal throws: the add-in then rolls its transaction back and reports the message.
-  // The bridge already opened the transaction; none is opened here.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<string, string, double> toFeet = (label, text) =>
   {
       double mm;
       if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
           || double.IsNaN(mm) || double.IsInfinity(mm))
-          throw new InvalidOperationException(label + " must be a number in mm, got \"" + text + "\".");
+          throw new InvalidOperationException("REFUSED: " + label + " must be a number in mm, got \"" + text + "\".");
       return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
   };
   Func<double, double> toMm = feet => Math.Round(UnitUtils.ConvertFromInternalUnits(feet, UnitTypeId.Millimeters), 1);
@@ -32,14 +34,14 @@ code_template: |
 
   XYZ vector = new XYZ(toFeet("X", "{x}"), toFeet("Y", "{y}"), toFeet("Z", "{z}"));
   if (!XYZ.IsWithinLengthLimits(vector))
-      throw new InvalidOperationException("The move is outside the model's limits.");
+      throw new InvalidOperationException("REFUSED: The move is outside the model's limits.");
   if (vector.GetLength() < stillTolerance)
-      throw new InvalidOperationException("The move is zero; give a distance in X, Y or Z.");
+      throw new InvalidOperationException("REFUSED: The move is zero; give a distance in X, Y or Z.");
   List<ElementId> selected = new UIDocument(document).Selection.GetElementIds().ToList();
   if (selected.Count == 0)
-      throw new InvalidOperationException("Nothing is selected in Revit. Select the elements first, then run the tool again.");
+      throw new InvalidOperationException("REFUSED: Nothing is selected in Revit. Select the elements first, then run the tool again.");
   if (selected.Count > MaxSelected)
-      throw new InvalidOperationException(selected.Count + " elements are selected; this tool moves at most " + MaxSelected + " per run. Select fewer.");
+      throw new InvalidOperationException("REFUSED: " + selected.Count + " elements are selected; this tool moves at most " + MaxSelected + " per run. Select fewer.");
 
   // A point that moves with the element: its location point, its location line's start, or its box's minimum.
   XYZ PositionOf(Element element)
@@ -63,6 +65,7 @@ code_template: |
       if (element == null) { problems.Add(idOf(id) + " no longer exists"); continue; }
       if (element is ElementType) { problems.Add(idOf(id) + " is a type, not an element in the model"); continue; }
       if (element is View) { problems.Add(idOf(id) + " is a view"); continue; }
+      if (element is Level) { problems.Add(idOf(id) + " is a level; moving it would move everything on it"); continue; }
       if (element.Pinned) { problems.Add(idOf(id) + " is pinned; unpin it in Revit first"); continue; }
       XYZ position = PositionOf(element);
       if (position == null) { problems.Add(idOf(id) + " has no position in the model"); continue; }
@@ -70,7 +73,7 @@ code_template: |
       before[id] = position;
   }
   if (problems.Count > 0)
-      throw new InvalidOperationException("Nothing was moved: " + problems.Count + " of " + selected.Count + " selected elements cannot be moved. "
+      throw new InvalidOperationException("REFUSED: Nothing was moved: " + problems.Count + " of " + selected.Count + " selected elements cannot be moved. "
           + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
 
   // 2. Move them in one call (a host and its selected dependents move together), then read back.
@@ -96,7 +99,7 @@ code_template: |
           notAsRequested.Add(new { Id = idOf(id), XMm = toMm(shift.X), YMm = toMm(shift.Y), ZMm = toMm(shift.Z) });
   }
   if (stayed.Count > 0)
-      throw new InvalidOperationException("Nothing was moved: Revit kept " + stayed.Count + " selected element(s) in place ("
+      throw new InvalidOperationException("REFUSED: Nothing was moved: Revit kept " + stayed.Count + " selected element(s) in place ("
           + string.Join(", ", stayed.Take(5)) + (stayed.Count > 5 ? ", ..." : "") + "), for example a door or window held by its wall.");
 
   return new
@@ -110,25 +113,22 @@ code_template: |
 parameters:
   - name: x
     type: double
-    description: Distance to move along X (mm)
+    description: Distance to move along X, 0 for none (mm)
     unit: mm
-    source: default
-    required: false
-    default: 0
+    source: designer
+    required: true
   - name: y
     type: double
-    description: Distance to move along Y (mm)
+    description: Distance to move along Y, 0 for none (mm)
     unit: mm
-    source: default
-    required: false
-    default: 0
+    source: designer
+    required: true
   - name: z
     type: double
-    description: Distance to move along Z, up is positive (mm)
+    description: Distance to move along Z, up is positive, 0 for none (mm)
     unit: mm
-    source: default
-    required: false
-    default: 0
+    source: designer
+    required: true
 preconditions:
   - text: "select the elements in Revit first (at most 100); unpin pinned elements"
 not_for:
@@ -144,10 +144,10 @@ applies_when:
 validator: null
 fixtures:
   - name: along_x
-    params: {x: 1000}
+    params: {x: 1000, y: 0, z: 0}
     expect: {Status: "Moved"}
   - name: up
-    params: {z: 3000}
+    params: {x: 0, y: 0, z: 3000}
     expect: {Status: "Moved"}
 approved_by: null
 approved_at: null

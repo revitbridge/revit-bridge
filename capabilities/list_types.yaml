@@ -7,10 +7,12 @@ description: >-
   at most 200) with Truncated saying whether types were left out. The ids are what
   change_type takes.
 version: "1.0.0"
-revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // Read only. Every refusal throws, so the add-in reports the message and keeps nothing.
-  // The bridge already opened the transaction; none is opened here.
+  // Read only.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
   string categoryName = "{category}";
@@ -20,12 +22,12 @@ code_template: |
   BuiltInCategory category;
   if (!categoryName.StartsWith("OST_", StringComparison.Ordinal) || !Enum.TryParse(categoryName, out category)
       || !Enum.IsDefined(typeof(BuiltInCategory), category))
-      throw new InvalidOperationException("\"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
+      throw new InvalidOperationException("REFUSED: \"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
   if (Category.GetCategory(document, category) == null)
-      throw new InvalidOperationException(categoryName + " is not a category of this model.");
+      throw new InvalidOperationException("REFUSED: " + categoryName + " is not a category of this model.");
   int limit;
   if (!int.TryParse(limitText, System.Globalization.NumberStyles.Integer, invariant, out limit) || limit < 1)
-      throw new InvalidOperationException("The limit must be a whole number from 1 to " + MaxRows + ", got \"" + limitText + "\".");
+      throw new InvalidOperationException("REFUSED: The limit must be a whole number from 1 to " + MaxRows + ", got \"" + limitText + "\".");
   limit = Math.Min(limit, MaxRows);
 
   List<ElementType> types = new FilteredElementCollector(document).OfCategory(category).WhereElementIsElementType()
@@ -51,7 +53,7 @@ parameters:
     source: designer
     required: true
   - name: limit
-    type: int
+    type: integer
     description: Most rows to return (1 to 200)
     source: default
     required: false

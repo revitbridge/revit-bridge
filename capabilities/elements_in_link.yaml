@@ -7,10 +7,12 @@ description: >-
   with Truncated saying whether elements were left out. The ids belong to the linked model,
   not to the open one. Refusals (no such link, link not loaded) stop the run.
 version: "1.0.0"
-revit_versions: ["2021", "2022", "2023", "2024", "2025", "2026", "2027"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
-  // Read only. Every refusal throws, so the add-in reports the message and keeps nothing.
-  // The bridge already opened the transaction; none is opened here.
+  // Read only.
+  // A refusal (nothing changed; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
   string linkText = "{link_id}";
@@ -20,24 +22,24 @@ code_template: |
 
   int linkNumber;
   if (!int.TryParse(linkText, System.Globalization.NumberStyles.Integer, invariant, out linkNumber) || linkNumber <= 0)
-      throw new InvalidOperationException("The link must be given by its element id (a whole number from 1 to 2147483647), got \"" + linkText + "\".");
+      throw new InvalidOperationException("REFUSED: The link must be given by its element id (a whole number from 1 to 2147483647), got \"" + linkText + "\".");
   // ElementId(int) on 2021-2023, obsolete on 2024-2025, gone from 2026 (the int then converts to
   // ElementId(Int64)): one line for every year, without the 2024-2025 warning.
   #pragma warning disable 618
   RevitLinkInstance link = document.GetElement(new ElementId(linkNumber)) as RevitLinkInstance;
   #pragma warning restore 618
   if (link == null)
-      throw new InvalidOperationException("There is no Revit link with id " + linkText + " in this model. Pick a link from the list.");
+      throw new InvalidOperationException("REFUSED: There is no Revit link with id " + linkText + " in this model. Pick a link from the list.");
   Document linked = link.GetLinkDocument();
   if (linked == null)
-      throw new InvalidOperationException("Link " + link.Name + " is not loaded. Reload it in Manage Links, then run the tool again.");
+      throw new InvalidOperationException("REFUSED: Link " + link.Name + " is not loaded. Reload it in Manage Links, then run the tool again.");
   BuiltInCategory category;
   if (!categoryName.StartsWith("OST_", StringComparison.Ordinal) || !Enum.TryParse(categoryName, out category)
       || !Enum.IsDefined(typeof(BuiltInCategory), category))
-      throw new InvalidOperationException("\"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
+      throw new InvalidOperationException("REFUSED: \"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
   int limit;
   if (!int.TryParse(limitText, System.Globalization.NumberStyles.Integer, invariant, out limit) || limit < 1)
-      throw new InvalidOperationException("The limit must be a whole number from 1 to " + MaxRows + ", got \"" + limitText + "\".");
+      throw new InvalidOperationException("REFUSED: The limit must be a whole number from 1 to " + MaxRows + ", got \"" + limitText + "\".");
   limit = Math.Min(limit, MaxRows);
 
   int total = new FilteredElementCollector(linked).OfCategory(category).WhereElementIsNotElementType().GetElementCount();
@@ -77,7 +79,7 @@ parameters:
     source: designer
     required: true
   - name: limit
-    type: int
+    type: integer
     description: Most rows to return (1 to 200)
     source: default
     required: false
