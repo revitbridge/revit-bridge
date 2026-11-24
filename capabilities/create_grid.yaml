@@ -1,0 +1,107 @@
+schema_version: 1
+name: create_grid
+display_name: Create Grid
+description: Create one straight grid line between two points (mm) with a new, unique name.
+  Refusals (empty, invalid or taken name, points that are not numbers, the same point twice)
+  stop the run and change nothing.
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, string, double> toFeet = (label, text) =>
+  {
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException("REFUSED: " + label + " must be a number in mm, got \"" + text + "\".");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  };
+  string gridName = "{name}";
+
+  if (string.IsNullOrWhiteSpace(gridName))
+      throw new InvalidOperationException("REFUSED: Give the new grid a name.");
+  if (!NamingUtils.IsValidName(gridName))
+      throw new InvalidOperationException("REFUSED: \"" + gridName + "\" cannot be a grid name: Revit does not allow characters such as : ; [ ] | < > ? ` ~ or braces in names.");
+  Grid clash = new FilteredElementCollector(document).OfClass(typeof(Grid)).Cast<Grid>()
+      .FirstOrDefault(g => g.Name == gridName);
+  if (clash != null)
+      throw new InvalidOperationException("REFUSED: A grid named \"" + gridName + "\" already exists. Choose another name.");
+
+  XYZ start = new XYZ(toFeet("Start X", "{start_x}"), toFeet("Start Y", "{start_y}"), 0);
+  XYZ end = new XYZ(toFeet("End X", "{end_x}"), toFeet("End Y", "{end_y}"), 0);
+  if (!XYZ.IsWithinLengthLimits(start) || !XYZ.IsWithinLengthLimits(end))
+      throw new InvalidOperationException("REFUSED: A grid point is outside the model's limits.");
+  if (start.DistanceTo(end) < document.Application.ShortCurveTolerance)
+      throw new InvalidOperationException("REFUSED: The start and end points are the same or too close together; a grid needs two different points.");
+
+  Grid grid = Grid.Create(document, Line.CreateBound(start, end));
+  try
+  {
+      grid.Name = gridName;
+  }
+  catch (Autodesk.Revit.Exceptions.ArgumentException ex)
+  {
+      throw new InvalidOperationException("REFUSED: Revit refused the grid name \"" + gridName + "\": " + ex.Message);
+  }
+
+  return new
+  {
+      Status = "Created",
+      ElementId = long.Parse(grid.Id.ToString(), invariant),
+      Name = grid.Name,
+      LengthMm = Math.Round(UnitUtils.ConvertFromInternalUnits(start.DistanceTo(end), UnitTypeId.Millimeters), 1)
+  };
+parameters:
+  - name: name
+    type: string
+    description: Name of the new grid; must not be used by another grid
+    source: designer
+    required: true
+  - name: start_x
+    type: double
+    description: Start point X (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: start_y
+    type: double
+    description: Start point Y (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: end_x
+    type: double
+    description: End point X (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: end_y
+    type: double
+    description: End point Y (mm)
+    unit: mm
+    source: designer
+    required: true
+preconditions: []
+not_for:
+  - "arc grid"
+  - "rename grid"
+  - "list grids"
+applies_when:
+  - "create grid"
+  - "add grid"
+  - "new grid line"
+validator:
+  kind: count_delta
+  category: OST_Grids
+  expected: 1
+fixtures:
+  - name: basic
+    params: {name: "A", start_x: 0, start_y: 0, end_x: 0, end_y: 10000}
+    expect: {Status: "Created"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-23T00:00:00"
+source_query: create a grid

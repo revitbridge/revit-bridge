@@ -1,0 +1,173 @@
+schema_version: 1
+name: move_elements
+display_name: Move Elements
+description: >-
+  Move the elements selected in Revit (at most 100) together by one vector in mm. Every selected
+  element is checked first; pinned elements, element types, views, levels (moving one moves
+  everything on it) and elements without a position in the model stop the run and nothing is
+  moved. Grids are not moved by this tool: a grid in the selection stops the run. After the
+  move every element's
+  position is read back: one that stayed where it was (a door kept by its wall, a constrained
+  element) also stops the run and nothing is moved. Elements that moved by a different amount
+  (for example a wall stretched by its joins) are listed under NotAsRequested. Returns the ids
+  moved; there is no validator, the tool reads every position back itself.
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, string, double> toFeet = (label, text) =>
+  {
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException("REFUSED: " + label + " must be a number in mm, got \"" + text + "\".");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  };
+  Func<double, double> toMm = feet => Math.Round(UnitUtils.ConvertFromInternalUnits(feet, UnitTypeId.Millimeters), 1);
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  const int MaxSelected = 100;
+  // Moved by less than this counts as not moved; off the vector by more than this is reported.
+  double stillTolerance = UnitUtils.ConvertToInternalUnits(0.1, UnitTypeId.Millimeters);
+  double reportTolerance = UnitUtils.ConvertToInternalUnits(1.0, UnitTypeId.Millimeters);
+
+  XYZ vector = new XYZ(toFeet("X", "{x}"), toFeet("Y", "{y}"), toFeet("Z", "{z}"));
+  if (!XYZ.IsWithinLengthLimits(vector))
+      throw new InvalidOperationException("REFUSED: The move is outside the model's limits.");
+  if (vector.GetLength() < stillTolerance)
+      throw new InvalidOperationException("REFUSED: The move is zero; give a distance in X, Y or Z.");
+  List<ElementId> selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  if (selected.Count == 0)
+      throw new InvalidOperationException("REFUSED: Nothing is selected in Revit. Select the elements first, then run the tool again.");
+  if (selected.Count > MaxSelected)
+      throw new InvalidOperationException("REFUSED: " + selected.Count + " elements are selected; this tool moves at most " + MaxSelected + " per run. Select fewer.");
+
+  // A point that moves with the element: its location point, its location line's start, or its box's minimum.
+  XYZ PositionOf(Element element)
+  {
+      LocationPoint point = element.Location as LocationPoint;
+      if (point != null)
+          return point.Point;
+      LocationCurve curve = element.Location as LocationCurve;
+      if (curve != null && curve.Curve != null)
+          return curve.Curve.GetEndPoint(0);
+      BoundingBoxXYZ box = element.get_BoundingBox(null);
+      return box == null ? null : box.Min;
+  }
+
+  // 1. Check every selected element before moving any.
+  var problems = new List<string>();
+  var before = new Dictionary<ElementId, XYZ>();
+  foreach (ElementId id in selected)
+  {
+      Element element = document.GetElement(id);
+      if (element == null) { problems.Add(idOf(id) + " no longer exists"); continue; }
+      if (element is ElementType) { problems.Add(idOf(id) + " is a type, not an element in the model"); continue; }
+      if (element is View) { problems.Add(idOf(id) + " is a view"); continue; }
+      if (element is Level) { problems.Add(idOf(id) + " is a level; moving it would move everything on it"); continue; }
+      // A grid has neither a location point nor a location line; this tool has no verified way to move one.
+      if (element is Grid)
+          throw new InvalidOperationException("REFUSED: Grids are not moved by this tool (element " + idOf(id) + " is a grid). Deselect the grids and run it again.");
+      if (element.Pinned) { problems.Add(idOf(id) + " is pinned; unpin it in Revit first"); continue; }
+      XYZ position = PositionOf(element);
+      if (position == null) { problems.Add(idOf(id) + " has no position in the model"); continue; }
+      if (!XYZ.IsWithinLengthLimits(position + vector)) { problems.Add(idOf(id) + " would end up outside the model's limits"); continue; }
+      before[id] = position;
+  }
+  if (problems.Count > 0)
+      throw new InvalidOperationException("REFUSED: Nothing was moved: " + problems.Count + " of " + selected.Count + " selected elements cannot be moved. "
+          + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
+
+  // 2. Move them in one call (a host and its selected dependents move together), then read back.
+  // Revit's own refusals of this selection (API docs: ArgumentException for elements it cannot
+  // take, InvalidOperationException when it cannot move them all) are the designer's to fix.
+  try
+  {
+      ElementTransformUtils.MoveElements(document, selected, vector);
+  }
+  catch (Autodesk.Revit.Exceptions.ArgumentException ex) when (!(ex is Autodesk.Revit.Exceptions.ArgumentNullException))
+  {
+      throw new InvalidOperationException("REFUSED: Revit would not move the selection: " + ex.Message);
+  }
+  catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+  {
+      throw new InvalidOperationException("REFUSED: Revit would not move the selection: " + ex.Message);
+  }
+  document.Regenerate();
+  var moved = new List<long>();
+  var stayed = new List<long>();
+  var notAsRequested = new List<object>();
+  foreach (ElementId id in selected)
+  {
+      Element element = document.GetElement(id);
+      XYZ after = element == null ? null : PositionOf(element);
+      if (after == null)
+          throw new InvalidOperationException("Element " + idOf(id) + " cannot be found after the move; nothing was moved.");
+      XYZ shift = after - before[id];
+      if (shift.GetLength() < stillTolerance)
+      {
+          stayed.Add(idOf(id));
+          continue;
+      }
+      moved.Add(idOf(id));
+      if (shift.DistanceTo(vector) > reportTolerance)
+          notAsRequested.Add(new { Id = idOf(id), XMm = toMm(shift.X), YMm = toMm(shift.Y), ZMm = toMm(shift.Z) });
+  }
+  if (stayed.Count > 0)
+      throw new InvalidOperationException("REFUSED: Nothing was moved: Revit kept " + stayed.Count + " selected element(s) in place ("
+          + string.Join(", ", stayed.Take(5)) + (stayed.Count > 5 ? ", ..." : "") + "), for example a door or window held by its wall.");
+
+  return new
+  {
+      Status = "Moved",
+      ElementIds = moved,
+      Count = moved.Count,
+      VectorMm = new { X = toMm(vector.X), Y = toMm(vector.Y), Z = toMm(vector.Z) },
+      NotAsRequested = notAsRequested
+  };
+parameters:
+  - name: x
+    type: double
+    description: Distance to move along X, 0 for none (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: y
+    type: double
+    description: Distance to move along Y, 0 for none (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: z
+    type: double
+    description: Distance to move along Z, up is positive, 0 for none (mm)
+    unit: mm
+    source: designer
+    required: true
+preconditions:
+  - text: "select the elements in Revit first (at most 100); unpin pinned elements"
+not_for:
+  - "copy"
+  - "rotate"
+  - "mirror"
+  - "move level"
+  - "move grid"
+applies_when:
+  - "move elements"
+  - "move selected"
+  - "shift selection"
+  - "move by"
+validator: null
+fixtures:
+  - name: along_x
+    params: {x: 1000, y: 0, z: 0}
+    expect: {Status: "Moved"}
+  - name: up
+    params: {x: 0, y: 0, z: 3000}
+    expect: {Status: "Moved"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-23T00:00:00"
+source_query: move the selected elements

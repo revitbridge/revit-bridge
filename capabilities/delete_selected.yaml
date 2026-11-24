@@ -1,0 +1,87 @@
+schema_version: 1
+name: delete_selected
+display_name: Delete Selected
+description: >-
+  Delete the elements selected in Revit (at most 100). Every selected element is checked
+  first; pinned elements, element types (deleting one deletes all its instances), views and
+  levels stop the run and nothing is deleted. Revit also deletes what depends on the selection
+  (a wall's doors and windows, for example); those ids are listed under AlsoDeleted. Returns
+  the ids deleted; there is no validator, the tool checks that every one is gone.
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  const int MaxSelected = 100;
+
+  List<ElementId> selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  if (selected.Count == 0)
+      throw new InvalidOperationException("REFUSED: Nothing is selected in Revit. Select the elements first, then run the tool again.");
+  if (selected.Count > MaxSelected)
+      throw new InvalidOperationException("REFUSED: " + selected.Count + " elements are selected; this tool deletes at most " + MaxSelected + " per run. Select fewer.");
+
+  // 1. Check every selected element before deleting any.
+  var problems = new List<string>();
+  foreach (ElementId id in selected)
+  {
+      Element element = document.GetElement(id);
+      if (element == null) { problems.Add(idOf(id) + " no longer exists"); continue; }
+      if (element is ElementType) { problems.Add(idOf(id) + " is a type; deleting it would delete every element of that type"); continue; }
+      if (element is View) { problems.Add(idOf(id) + " is a view"); continue; }
+      if (element is Level) { problems.Add(idOf(id) + " is a level; deleting it would delete everything on it"); continue; }
+      if (element.Pinned) { problems.Add(idOf(id) + " is pinned; unpin it in Revit first"); continue; }
+  }
+  if (problems.Count > 0)
+      throw new InvalidOperationException("REFUSED: Nothing was deleted: " + problems.Count + " of " + selected.Count + " selected elements cannot be deleted by this tool. "
+          + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
+
+  // 2. Delete, then check that every selected element is gone. Revit's own refusal of this selection
+  // (API docs: ArgumentException, "one or more of the elementIds cannot be deleted") is the designer's
+  // to fix; its other exceptions (the document in failure mode, ...) are failures.
+  ICollection<ElementId> deleted;
+  try
+  {
+      deleted = document.Delete(selected);
+  }
+  catch (Autodesk.Revit.Exceptions.ArgumentException ex) when (!(ex is Autodesk.Revit.Exceptions.ArgumentNullException))
+  {
+      throw new InvalidOperationException("REFUSED: Revit would not delete the selection: " + ex.Message);
+  }
+  var survivors = selected.Where(id => document.GetElement(id) != null).ToList();
+  if (survivors.Count > 0)
+      throw new InvalidOperationException("Revit did not delete " + survivors.Count + " selected element(s) ("
+          + string.Join(", ", survivors.Take(5).Select(id => idOf(id))) + "); nothing was deleted.");
+  var also = deleted.Where(id => !selected.Contains(id)).Select(id => idOf(id)).ToList();
+
+  return new
+  {
+      Status = "Deleted",
+      ElementIds = selected.Select(id => idOf(id)).ToList(),
+      Count = selected.Count,
+      AlsoDeleted = also.Take(100).ToList(),
+      AlsoDeletedCount = also.Count
+  };
+parameters: []
+preconditions:
+  - text: "select the elements in Revit first (at most 100); unpin pinned elements"
+not_for:
+  - "delete by category"
+  - "delete type"
+  - "purge"
+  - "delete view"
+applies_when:
+  - "delete selected"
+  - "delete selection"
+  - "remove selected elements"
+validator: null
+fixtures:
+  - name: basic
+    params: {}
+    expect: {Status: "Deleted"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-23T00:00:00"
+source_query: delete the selected elements

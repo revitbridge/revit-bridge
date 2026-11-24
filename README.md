@@ -146,8 +146,8 @@ describes the starter generator; it does not install or launch the add-in.
      family types, selection, …); `query(kind, args)` answers single read-only
      questions (`levels`, `grids`, `family_types`, `elements`, `selection`,
      `view_elements`, `units`, `counts`). Neither needs confirmation.
-   - `list_tools` — the capability packs (eight built-ins such as
-     `create_wall`, `create_structural_column`, `query_levels`, plus your own);
+   - `list_tools` — the capability packs (22 built-ins such as
+     `create_wall`, `create_level`, `move_elements`, `query_levels`, plus your own);
      `missing_params(tool, known)` — the questions still open, with the real
      options, who can answer each (`kind`) and the steps it holds up
      (`blocks`); `get_tool_choices(name)` — levels, types or elements for a pack's

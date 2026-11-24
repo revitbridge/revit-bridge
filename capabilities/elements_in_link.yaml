@@ -1,0 +1,108 @@
+schema_version: 1
+name: elements_in_link
+display_name: Elements In Link
+description: >-
+  Read only. In one loaded Revit link, count the elements of one category (an OST_* name) and
+  list the first of them (id, name, type, level), at most limit rows (default 100, at most 200)
+  with Truncated saying whether elements were left out. The ids belong to the linked model,
+  not to the open one. Refusals (no such link, link not loaded) stop the run.
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  // Read only.
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  string linkText = "{link_id}";
+  string categoryName = "{category}";
+  string limitText = "{limit}";
+  const int MaxRows = 200;
+
+  int linkNumber;
+  if (!int.TryParse(linkText, System.Globalization.NumberStyles.Integer, invariant, out linkNumber) || linkNumber <= 0)
+      throw new InvalidOperationException("REFUSED: The link must be given by its element id (a whole number from 1 to 2147483647), got \"" + linkText + "\".");
+  // ElementId(int) on 2021-2023, obsolete on 2024-2025, gone from 2026 (the int then converts to
+  // ElementId(Int64)): one line for every year, without the 2024-2025 warning.
+  #pragma warning disable 618
+  RevitLinkInstance link = document.GetElement(new ElementId(linkNumber)) as RevitLinkInstance;
+  #pragma warning restore 618
+  if (link == null)
+      throw new InvalidOperationException("REFUSED: There is no Revit link with id " + linkText + " in this model. Pick a link from the list.");
+  Document linked = link.GetLinkDocument();
+  if (linked == null)
+      throw new InvalidOperationException("REFUSED: Link " + link.Name + " is not loaded. Reload it in Manage Links, then run the tool again.");
+  BuiltInCategory category;
+  if (!categoryName.StartsWith("OST_", StringComparison.Ordinal) || !Enum.TryParse(categoryName, out category)
+      || !Enum.IsDefined(typeof(BuiltInCategory), category))
+      throw new InvalidOperationException("REFUSED: \"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
+  int limit;
+  if (!int.TryParse(limitText, System.Globalization.NumberStyles.Integer, invariant, out limit) || limit < 1)
+      throw new InvalidOperationException("REFUSED: The limit must be a whole number from 1 to " + MaxRows + ", got \"" + limitText + "\".");
+  limit = Math.Min(limit, MaxRows);
+
+  int total = new FilteredElementCollector(linked).OfCategory(category).WhereElementIsNotElementType().GetElementCount();
+  var items = new FilteredElementCollector(linked).OfCategory(category).WhereElementIsNotElementType()
+      .Take(limit)
+      .Select(e =>
+      {
+          Element type = linked.GetElement(e.GetTypeId());
+          Level level = linked.GetElement(e.LevelId) as Level;
+          return new { Id = idOf(e.Id), Name = e.Name, Type = type == null ? null : type.Name, Level = level == null ? null : level.Name };
+      })
+      .ToList();
+
+  return new
+  {
+      Status = "Ok",
+      LinkId = idOf(link.Id),
+      Link = link.Name,
+      LinkedModel = linked.Title,
+      Category = categoryName,
+      Total = total,
+      Items = items,
+      Returned = items.Count,
+      Truncated = total > items.Count,
+      Note = "Ids belong to the linked model, not to the open one."
+  };
+parameters:
+  - name: link_id
+    type: integer
+    description: Element id of the Revit link instance in the open model
+    source: tool:elements
+    choices_from: elements:OST_RvtLinks
+    required: true
+  - name: category
+    type: string
+    description: OST_* name of the category to read in the link, such as OST_Walls
+    source: designer
+    required: true
+  - name: limit
+    type: integer
+    description: Most rows to return (1 to 200)
+    source: default
+    required: false
+    default: 100
+preconditions:
+  - text: "the link must be loaded"
+not_for:
+  - "link a model"
+  - "reload link"
+  - "elements in the open model"
+applies_when:
+  - "elements in link"
+  - "linked model"
+  - "count in link"
+validator:
+  kind: count_delta
+  category: OST_RvtLinks
+  expected: 0
+fixtures:
+  - name: basic
+    params: {link_id: 301, category: "OST_Walls"}
+    expect: {Status: "Ok"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-23T00:00:00"
+source_query: count elements in a linked model

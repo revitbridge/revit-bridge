@@ -1,0 +1,267 @@
+schema_version: 1
+name: set_parameter
+display_name: Set Parameter
+description: >-
+  Set one instance parameter to one value on the elements selected in Revit (at most 100).
+  Name the parameter by its BuiltInParameter identifier (language independent, such as
+  ALL_MODEL_INSTANCE_COMMENTS), its shared parameter GUID, or the name Revit shows. The value is
+  text: lengths in mm, whole numbers, yes or no for Yes/No parameters, an element id for
+  parameters that hold one, anything for text parameters. Every selected element is checked
+  first; if any cannot take the value (a type in the selection, no such parameter, read-only,
+  wrong kind of value) the run stops and nothing is changed. Needs Revit 2023 or later. Returns the ids actually changed
+  (elements that already had the value are listed under AlreadySet); there is no validator,
+  the tool reads every value back itself.
+version: "1.0.0"
+revit_versions: ["2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  // Definition.GetDataType exists from Revit 2022 (the add-in builds 2023 on): on 2021 this code does
+  // not compile and nothing runs.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  string parameterName = "{parameter_name}";
+  string valueText = "{value}";
+  const int MaxSelected = 100;
+  // A value read back within this of what was set counts as kept (feet, about 0.0003 mm).
+  const double ReadBackTolerance = 1e-6;
+
+  if (string.IsNullOrWhiteSpace(parameterName))
+      throw new InvalidOperationException("REFUSED: Name the parameter to set.");
+  List<ElementId> selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  if (selected.Count == 0)
+      throw new InvalidOperationException("REFUSED: Nothing is selected in Revit. Select the elements first, then run the tool again.");
+  if (selected.Count > MaxSelected)
+      throw new InvalidOperationException("REFUSED: " + selected.Count + " elements are selected; this tool changes at most " + MaxSelected + " per run. Select fewer.");
+
+  // The parameter: a BuiltInParameter identifier, a shared parameter GUID, or the name Revit shows.
+  BuiltInParameter builtIn = BuiltInParameter.INVALID;
+  bool byBuiltIn = char.IsLetter(parameterName[0]) && Enum.TryParse(parameterName, out builtIn)
+      && Enum.IsDefined(typeof(BuiltInParameter), builtIn) && builtIn != BuiltInParameter.INVALID;
+  Guid sharedGuid = Guid.Empty;
+  bool byGuid = !byBuiltIn && Guid.TryParse(parameterName, out sharedGuid);
+
+  // The parameter of one element, or null with the reason in why.
+  Parameter Find(Element element, out string why)
+  {
+      why = null;
+      Parameter found;
+      if (byBuiltIn)
+          found = element.get_Parameter(builtIn);
+      else if (byGuid)
+          found = element.get_Parameter(sharedGuid);
+      else
+      {
+          IList<Parameter> named = element.GetParameters(parameterName);
+          if (named.Count > 1)
+          {
+              why = named.Count + " parameters are named \"" + parameterName + "\"; use the BuiltInParameter identifier or the shared parameter GUID";
+              return null;
+          }
+          found = named.Count == 1 ? named[0] : null;
+      }
+      if (found == null)
+          why = "has no instance parameter \"" + parameterName + "\" (type parameters are not changed by this tool)";
+      else if (found.IsReadOnly)
+          why = "\"" + parameterName + "\" is read-only there";
+      return why == null ? found : null;
+  }
+
+  // The value for one parameter, from the text; null with the reason in why when it cannot take it.
+  object ValueFor(Parameter parameter, out string why)
+  {
+      why = null;
+      ForgeTypeId spec = parameter.Definition.GetDataType();
+      switch (parameter.StorageType)
+      {
+          case StorageType.String:
+              return valueText;
+          case StorageType.Integer:
+          {
+              if (SpecTypeId.Boolean.YesNo.Equals(spec))
+              {
+                  string answer = valueText.Trim().ToLowerInvariant();
+                  if (answer == "yes" || answer == "true" || answer == "1") return 1;
+                  if (answer == "no" || answer == "false" || answer == "0") return 0;
+                  why = "is a Yes/No parameter; give yes or no";
+                  return null;
+              }
+              int number;
+              if (int.TryParse(valueText.Trim(), System.Globalization.NumberStyles.Integer, invariant, out number))
+                  return number;
+              why = "takes a whole number";
+              return null;
+          }
+          case StorageType.Double:
+          {
+              double number;
+              if (!double.TryParse(valueText.Trim(), System.Globalization.NumberStyles.Float, invariant, out number)
+                  || double.IsNaN(number) || double.IsInfinity(number))
+              {
+                  why = "takes a number";
+                  return null;
+              }
+              if (SpecTypeId.Length.Equals(spec))
+                  return UnitUtils.ConvertToInternalUnits(number, UnitTypeId.Millimeters);
+              if (SpecTypeId.Number.Equals(spec))
+                  return number;
+              why = "holds a measured value other than a length; this tool sets lengths (mm) and plain numbers only";
+              return null;
+          }
+          case StorageType.ElementId:
+          {
+              int number;
+              if (!int.TryParse(valueText.Trim(), System.Globalization.NumberStyles.Integer, invariant, out number) || number <= 0)
+              {
+                  why = "holds an element; give that element's id (a whole number from 1 to 2147483647)";
+                  return null;
+              }
+              // ElementId(int) on 2021-2023, obsolete on 2024-2025, gone from 2026 (the int then converts to
+              // ElementId(Int64)): one line for every year, without the 2024-2025 warning.
+              #pragma warning disable 618
+              ElementId target = new ElementId(number);
+              #pragma warning restore 618
+              if (document.GetElement(target) == null)
+              {
+                  why = "would point at element " + number + ", which does not exist";
+                  return null;
+              }
+              return target;
+          }
+          default:
+              why = "cannot be set by this tool";
+              return null;
+      }
+  }
+
+  // Whether the parameter now holds the value. An empty text and an unset text are the same;
+  // any other unset value holds nothing.
+  bool Holds(Parameter parameter, object value)
+  {
+      switch (parameter.StorageType)
+      {
+          case StorageType.String: return (parameter.AsString() ?? "") == (string)value;
+          case StorageType.Integer: return parameter.HasValue && parameter.AsInteger() == (int)value;
+          case StorageType.Double: return parameter.HasValue && Math.Abs(parameter.AsDouble() - (double)value) <= ReadBackTolerance;
+          case StorageType.ElementId: return parameter.HasValue && parameter.AsElementId().Equals((ElementId)value);
+          default: return false;
+      }
+  }
+
+  // 1. Check every selected element before changing any.
+  var problems = new List<string>();
+  var plan = new List<Tuple<ElementId, Parameter, object>>();
+  foreach (ElementId id in selected)
+  {
+      Element element = document.GetElement(id);
+      if (element == null)
+      {
+          problems.Add(idOf(id) + " no longer exists");
+          continue;
+      }
+      if (element is ElementType)
+      {
+          problems.Add(idOf(id) + " is a type; changing it would change every element of that type");
+          continue;
+      }
+      string why;
+      Parameter parameter = Find(element, out why);
+      object value = parameter == null ? null : ValueFor(parameter, out why);
+      if (value == null)
+          problems.Add(idOf(id) + ": " + why);
+      else
+          plan.Add(Tuple.Create(id, parameter, value));
+  }
+  if (problems.Count > 0)
+      throw new InvalidOperationException("REFUSED: Nothing was changed: " + problems.Count + " of " + selected.Count
+          + " selected elements cannot take the value \"" + valueText + "\". " + string.Join("; ", problems.Take(5))
+          + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
+
+  // 2. Set, then read every value back.
+  var changed = new List<long>();
+  var alreadySet = new List<long>();
+  foreach (var step in plan)
+  {
+      if (Holds(step.Item2, step.Item3))
+      {
+          alreadySet.Add(idOf(step.Item1));
+          continue;
+      }
+      // Revit's own refusal of the value (API docs: InvalidOperationException for a read-only
+      // parameter, ArgumentException for a value it cannot take) is the designer's to fix.
+      bool accepted;
+      try
+      {
+          if (step.Item3 is string)
+              accepted = step.Item2.Set((string)step.Item3);
+          else if (step.Item3 is int)
+              accepted = step.Item2.Set((int)step.Item3);
+          else if (step.Item3 is double)
+              accepted = step.Item2.Set((double)step.Item3);
+          else
+              accepted = step.Item2.Set((ElementId)step.Item3);
+      }
+      catch (Autodesk.Revit.Exceptions.ArgumentException ex) when (!(ex is Autodesk.Revit.Exceptions.ArgumentNullException))
+      {
+          throw new InvalidOperationException("REFUSED: Revit would not set \"" + parameterName + "\" on element " + idOf(step.Item1) + ": " + ex.Message);
+      }
+      catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+      {
+          throw new InvalidOperationException("REFUSED: Revit would not set \"" + parameterName + "\" on element " + idOf(step.Item1) + ": " + ex.Message);
+      }
+      if (!accepted)
+          throw new InvalidOperationException("REFUSED: Revit refused the value \"" + valueText + "\" for element " + idOf(step.Item1) + "; nothing was kept.");
+      changed.Add(idOf(step.Item1));
+  }
+  document.Regenerate();
+  foreach (var step in plan)
+      if (!Holds(step.Item2, step.Item3))
+          throw new InvalidOperationException("Element " + idOf(step.Item1) + " did not keep the value \"" + valueText
+              + "\" (Revit changed it back or computed it); nothing was changed.");
+
+  return new
+  {
+      Status = "Changed",
+      Parameter = parameterName,
+      Value = valueText,
+      ElementIds = changed,
+      Count = changed.Count,
+      AlreadySet = alreadySet
+  };
+parameters:
+  - name: parameter_name
+    type: string
+    description: BuiltInParameter identifier (such as ALL_MODEL_INSTANCE_COMMENTS), shared parameter GUID, or the name Revit shows
+    source: designer
+    required: true
+  - name: value
+    type: string
+    description: The new value as text; a length in mm, a whole number, yes or no, an element id, or any text
+    source: designer
+    required: true
+preconditions:
+  - text: "select the elements in Revit first (at most 100)"
+  - text: "Revit 2023 or later (Definition.GetDataType; the add-in has no 2022 build)"
+not_for:
+  - "type parameter"
+  - "change type"
+  - "rename"
+  - "move"
+applies_when:
+  - "set parameter"
+  - "change parameter value"
+  - "fill in comments"
+  - "set mark"
+validator: null
+fixtures:
+  - name: comments
+    params: {parameter_name: "ALL_MODEL_INSTANCE_COMMENTS", value: "Reviewed"}
+    expect: {Status: "Changed"}
+  - name: by_name
+    params: {parameter_name: "Mark", value: "D-01"}
+    expect: {Status: "Changed"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-23T00:00:00"
+source_query: set a parameter on the selected elements

@@ -1,0 +1,121 @@
+schema_version: 1
+name: create_room
+display_name: Create Room
+description: Place one room on a level at a point (mm) inside an area closed by walls or room
+  separation lines, optionally with a name. Refusals (no such level, a point that is not
+  enclosed or already in a room on that level) stop the run and change nothing.
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, string, double> toFeet = (label, text) =>
+  {
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException("REFUSED: " + label + " must be a number in mm, got \"" + text + "\".");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  };
+  string levelName = "{level_name}";
+  string roomName = "{room_name}";
+
+  Level level = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+      .FirstOrDefault(l => l.Name == levelName);
+  if (level == null)
+      throw new InvalidOperationException("REFUSED: There is no level named \"" + levelName + "\". Pick a level from the list.");
+  double x = toFeet("X", "{x}");
+  double y = toFeet("Y", "{y}");
+  // ProjectElevation: the level's height in model coordinates whatever its type's elevation base
+  // (on Revit 2026 the room's Z was the level's ProjectElevation).
+  double z = level.ProjectElevation;
+  if (!XYZ.IsWithinLengthLimits(new XYZ(x, y, z)))
+      throw new InvalidOperationException("REFUSED: The point is outside the model's limits.");
+
+  // A room already at this point on this level would make a second, overlapping room.
+  double probeHeight = UnitUtils.ConvertToInternalUnits(1000, UnitTypeId.Millimeters);
+  Autodesk.Revit.DB.Architecture.Room existing = document.GetRoomAtPoint(new XYZ(x, y, z + probeHeight));
+  if (existing != null && existing.LevelId.Equals(level.Id))
+      throw new InvalidOperationException("REFUSED: There is already a room at that point on level " + levelName + " ("
+          + existing.Name + "). Nothing was created.");
+
+  Autodesk.Revit.DB.Architecture.Room room = document.Create.NewRoom(level, new UV(x, y));
+  if (room == null)
+      throw new InvalidOperationException("Revit returned no room; nothing was created.");
+  document.Regenerate();
+  if (room.Location == null || room.Area <= 0)
+      throw new InvalidOperationException("REFUSED: The point is not inside an area closed by walls or room separation lines on level "
+          + levelName + ". Nothing was created.");
+  if (!string.IsNullOrWhiteSpace(roomName))
+  {
+      Parameter nameParameter = room.get_Parameter(BuiltInParameter.ROOM_NAME);
+      if (nameParameter == null || nameParameter.IsReadOnly)
+          throw new InvalidOperationException("The room's name parameter cannot be set; nothing was created.");
+      if (!nameParameter.Set(roomName))
+          throw new InvalidOperationException("REFUSED: Revit did not accept the room name \"" + roomName + "\". Nothing was created.");
+  }
+
+  return new
+  {
+      Status = "Created",
+      ElementId = long.Parse(room.Id.ToString(), invariant),
+      Name = room.get_Parameter(BuiltInParameter.ROOM_NAME).AsString(),
+      Number = room.Number,
+      Level = level.Name,
+      AreaM2 = Math.Round(UnitUtils.ConvertFromInternalUnits(room.Area, UnitTypeId.SquareMeters), 2)
+  };
+parameters:
+  - name: level_name
+    type: string
+    description: Level the room is placed on
+    source: tool:levels
+    choices_from: levels
+    required: true
+  - name: x
+    type: double
+    description: X of a point inside the enclosed area (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: y
+    type: double
+    description: Y of a point inside the enclosed area (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: room_name
+    type: string
+    description: Room name; empty keeps the name Revit gives
+    source: designer
+    required: false
+    default: ""
+preconditions:
+  - kind: levels_min
+    value: 1
+  - text: "walls or room separation lines must close an area around the point on that level"
+not_for:
+  - "room tag"
+  - "rename room"
+  - "room separation line"
+  - "area plan"
+applies_when:
+  - "create room"
+  - "add room"
+  - "place room"
+validator:
+  kind: count_delta
+  category: OST_Rooms
+  expected: 1
+fixtures:
+  - name: basic
+    params: {level_name: "L1", x: 2000, y: 2000}
+    expect: {Status: "Created"}
+  - name: named
+    params: {level_name: "L1", x: 2000, y: 2000, room_name: "Office"}
+    expect: {Status: "Created"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-23T00:00:00"
+source_query: place a room

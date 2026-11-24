@@ -25,7 +25,11 @@ A read-back check (``verify_execution``) is a line of its own with
 ``validation``, and two more fields after the spec-9 ones: ``evidence_id``
 (the execution it checked) and ``verification_id`` (the plan it used).
 Those ``OPTIONAL_FIELDS`` are written only when a record carries them, so
-every other line keeps exactly ``RECORD_FIELDS``.
+every other line keeps exactly ``RECORD_FIELDS``. Likewise a ``run_tool``
+line whose pack refused the input in Revit (nothing kept;
+``revit_bridge.execution.refusal_message``) carries ``"refused": true``
+(``REFUSED_FIELD``, written only when the record's value is exactly True);
+no other line has that key.
 
 A dry run (``dry_run_code``, rolled back, no confirmation) is a line with
 ``action: "dry_run"`` and ``RECORD_FIELDS`` only: ``tool`` and every
@@ -52,6 +56,7 @@ RECORD_FIELDS = (
     "success", "error", "result_summary", "validation", "duration_ms", "preconditions_failed", "warnings",
 )
 OPTIONAL_FIELDS = ("evidence_id", "verification_id")      # verify_execution lines only
+REFUSED_FIELD = "refused"                                  # true on a run_tool line of a pack's refusal only
 CODE_HEAD_CHARS = 200
 TOKEN_PREFIX_CHARS = 6
 LOCAL_SCOPE = "local"
@@ -105,6 +110,8 @@ class Ledger:
         now = datetime.now(timezone.utc)
         full = {field: record.get(field) for field in RECORD_FIELDS}
         full.update({field: record[field] for field in OPTIONAL_FIELDS if field in record})
+        if record.get(REFUSED_FIELD) is True:
+            full[REFUSED_FIELD] = True
         full["id"] = record.get("id") or new_id(now)
         full["ts"] = record.get("ts") or now.isoformat(timespec="seconds").replace("+00:00", "Z")
         for field in ("preconditions_failed", "warnings"):

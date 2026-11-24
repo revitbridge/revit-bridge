@@ -6,6 +6,39 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Fourteen basic modelling capability packs. Creation: `create_level`,
+  `create_grid`, `create_door`, `create_window`, `create_room`,
+  `create_roof_by_footprint`, `create_ceiling`, each with a `count_delta`
+  validator. On the Revit selection (at most 100 elements, every element
+  checked before any is changed): `set_parameter`, `move_elements`,
+  `delete_selected`, which read their own result back and have no validator,
+  and `change_type`, validated by `param_equals` on the type. Read only:
+  `count_by_level`, `list_types`, `elements_in_link`, at most 200 rows with
+  `Truncated` when rows were left out. Lengths are in mm; a parameter that
+  picks a level, a type, a wall or a link offers the model's choices. A
+  refusal (nothing is kept, the input is the problem) throws an
+  `InvalidOperationException` whose message starts with `REFUSED: `; Revit's
+  own argument errors for the selection or value given (moving, deleting,
+  setting a parameter) are passed on the same way; any other exception is a
+  failure of the pack. Either way the add-in rolls its transaction back and
+  nothing is kept. Written for Revit 2021 and 2023-2027 (the add-in has no
+  2022 build); `create_ceiling` and `set_parameter` need 2023 or later,
+  `change_type` 2024 or later (its validator reads ids with
+  `ElementId.Value`; on an earlier Revit it refuses). The eight earlier packs
+  are unchanged.
+- `run_pack`: when the pack refused in Revit (`REFUSAL_MARKER`,
+  `refusal_message` in `revit_bridge.execution`) the result has
+  `refused: true`, a key present only then, `error` is the text after the
+  marker and there is no hint; the pack's usage counters are not touched, so
+  refusals never make a pack unhealthy; the ledger line carries
+  `refused: true`, and `validate` (`revalidate`) answers `not_executed` for
+  it. Every other result and ledger line is unchanged. The rule holds for
+  every pack, built-in or your own: throw `InvalidOperationException` with a
+  message starting `REFUSED: ` when the input cannot be used and nothing is
+  kept.
+
 ## [0.9.0] - 2026-11-23
 
 Reads for a host that lets the designer pick model items, and one
