@@ -7,7 +7,7 @@ import pytest
 
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
-from revit_bridge.execution import ExecutionResult, revalidate, run_code, run_pack
+from revit_bridge.execution import REFUSAL_MARKER, ExecutionResult, refusal_message, revalidate, run_code, run_pack
 from revit_bridge.revit.client import RevitClient
 from revit_bridge.snapshot.project import take_snapshot
 from revit_bridge.snapshot.query import LEVELS_CODE
@@ -744,3 +744,44 @@ def test_the_client_reports_the_json_rpc_error_code():
     assert declined.success is False and declined.error == "declined on device" and declined.error_code == -32001
     assert failed.success is False and failed.error == "boom" and failed.error_code is None
     assert unknown.success is False and unknown.error_code == -32601
+
+
+# -- a pack's refusal ----------------------------------------------------------------------------
+
+FAILED = FakeRevit.THROWN_PREFIX                     # the add-in's prefix for a snippet that threw
+
+
+@pytest.mark.parametrize("error, expected", [
+    # add-in 0.3.0 and later: the full type name
+    (FAILED + "System.InvalidOperationException: REFUSED: Nothing is selected.", "Nothing is selected."),
+    # earlier add-ins: the short type name
+    (FAILED + "InvalidOperationException: REFUSED: Nothing is selected.", "Nothing is selected."),
+    # an inner exception after the refusal is not part of the designer's text
+    (FAILED + "System.InvalidOperationException: REFUSED: Nothing is selected. ---> System.Exception: x",
+     "Nothing is selected."),
+    ("System.InvalidOperationException: REFUSED: two\nlines", "two\nlines"),
+])
+def test_refusal_message_reads_the_thrown_exceptions_own_message(error, expected):
+    assert REFUSAL_MARKER == "REFUSED: "
+    assert refusal_message(error) == expected
+
+
+@pytest.mark.parametrize("error", [
+    None, "", FAILED + "System.InvalidOperationException: Sequence contains no elements",
+    FAILED + "System.InvalidOperationException: Sequence contains no elements REFUSED: x",      # in the middle
+    FAILED + "System.ArgumentException: REFUSED: x",                                             # another type
+    FAILED + "Autodesk.Revit.Exceptions.InvalidOperationException: REFUSED: x",                  # Revit's own type
+    FAILED + "System.Exception: outer ---> System.InvalidOperationException: REFUSED: x",       # on an inner one
+    FAILED + "System.InvalidOperationException: refused: x",                                    # the marker is exact
+    FAILED + "System.InvalidOperationException: REFUSED:",                                      # no text after it
+    "\u6267\u884c\u5931\u8d25: \u4ee3\u7801\u7f16\u8bd1\u9519\u8bef:\nLine 1: REFUSED: x",       # a compile error
+])
+def test_anything_else_is_not_a_refusal(error):
+    assert refusal_message(error) is None
+
+
+def test_refused_is_in_the_result_only_when_true():
+    plain = ExecutionResult(success=False, tool="t", error="boom")
+    assert "refused" not in plain.model_dump() and '"refused"' not in plain.model_dump_json()
+    refused = ExecutionResult(success=False, tool="t", error="input", refused=True)
+    assert refused.model_dump()["refused"] is True and '"refused":true' in refused.model_dump_json()
