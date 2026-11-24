@@ -58,10 +58,20 @@ name change.
   and `change_type`, validated by `param_equals` on the type. Read only:
   `count_by_level`, `list_types`, `elements_in_link`, at most 200 rows with
   `Truncated` when rows were left out. Lengths are in mm; a parameter that
-  picks a level, a type, a wall or a link offers the model's choices. Every
-  refusal or error throws, so the add-in rolls its transaction back and
-  nothing is kept. Written for Revit 2021-2027; `create_ceiling` and
-  `set_parameter` need 2022 or later. The eight earlier packs are unchanged.
+  picks a level, a type, a wall or a link offers the model's choices. A
+  refusal (nothing changed, the input is the problem) throws an
+  `InvalidOperationException` whose message starts with `REFUSED: `; any
+  other exception is a failure of the pack. Either way the add-in rolls its
+  transaction back and nothing is kept. Written for Revit 2021 and 2023-2027
+  (the add-in has no 2022 build); `create_ceiling` and `set_parameter` need
+  2023 or later, `change_type` 2024 or later (its validator reads ids with
+  `ElementId.Value`). The eight earlier packs are unchanged.
+- `run_pack`: when the pack refused in Revit (`REFUSAL_MARKER`,
+  `refusal_message` in `revit_bridge.execution`) the result has
+  `refused: true`, a key present only then, `error` is the text after the
+  marker and there is no hint; the pack's usage counters are not touched, so
+  refusals never make a pack unhealthy; the ledger line ends with
+  `refused: true`. Every other result and ledger line is unchanged.
 
 ### Changed
 
