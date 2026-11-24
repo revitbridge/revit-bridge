@@ -297,7 +297,7 @@ License: MIT. Issues and discussion: <https://github.com/revitbridge/revit-bridg
 
 dsh runs an agent that can talk to revit-bridge and revit-api-docs like any other MCP client, and it iterates on its own: writes, compiles, reads the model, fixes, until the task is done. The flow for a feature developed against the live Revit:
 
-1. Install the add-in in Revit (Releases of `revit-bridge-addin`), open the project you want to work on and click **Add-Ins > Revit MCP Switch**. `uvx revit-bridge check` must print `"status": "connected"` with that document's title.
+1. Install the add-in in Revit (Releases of `revit-bridge-addin`), open the project you want to work on and click **Add-Ins > Revit Bridge** so that it says **On** (on add-ins up to 0.5 the button is **Revit MCP Switch**). `uvx revit-bridge check` must print `"status": "connected"` with that document's title.
 2. Register both servers in the dsh profile you use (`~/.dsh/profiles/<profile>/cordis.patch.yml`, a top-level list):
 
    ```yaml
