@@ -49,7 +49,7 @@ def test_the_host_rendering_proposes_and_never_executes():
 
 def test_both_renderings_carry_the_snippet_contract_and_the_version():
     for text in (server_instructions(), host_instructions()):
-        assert "revit-bridge 0.8." in text and "revit-bridge 0.7" not in text
+        assert "revit-bridge 0.9." in text and "revit-bridge 0.8" not in text
         notes = text[text.index("## Notes"):]
         for term in ("Snippet contract (execute_code)", "`document` and `parameters`",
                      "already inside a transaction (never open one)", "System, System.Linq",
@@ -454,6 +454,9 @@ word such as "on F2", is an interpretation the designer must confirm.
 """
 # server_instructions() of 0.8.2: sha256 of its UTF-8 bytes.
 SERVER_0_8_2_SHA256 = "0be951bd4eb5f63a994dc4a699db14f6c6012063cdcc423f85c3c5441aad3d6d"
+# Since 0.8.2 only the version in the first line has changed (0.9.0).
+VERSION_0_8_2, VERSION_NOW = "revit-bridge 0.8.", "revit-bridge 0.9."
+HOST_DEFAULT = HOST_0_8_2.replace(VERSION_0_8_2, VERSION_NOW, 1)
 
 CODE_WORDS = ("C#", "execute_code", "Snippet contract", "snippet", "get_guidance", "check_code", "blocked_code",
               "dry_run", "solidify", "`code`", "|code")
@@ -468,14 +471,17 @@ def _variants():
             yield {"role": role, "code": code}, host_instructions(role=role, code=code)
 
 
-def test_the_default_host_text_is_byte_for_byte_the_0_8_2_text():
+def test_the_default_host_text_is_the_0_8_2_text_but_for_the_version():
     import hashlib
 
-    assert host_instructions() == HOST_0_8_2
-    assert host_instructions(None, True, False) == HOST_0_8_2
-    assert host_instructions(role=None, code=True, mentions=False) == HOST_0_8_2
-    assert revit_bridge.host_instructions() == HOST_0_8_2
-    assert hashlib.sha256(server_instructions().encode("utf-8")).hexdigest() == SERVER_0_8_2_SHA256
+    assert HOST_0_8_2.count(VERSION_0_8_2) == 1 and HOST_DEFAULT != HOST_0_8_2
+    assert host_instructions() == HOST_DEFAULT
+    assert host_instructions(None, True, False) == HOST_DEFAULT
+    assert host_instructions(role=None, code=True, mentions=False) == HOST_DEFAULT
+    assert revit_bridge.host_instructions() == HOST_DEFAULT
+    server = server_instructions()
+    assert server.count(VERSION_NOW) == 1 and VERSION_0_8_2 not in server
+    assert hashlib.sha256(server.replace(VERSION_NOW, VERSION_0_8_2).encode("utf-8")).hexdigest() == SERVER_0_8_2_SHA256
 
 
 def test_every_variant_keeps_the_budget_and_the_heading_rule():
@@ -485,7 +491,7 @@ def test_every_variant_keeps_the_budget_and_the_heading_rule():
         for i, line in enumerate(rendered):
             if line.startswith("## "):
                 assert rendered[i + 1].strip(), (args, line)          # no blank line under a heading
-        assert "revit-bridge 0.8" in text, args
+        assert "revit-bridge 0.9." in text and "revit-bridge 0.8" not in text, args
 
 
 def test_without_code_there_is_no_code_writing_and_no_get_guidance():
@@ -516,7 +522,7 @@ def test_the_variants_share_the_default_steps_verbatim():
         if args.get("role") in (None, "planner"):
             assert step3 in text and step4 in text, args
             extended = LINK_STEP in " ".join(text.split())
-            assert extended is (text != HOST_0_8_2), args            # every variant but the default
+            assert extended is (text != HOST_DEFAULT), args          # every variant but the default
             assert '"on F2", is an interpretation the designer must confirm.' in text, args
 
 
