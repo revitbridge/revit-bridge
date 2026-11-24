@@ -6,6 +6,25 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-23
+
+Fourteen basic capability packs, and a way for any pack to refuse its input
+without counting as a failure of the pack. On Revit 2026, with a sample
+model, the success cases of 12 of the 14 packs and 37 refusals were run;
+`create_roof_by_footprint` and the grid refusal of `move_elements` were
+changed after that run and have not been run in Revit since. No pack
+format, TaskSpec, gate or MCP tool change; a `run_tool` result gains a key
+only when the pack refused.
+
+Upgrade: `uvx --refresh revit-bridge`; in Claude Code,
+`/plugin marketplace update revit-bridge`; for copied skill folders, run
+`revit-bridge skills install` again with `--force` (one line of the
+`revit-bridge` skill changed). Hosts: `list_tools` lists 14 more built-in
+packs; a `run_pack` result, and its ledger line, may carry `refused: true`.
+On an add-in that does not handle the failures Revit reports when the
+transaction is committed, `delete_selected` can make Revit show its
+warnings dialog.
+
 ### Added
 
 - Fourteen basic modelling capability packs. Creation: `create_level`,
@@ -17,12 +36,13 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   and `change_type`, validated by `param_equals` on the type. Read only:
   `count_by_level`, `list_types`, `elements_in_link`, at most 200 rows with
   `Truncated` when rows were left out. Lengths are in mm; a parameter that
-  picks a level, a type, a wall or a link offers the model's choices. A
+  picks a level, a wall, a link or a type by name offers the model's
+  choices (`change_type` takes the type's id, from `list_types`). A
   refusal (nothing is kept, the input is the problem) throws an
   `InvalidOperationException` whose message starts with `REFUSED: `; Revit's
-  own argument errors for the selection or value given (moving, deleting,
-  setting a parameter) are passed on the same way; any other exception is a
-  failure of the pack. Either way the add-in rolls its transaction back and
+  own refusals of the name, selection or value given (naming a level or a
+  grid, moving, deleting, setting a parameter) are passed on the same way;
+  any other exception is a failure of the pack. Either way the add-in rolls its transaction back and
   nothing is kept. Written for Revit 2021 and 2023-2027 (the add-in has no
   2022 build); `create_ceiling` and `set_parameter` need 2023 or later,
   `change_type` 2024 or later (its validator reads ids with
@@ -38,6 +58,18 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   every pack, built-in or your own: throw `InvalidOperationException` with a
   message starting `REFUSED: ` when the input cannot be used and nothing is
   kept.
+
+### Changed
+
+- The README, the plugin's README and the `revit-bridge` skill name the
+  add-in's button **Revit Bridge** (it shows On or Off); on add-ins up to 0.5
+  it is **Revit MCP Switch**, as before.
+
+### Fixed
+
+- A `param_equals` check's detail prints a whole number as an integer: an
+  element id was shown as `1.22151e+06`, now `1221510`. Whether a check
+  passes is unchanged.
 
 ## [0.9.0] - 2026-11-23
 
@@ -1293,7 +1325,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/revitbridge/revit-bridge/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/revitbridge/revit-bridge/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/revitbridge/revit-bridge/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/revitbridge/revit-bridge/compare/v0.8.0...v0.8.1

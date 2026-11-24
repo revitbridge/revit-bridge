@@ -217,6 +217,11 @@ class ParamEquals:
                                 after={"ids": ids, "category": category})
 
 
+def _number(value: float) -> str:
+    """A whole number as an integer (element id 1221510, not ``:g``'s 1.22151e+06); anything else as ``:g``."""
+    return str(int(value)) if value.is_integer() and abs(value) < 2 ** 63 else f"{value:g}"
+
+
 def _compare(row: dict, expected, unit: str | None = None,
              tolerance: float | None = None) -> tuple[bool, str]:
     """Compare a readback with the spec value; lengths in mm after converting by ``unit``.
@@ -245,7 +250,7 @@ def _compare(row: dict, expected, unit: str | None = None,
             margin = tolerance * factor
             return abs(got - want_mm) <= margin, f"got {got:g} mm, expected {shown} +/- {margin:g} mm"
         if tolerance is None:
-            return abs(got - want) <= 1e-6, f"got {got:g}, expected {want:g}"
+            return abs(got - want) <= 1e-6, f"got {_number(got)}, expected {_number(want)}"
         return abs(got - want) <= tolerance, f"got {got:g}, expected {want:g} +/- {tolerance:g}"
     return str(actual) == str(expected), f"got {actual!r}, expected {expected!r}"
 

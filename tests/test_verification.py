@@ -263,6 +263,14 @@ def test_compare_without_a_tolerance_is_what_packs_always_had():
         True, "got 3001 mm, expected 3 m = 3000 mm +/- 2 mm")
 
 
+def test_compare_prints_whole_numbers_as_integers():
+    # an element id was printed "1.22151e+06" (``:g``); the verdict was and is the same
+    assert _compare({"Kind": "elementid", "Value": 1221510}, 1221510) == (True, "got 1221510, expected 1221510")
+    assert _compare({"Kind": "elementid", "Value": "1221510"}, "1221511") == (False, "got 1221510, expected 1221511")
+    assert _compare({"Kind": "int", "Value": 3000000.0}, 3000000) == (True, "got 3000000, expected 3000000")
+    assert _compare({"Kind": "double", "Value": 1.234567891}, 2.5) == (False, "got 1.23457, expected 2.5")
+
+
 # -- invalid_template -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("template,params,problem", [
