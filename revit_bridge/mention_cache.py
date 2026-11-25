@@ -6,7 +6,7 @@ from typing import NamedTuple
 from weakref import ref
 
 from revit_bridge.revit.client import RevitClient
-from revit_bridge.snapshot.query import RevitQueryError
+from revit_bridge.snapshot.query import CATEGORY_RE, RevitQueryError, _type_name, int_or_none
 
 # Document.GetHashCode() identifies an opening of a document, including an
 # unsaved one. A new save or dirty-state transition also invalidates the rows.
@@ -17,15 +17,15 @@ using (var version = Document.GetDocumentVersion(document)) {
 }
 """
 
-# The normal category command takes one category at a time. An unsaved
-# document cannot reuse those rows on the next keystroke. Read a broad search
-# from one bounded collector using the same classes and family names as the
+# The normal category command takes one category at a time. Read a cold
+# cross-category inventory in one callback with the same classes and names as the
 # add-in's FamilyTypeCollector. The legacy query covers six type classes.
-DIRTY_TYPES = """
+TYPE_INVENTORY = """
 var timer = System.Diagnostics.Stopwatch.StartNew();
 var rows = new List<object>();
 var warnings = new List<string>();
 bool modern = (bool)parameters[0], truncated = false;
+long copiedChars = 0;
 string source = document.GetHashCode().ToString();
 var categories = new List<BuiltInCategory>();
 foreach (var p in parameters.Skip(1))
@@ -36,7 +36,7 @@ using (var collector = new FilteredElementCollector(document)) {
     collector.WhereElementIsElementType();
     if (filter != null) collector.WherePasses(filter);
     foreach (Element element in collector) {
-        if (timer.ElapsedMilliseconds >= 200) {
+        if (timer.ElapsedMilliseconds >= 200 || rows.Count >= 8192) {
             warnings.Add("Type search reached its read budget. Choose a category to narrow the search.");
             truncated = true;
             break;
@@ -54,10 +54,17 @@ using (var collector = new FilteredElementCollector(document)) {
             string family = t is FamilySymbol symbol ? symbol.FamilyName :
                 (t.get_Parameter(BuiltInParameter.SYMBOL_FAMILY_NAME_PARAM)?.AsString()
                  ?? t.GetType().Name.Replace("Type", ""));
-            rows.Add(new { id = t.Id.ToString(), name = t.Name, family, category = key, shown = cat.Name });
+            string id = t.Id.ToString(), name = t.Name, shown = cat.Name;
+            copiedChars += id.Length + (name?.Length ?? 0) + (family?.Length ?? 0) + key.Length + (shown?.Length ?? 0);
+            if (copiedChars > 1048576) {
+                warnings.Add("Type search reached its response budget. Choose a category to narrow the search.");
+                truncated = true;
+                break;
+            }
+            rows.Add(new { id, name, family, category = key, shown });
         } catch (Exception ex) {
             truncated = true;
-            if (warnings.Count < 100) warnings.Add((key ?? "type") + " " + t.Id + ": " + ex.Message);
+            if (warnings.Count < 100) warnings.Add((key ?? "type") + ": " + ex.Message.Substring(0, Math.Min(240, ex.Message.Length)));
         }
     }
 }
@@ -109,19 +116,53 @@ async def document_stamp(client, scope):
     return DocumentStamp(scope, data["document"], data["version"], data["modified"])
 
 
-async def read_unsaved_types(executor, matched, stamp):
-    if matched == set():
-        return {"rows": [], "warnings": [], "truncated": False}
-    # Checking an empty id list reads no model elements and preserves the
-    # picker's legacy fallback if a device advertises an unavailable method.
-    modern = await executor._offered("types", ids=[]) is not None
-    response = await executor.client.send_code(DIRTY_TYPES, parameters=[modern, *sorted(matched or ())])
+async def read_type_inventory(executor, matched, stamp):
+    # An empty id list verifies the advertised method without reading types.
+    # If a host denied the identity query, ask for categories instead: they
+    # provide a bounded native fallback if it also denies the inventory.
+    if stamp is None:
+        probe = await executor._offered("type_categories", definite=True, limit=200)
+    else:
+        probe = await executor._offered("types", definite=True, ids=[], limit=1)
+    response = await executor.client.send_code(TYPE_INVENTORY, parameters=[probe is not None, *sorted(matched or ())])
     data = response.result
-    if not response.success or not isinstance(data, dict) or not isinstance(data.get("rows"), list):
+    if not response.success and stamp is None and probe is not None:
+        return await _native_subset(executor, probe, matched)
+    if (not response.success or not isinstance(data, dict) or not isinstance(data.get("rows"), list)
+            or not isinstance(data.get("source"), str)):
         raise RevitQueryError(response.error or "Invalid type search result")
-    if stamp.document != data.get("source"):
+    if stamp and stamp.document != data["source"]:
         raise RevitQueryError("The active document changed; pick the type again.")
+    if (not isinstance(data.get("warnings"), list) or not all(isinstance(w, str) for w in data["warnings"])
+            or not isinstance(data.get("truncated"), bool)):
+        raise RevitQueryError("Invalid type search result")
     return data
+
+
+async def _native_subset(executor, probe, matched):
+    # One request remains. A single alias can name a category beyond the
+    # probe's page. Otherwise read the most populated eligible category.
+    if matched and len(matched) == 1:
+        key = next(iter(matched))
+        incomplete = False
+    else:
+        eligible = [row for row in probe.rows if isinstance(row.get("Category"), str)
+                    and CATEGORY_RE.fullmatch(row["Category"]) and (matched is None or row["Category"] in matched)]
+        eligible.sort(key=lambda row: (-(int_or_none(row.get("Count")) or 0), row["Category"]))
+        key = eligible[0]["Category"] if eligible else None
+        incomplete = probe.truncated is not False or len(eligible) > 1
+    rows = []
+    warnings = list(probe.warnings)
+    if key:
+        page = await executor.list_model_items("types", category=key, limit=200)
+        rows = [dict(id=t.get("FamilyTypeId"), name=_type_name(t), family=t.get("FamilyName"),
+                     shown=t.get("Category"), category=key) for t in page.rows]
+        warnings.extend(page.warnings)
+        incomplete = incomplete or page.truncated is not False
+    if incomplete:
+        scope = f" Only the first {len(rows)} types of {key} were read." if key else ""
+        warnings.append(f"Cross-category query unavailable.{scope} Choose a category for a full search.")
+    return {"rows": rows, "warnings": warnings, "truncated": bool(incomplete or warnings)}
 
 
 def _prune(now):

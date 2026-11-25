@@ -32,10 +32,11 @@ writing a message (section 2.4 of the hostv2 plan):
     level "F2" (id 312, 3000 mm).``
 
 Levels, links and types use the query executor's supported add-in or legacy
-path. Fixed read-only queries identify the active document, search unsaved
-types and read the selection. Complete type lists can be reused for up to 30
-seconds on the same connection and unmodified document. A broad type search
-returns the readable categories with warnings and truncation if another fails.
+path. Fixed read-only queries identify the active document, collect types on
+a cross-category cache miss and read the selection. A type search makes at
+most five bridge calls. Complete type lists can be reused for up to 30 seconds
+on the same connection and unmodified document. Incomplete reads return the
+available types with warnings and truncation and are retried on the next search.
 All kinds accept up to eight distinct search terms; more return invalid_args.
 """
 from __future__ import annotations
@@ -104,7 +105,7 @@ def _type_item(type_id, family, name, shown, category: str | None) -> dict | Non
     if type_id is None:
         return None
     family, shown = str(family or ""), str(shown or "")
-    if category is not None and not CATEGORY_RE.fullmatch(category):
+    if not isinstance(category, str) or not CATEGORY_RE.fullmatch(category):
         category = None
     item = {"kind": "type", "id": type_id, "name": str(name or ""),
             "label": f"{family}: {name}" if family else str(name or ""), "detail": shown}
@@ -205,11 +206,11 @@ async def mention_candidates(executor: RevitQueryExecutor, kind: str, category: 
     if remaining:
         items = await asyncio.to_thread(rank_items, items, remaining, name_and_family_only=matched is not None)
     elif matched is not None:
-        items.sort(key=lambda item: ((item["name"] or "").casefold(), item["id"]))
+        items = sorted(items, key=lambda item: ((item["name"] or "").casefold(), item["id"]))
     out = {"kind": kind, "items": [dict(i) for i in items[offset:offset + limit]], "total": len(items),
            "truncated": len(items) > offset + limit or reply.get("truncated") is True,
            "offset": offset, "category_matched": sorted(matched or ()),
-           "facets": reply["facets"] if "facets" in reply else facets(items)}
+           "facets": [dict(f) for f in reply["facets"]] if "facets" in reply else facets(items)}
     if reply.get("warnings"):
         out["warnings"] = list(reply["warnings"])      # rows the add-in could not read: said, not dropped
     if kind == "type" and scope != mention_cache.device_scope(executor.client):
@@ -222,15 +223,25 @@ async def _type_candidates(executor, scope, category, matched, searching):
     try:
         stamp = await mention_cache.document_stamp(executor.client, scope)
         inventory = mention_cache.inventories(stamp) if stamp else {}
-        additions = {}
-        if stamp and stamp.modified and not category and searching:
-            data = await mention_cache.read_unsaved_types(executor, matched, stamp)
-            items = [item for row in data["rows"] if isinstance(row, dict) and (item := _type_item(
-                row.get("id"), row.get("family"), row.get("name"), row.get("shown"), row.get("category")))]
-            reply = {"items": items, "warnings": data.get("warnings", []), "truncated": data.get("truncated", False)}
+        if matched is not None and (not matched or (category and category not in matched)):
+            return {"items": []}
+        cross_category = searching and not category
+        if cross_category:
+            hit = _cached_type_search(inventory, matched)
         else:
-            reply = await _type_inventory(executor, category, matched, searching, inventory, additions)
-        if stamp and not stamp.modified and additions:
+            hit = mention_cache.cached(inventory, category)
+        if hit is not None:
+            return hit
+        if cross_category:
+            data = await mention_cache.read_type_inventory(executor, matched, stamp)
+            reply = _inventory_items(data, matched)
+        else:
+            reply = await _type_category(executor, category)
+        if "error" not in reply and stamp and not stamp.modified:
+            additions = {}
+            if not reply.get("truncated") and not reply.get("warnings"):
+                additions = (_category_inventories(reply["items"], matched) if cross_category
+                             else {category: mention_cache.pending(reply)})
             current = await mention_cache.document_stamp(executor.client, scope)
             if current and current.document != stamp.document:
                 mention_cache.discard(scope)
@@ -248,50 +259,57 @@ async def _type_candidates(executor, scope, category, matched, searching):
         return {"error": "revit_error", "kind": "type", "message": str(exc)}
 
 
-async def _type_inventory(executor, category, matched, searching, inventory, additions):
-    warnings = []
-    truncated = False
-    if category:
-        categories = [category]
-    else:
-        reply = mention_cache.cached(inventory, None)
-        if reply is None:
-            reply = await run_query(executor, "type_categories")
-            if not any(reply.get(k) for k in ("error", "warnings", "truncated")):
-                additions[None] = mention_cache.pending(reply)
-        if "error" in reply:
-            return dict(reply, kind="type")
-        warnings.extend(reply.get("warnings", []))
-        truncated = reply.get("truncated", False)
-        rows = reply["items"]
-        if not searching:
-            return {"items": [_category_item(row) for row in rows], "warnings": warnings, "truncated": truncated,
-                    "facets": [{"category": r["category"], "label": r["display_name"] or r["category"],
-                                "count": r["count"]} for r in rows]}
-        categories = [r["category"] for r in rows]
+def _cached_type_search(inventory, matched):
+    all_types = mention_cache.cached(inventory, "*")
+    if all_types is not None:
+        return {"items": [t for t in all_types if matched is None or t["category"] in matched]}
+    if matched:
+        groups = [mention_cache.cached(inventory, key) for key in sorted(matched)]
+        if all(group is not None for group in groups):
+            return {"items": [item for group in groups for item in group["items"]]}
+    return None
+
+
+def _inventory_items(data, matched):
     items = []
-    for key in categories:
-        if matched is not None and key not in matched:
-            continue
-        rows = mention_cache.cached(inventory, key)
-        if rows is None:
-            try:
-                data = await executor.get_type_rows(key)
-            except (ValueError, RevitQueryError) as exc:
-                if category:
-                    raise
-                warnings.append(f"{key}: {exc}")
-                warnings.extend(getattr(exc, "warnings", []))
-                truncated = True
+    unreadable = False
+    for row in data["rows"]:
+        if isinstance(row, dict):
+            item = _type_item(row.get("id"), row.get("family"), row.get("name"), row.get("shown"), row.get("category"))
+            if item and item.get("category") and (matched is None or item["category"] in matched):
+                items.append(item)
                 continue
-            warnings.extend(data.warnings)
-            truncated = truncated or data.truncated is True
-            rows = [item for row in data.rows if (item := _type_item(
-                row.get("FamilyTypeId"), row.get("FamilyName"), _type_name(row), row.get("Category"), key))]
-            if not data.truncated and not data.warnings:
-                additions[key] = mention_cache.pending(rows)
-        items.extend(rows)
-    return {"items": items, "warnings": warnings, "truncated": truncated}
+        unreadable = True
+    warnings = list(data["warnings"])
+    if unreadable:
+        warnings.append("The type inventory contained an unreadable row.")
+    return {"items": items, "warnings": warnings, "truncated": bool(warnings) or data["truncated"]}
+
+
+def _category_inventories(items, matched):
+    grouped = {key: [] for key in matched or ()}
+    for item in items:
+        grouped.setdefault(item["category"], []).append(item)
+    additions = {key: mention_cache.pending({"items": rows}) for key, rows in grouped.items()}
+    if matched is None:
+        additions["*"] = mention_cache.pending(items)
+    return additions
+
+
+async def _type_category(executor, category):
+    if category:
+        data = await executor.get_type_rows(category)
+        items = [item for row in data.rows if (item := _type_item(
+            row.get("FamilyTypeId"), row.get("FamilyName"), _type_name(row), row.get("Category"), category))]
+        return {"items": items, "warnings": data.warnings, "truncated": data.truncated}
+    reply = await run_query(executor, "type_categories")
+    if "error" in reply:
+        return dict(reply, kind="type")
+    rows = reply["items"]
+    return {"items": [_category_item(row) for row in rows], "warnings": reply.get("warnings", []),
+            "truncated": reply.get("truncated", False),
+            "facets": [{"category": r["category"], "label": r["display_name"] or r["category"],
+                        "count": r["count"]} for r in rows]}
 
 
 # -- resolution -------------------------------------------------------------------------------

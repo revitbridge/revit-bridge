@@ -245,6 +245,15 @@ class FakeModel:
                 return FakeRevit.error(rid, -32601, "Method 'list_model_items' not found")
             return self._list_model_items(rid, params)
         if method == "send_code_to_revit":
+            if "new ElementMulticategoryFilter(categories)" in params.get("code", ""):
+                modern, *categories = params["parameters"]
+                rows = [dict(id=t["FamilyTypeId"], name=t["TypeName"], family=t["FamilyName"],
+                             category=key, shown=t.get("Category", key))
+                        for key, types in self.model["types"].items()
+                        if (not categories or key in categories) and (modern or key in self.model["old_command_categories"])
+                        for t in types]
+                return FakeRevit.code_result(rid, {"source": self.document_stamp, "rows": rows,
+                                                   "warnings": self.warnings, "truncated": bool(self.warnings)})
             return self._send_code(rid, params.get("code", ""))
         if method == "get_available_family_types":
             # the released command: no BuiltInCategory, and not every category

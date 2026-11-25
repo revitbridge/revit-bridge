@@ -26,9 +26,11 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 - More than eight distinct search terms returns `invalid_args` for every kind, including
   existing level, link and category-specific type searches. A cross-category type search
   returns partial results, warnings and `truncated` when one category fails.
-- Type searches send fixed read-only queries for document identity and broad searches
-  in unsaved documents. A connection can reuse a complete inventory for up to 30 seconds
-  while the same document stays unmodified.
+- A cold cross-category type search uses one fixed, bounded inventory query. Each type
+  search makes at most five bridge calls, including capability and document checks.
+  The same connection and unmodified document can reuse a complete inventory for up to
+  30 seconds. Incomplete reads are retried. If an add-in disables fixed queries, the
+  picker reports the scope of the native category results it can still read.
 - If selection scanning reaches its time budget, `total` gives the full selection count.
   Unfiltered pages keep their selection order. Filtered pages rank the available rows.
   `facets_partial`, `truncated` and warnings identify incomplete results.

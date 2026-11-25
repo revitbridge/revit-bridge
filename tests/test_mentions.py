@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -242,11 +243,19 @@ def test_first_missing_term_stops_ranking_that_row(monkeypatch):
 
 @pytest.mark.parametrize("modern", [True, False])
 def test_failed_category_is_retried_and_other_categories_stay_pickable(modern):
+    from revit_bridge.mention_cache import TYPE_INVENTORY
+
     model = FakeModel(list_model_items=modern)
     failed = ["OST_Walls"]
 
     def handler(request):
         params = request.get("params", {})
+        if failed and params.get("code") == TYPE_INVENTORY:
+            source = model(request)["result"]
+            data = json.loads(source["result"])
+            data.update(rows=[row for row in data["rows"] if row["category"] not in failed],
+                        warnings=["OST_Walls: not ready"], truncated=True)
+            return FakeRevit.code_result(request["id"], data)
         if failed and (params.get("category") == failed[0] or params.get("categoryList") == failed):
             if modern:
                 return model._failed(request["id"], "types", "busy", "not ready")
@@ -263,10 +272,12 @@ def test_failed_category_is_retried_and_other_categories_stay_pickable(modern):
 
 
 def test_category_transport_error_propagates(monkeypatch):
-    async def disconnected(self, category):
+    from revit_bridge import mention_cache
+
+    async def disconnected(executor, matched, stamp):
         raise ConnectionError("device disconnected")
 
-    monkeypatch.setattr(RevitQueryExecutor, "get_type_rows", disconnected)
+    monkeypatch.setattr(mention_cache, "read_type_inventory", disconnected)
     with pytest.raises(ConnectionError, match="device disconnected"):
         candidates(FakeModel(), "type", q="example")
 
@@ -290,7 +301,7 @@ def test_type_inventories_survive_new_clients_and_isolate_documents_devices_and_
 
     device = object()
     initial, cold = run(model, pick, device, q="original")
-    assert initial["total"] == 120 and cold.count("list_model_items") >= 120
+    assert initial["total"] == 120 and len(cold) == 5 and cold.count("list_model_items") == 1
     initial["items"][0]["name"] = "overwritten by a host"
     warm, methods = run(model, pick, device, q="original", offset=0)
     assert methods == ["send_code_to_revit"] and warm["items"][0]["name"] == "Original"
@@ -325,7 +336,7 @@ def test_type_inventory_is_discarded_on_document_switch_during_read():
 
 
 def test_dirty_search_checks_the_source_document_inside_the_inventory_read():
-    from revit_bridge.mention_cache import DIRTY_TYPES, DOCUMENT_STAMP
+    from revit_bridge.mention_cache import TYPE_INVENTORY, DOCUMENT_STAMP
 
     model = FakeModel()
     model.document_modified = True
@@ -334,13 +345,13 @@ def test_dirty_search_checks_the_source_document_inside_the_inventory_read():
         code = request.get("params", {}).get("code")
         if code:
             codes.append(code)
-        if code == DIRTY_TYPES:
+        if code == TYPE_INVENTORY:
             return FakeRevit.code_result(request["id"], {"source": "another document", "rows": []})
         return model(request)
 
     result = candidates(switched, "type", q="basic")
     assert result["error"] == "revit_error" and "document changed" in result["message"]
-    assert codes == [DOCUMENT_STAMP, DIRTY_TYPES]
+    assert codes == [DOCUMENT_STAMP, TYPE_INVENTORY]
 
 
 @pytest.mark.parametrize("change", ["modified", "save", "unavailable"])
@@ -397,18 +408,18 @@ def test_access_prunes_expired_rows_and_empty_sessions_for_other_connections(mon
 
 @pytest.mark.parametrize("modern,advertised_only", [(True, False), (False, False), (False, True)])
 def test_continuous_unsaved_type_edits_are_visible_with_one_collector_per_keystroke(modern, advertised_only):
-    from revit_bridge.mention_cache import DIRTY_TYPES, DOCUMENT_STAMP
+    from revit_bridge.mention_cache import TYPE_INVENTORY, DOCUMENT_STAMP
 
     model = FakeModel(list_model_items=modern or advertised_only, advertise_only=advertised_only)
     snapshots = []
     calls = []
     walls = model.model["types"]["OST_Walls"]
-    assert review(DIRTY_TYPES) == (True, [])
+    assert review(TYPE_INVENTORY) == (True, [])
 
     def handler(request):
         params = request.get("params", {})
         calls.append(params.get("code") or request["method"])
-        if params.get("code") != DIRTY_TYPES:
+        if params.get("code") != TYPE_INVENTORY:
             return model(request)
         supported, *categories = params["parameters"]
         assert supported is modern
@@ -427,7 +438,7 @@ def test_continuous_unsaved_type_edits_are_visible_with_one_collector_per_keystr
             out = await mention_candidates(RevitQueryExecutor(executor.client), "type", q=q)
             if model.document_modified:
                 sequence = calls[before:]
-                assert sequence[0] == DOCUMENT_STAMP and sequence[-1] == DIRTY_TYPES
+                assert sequence[0] == DOCUMENT_STAMP and sequence[-1] == TYPE_INVENTORY
                 assert all(method in ("list_model_items", "get_bridge_capabilities") for method in sequence[1:-1])
                 assert len(sequence) <= 4
             return out
@@ -451,7 +462,7 @@ def test_continuous_unsaved_type_edits_are_visible_with_one_collector_per_keystr
         assert [i["id"] for i in saved["items"]] == [700]
 
     run(handler, edit)
-    assert snapshots == [["OST_Walls"], [], [], [], ["OST_PipeCurves"]]
+    assert snapshots == [[], ["OST_Walls"], [], [], [], ["OST_PipeCurves"], []]
 
 
 def test_reconnected_device_during_inventory_cannot_publish_another_devices_rows():
@@ -547,7 +558,85 @@ def test_list_model_items_works_uncached_when_fixed_code_queries_are_disabled():
 
     for _ in range(2):
         out, methods = run(handler, mention_candidates, "type", q="basic")
-        assert out["total"] == 2 and "list_model_items" in methods
+        assert out["total"] == 2 and out["truncated"] and "OST_Walls" in " ".join(out["warnings"])
+        assert len(methods) == 5
+    out, methods = run(handler, mention_candidates, "type", q="wall")
+    assert out["total"] == 2 and not out["truncated"] and "warnings" not in out
+    assert len(methods) == 5
+
+
+@pytest.mark.parametrize("path", ["modern", "legacy", "no-discovery", "advertised-only"])
+@pytest.mark.parametrize("query", [dict(q="200"), dict(q="widow"), dict(q="curtains"),
+                                   dict(category="OST_Walls", q="basic"), {}])
+def test_every_cold_type_search_has_a_five_request_ceiling(path, query):
+    from revit_bridge.mention_cache import TYPE_INVENTORY
+
+    model = FakeModel(list_model_items=path != "legacy", advertise_only=path == "advertised-only",
+                      capabilities="unsupported" if path == "no-discovery" else "supported")
+    model.model["types"]["OST_Windows"] = [dict(FamilyTypeId=877, FamilyName="Casement", TypeName="Side hung")]
+    model.model["old_command_categories"].append("OST_Windows")
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return model(request)
+    out, methods = run(handler, mention_candidates, "type", **query)
+    assert "error" not in out and len(methods) <= 5
+    if "q" in query and "category" not in query:
+        fixed = [r["params"] for r in requests if r["params"].get("code") == TYPE_INVENTORY]
+        assert len(fixed) == 1 and fixed[0]["parameters"][0] is (path == "modern")
+        assert all(r["params"].get("ids") == [] for r in requests if r["method"] == "list_model_items")
+    if query.get("q") == "widow":
+        assert out["category_matched"] == ["OST_Windows"] and [t["id"] for t in out["items"]] == [877]
+
+
+@pytest.mark.parametrize("failure", ["time", "size", "row", "malformed", "fixed", "capability", "document"])
+def test_incomplete_or_failed_cold_inventory_is_retried_without_poisoning_the_cache(failure):
+    from revit_bridge.mention_cache import TYPE_INVENTORY, DOCUMENT_STAMP
+
+    model = FakeModel()
+    failing = True
+    seen = []
+    def handler(request):
+        params = request.get("params", {})
+        seen.append(params.get("code") or request["method"])
+        if failing and request["method"] == "get_bridge_capabilities" and failure == "capability":
+            return FakeRevit.error(request["id"], -32000, "discovery unavailable")
+        if failing and params.get("code") == TYPE_INVENTORY:
+            data = json.loads(model(request)["result"]["result"])
+            if failure == "fixed":
+                return FakeRevit.code_result(request["id"], None, success=False, error="inventory unavailable")
+            if failure == "document":
+                model.document_stamp = "different opening"
+            elif failure == "malformed":
+                data["truncated"] = "no"
+            elif failure == "row":
+                data["rows"].append({"id": 42, "category": 42})
+            else:
+                data.update(truncated=True, warnings=[failure + " budget reached"], rows=data["rows"][:1])
+            return FakeRevit.code_result(request["id"], data)
+        return model(request)
+
+    async def pick(executor):
+        nonlocal failing
+        out = await mention_candidates(executor, "type", q="basic")
+        assert len(seen) <= 5
+        if failure in ("time", "size", "row"):
+            assert out["items"] and out["warnings"] and out["truncated"] and seen[-1] == DOCUMENT_STAMP
+        else:
+            assert out["error"] == "revit_error"
+        failing = False
+        seen.clear()
+        model.model["types"]["OST_Walls"][0]["TypeName"] = "Recovered"
+        out = await mention_candidates(executor, "type", q="recovered")
+        assert out["total"] == 1 and not out["truncated"] and "warnings" not in out
+        assert len(seen) <= 5 and seen.count(TYPE_INVENTORY) == 1
+        seen.clear()
+        out = await mention_candidates(executor, "type", q="wall recovered")
+        assert out["items"][0]["name"] == "Recovered" and seen == [DOCUMENT_STAMP]
+        seen.clear()
+        out = await mention_candidates(executor, "type", category="OST_Walls", q="recovered")
+        assert out["total"] == 1 and seen == [DOCUMENT_STAMP]
+    run(handler, pick)
 
 
 @pytest.mark.parametrize("alias,category", [
