@@ -2,7 +2,9 @@ schema_version: 1
 name: create_beam
 display_name: Create Beam
 description: Create a structural beam of a named family type between two points at an
-  elevation, on a level.
+  elevation, on a level. Level is the requested level. Revit may choose the nearest
+  level as the beam's ReferenceLevel. ElevationMm is the absolute Z of the placed
+  location curve's start, including any start offset. An unavailable read-back is null.
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
@@ -49,8 +51,14 @@ code_template: |
       if (beam.StructuralUsage != usage)
           throw new InvalidOperationException("REFUSED: The beam family did not accept this structural usage.");
   }
+  document.Regenerate();
+  var reference = beam.get_Parameter(BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM);
+  var referenceLevel = reference?.StorageType == StorageType.ElementId && reference.HasValue
+      ? document.GetElement(reference.AsElementId()) as Level : null;
+  var curve = (beam.Location as LocationCurve)?.Curve;
   return new { ElementId = beam.Id.Value, Status = "Created",
-               FamilyType = symbol.Name, Level = level.Name };
+               FamilyType = symbol.Name, Level = level.Name, ReferenceLevel = referenceLevel?.Name,
+               ElevationMm = curve != null && curve.IsBound ? (double?)Math.Round(curve.GetEndPoint(0).Z * 304.8, 1) : null };
 parameters:
   - name: type_name
     type: string
@@ -132,10 +140,10 @@ validator:
 fixtures:
   - name: basic
     params: {type_name: "W310X38.7", level_name: "L1", start_x: 0, start_y: 0, end_x: 5000, end_y: 0, elevation: 3000}
-    expect: {Status: "Created"}
+    expect: {Status: "Created", Level: "L1", ElevationMm: 3000}
   - name: sloping
     params: {"type_name":"W310X38.7","level_name":"L1","start_x":0,"start_y":0,"end_x":5000,"end_y":0,"elevation":3000,"start_offset":100,"end_offset":200,"structural_usage":"Girder"}
-    expect: {"Status":"Created"}
+    expect: {"Status":"Created","Level":"L1","ElevationMm":3100}
 approved_by: null
 approved_at: null
 created_at: "2026-03-13T00:00:00"

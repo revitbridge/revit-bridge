@@ -25,6 +25,11 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Changed
 
+- `delete_elements` includes wall-type curtain panels owned by the supplied curtain
+  wall even when its grid omits their IDs.
+- `create_door` returns the placed door's XYZ coordinates, including on curved walls.
+- `create_beam` keeps the requested `Level` and reports the actual `ReferenceLevel`
+  and the start elevation of the placed beam in `ElevationMm`.
 - `create_door` now refuses placements previously accepted when the wall bottom is
   above the placement level or the door head exceeds the wall top. On a raised
   wall, `create_door_on_wall` accepts an explicit `sill_height`.

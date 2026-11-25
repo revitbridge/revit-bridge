@@ -23,5 +23,5 @@ def test_rendered_delete_and_transaction_rollback(tmp_path):
     cases = {name: {"element_ids": ids} for name, ids in (("One", "10"), ("Both", "10,11"), ("Empty", ""))}
     output = simulate(tmp_path, "delete_simulation", "delete_elements", cases)
     reports = [line for line in output.splitlines() if line.startswith("PASS ")]
-    assert len(reports) == 66, output
+    assert len(reports) == 70, output
     assert "PASS protect dependent FabricArea" in reports, output

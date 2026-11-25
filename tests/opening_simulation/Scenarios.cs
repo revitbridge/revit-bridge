@@ -115,21 +115,20 @@ class Program {
     public static void Main() {
         var doc = new Document();
         var result = JsonSerializer.SerializeToElement(Rendered.Default(doc));
-        bool along = result.TryGetProperty("ZMm", out var z);
         bool window = result.TryGetProperty("SillHeightMm", out var sill);
         Expect(result.GetProperty("HostId").GetInt64() == 101 && doc.Asked.X == 1500);
-        Expect(result.GetProperty("XMm").GetDouble() == (along ? 1465 : 1500));
-        Expect(result.GetProperty("YMm").GetDouble() == (along ? 12 : 0));
-        if (along) Expect(z.GetDouble() == (window ? 900 : 0));
+        Expect(result.GetProperty("XMm").GetDouble() == 1465);
+        Expect(result.GetProperty("YMm").GetDouble() == 12);
+        Expect(result.GetProperty("ZMm").GetDouble() == (window ? 900 : 0));
         Console.WriteLine("PASS default placement and final point");
-        result = JsonSerializer.SerializeToElement(Rendered.Upper(new Document()));
+        var upper = new Document();
+        result = JsonSerializer.SerializeToElement(Rendered.Upper(upper));
         Expect(result.GetProperty("Level").GetString() == "Upper");
-        if (along) {
-            Expect(result.GetProperty("XMm").GetDouble() == 1458 && result.GetProperty("ZMm").GetDouble() == 3300);
-            Console.WriteLine("PASS actual XYZ after flip");
-        }
+        Expect(result.GetProperty("XMm").GetDouble() == 1458 && result.GetProperty("YMm").GetDouble() == 12);
+        Expect(result.GetProperty("ZMm").GetDouble() == upper.Asked.Z);
+        Console.WriteLine("PASS actual XYZ after flip");
         Console.WriteLine("PASS cross-level placement and flip");
-        if (along) Refused(new Document { PointAvailable = false }, "location", false);
+        Refused(new Document { PointAvailable = false }, "location", false);
         if (window) return;
         var raised = new Document();
         raised.Wall.Box = new BoundingBoxXYZ(new(0,0,725), new(5000,200,3000));

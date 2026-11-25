@@ -9,6 +9,7 @@ description: >-
   door's width) stop the run and change nothing.
   The optional level_name chooses the placement level and flip reverses the door facing.
   The bottom and head of the door opening must both fit within the host wall.
+  XMm, YMm and ZMm report the placed instance's location.
 version: "1.0.0"
 revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
@@ -172,8 +173,9 @@ code_template: |
       TypeId = idOf(symbol.Id),
       Type = symbol.FamilyName + ": " + symbol.Name,
       Level = level.Name,
-      XMm = toMm(onWall.X),
-      YMm = toMm(onWall.Y),
+      XMm = toMm(placed.X),
+      YMm = toMm(placed.Y),
+      ZMm = toMm(placed.Z),
       WidthChecked = widthParameter != null
   };
 parameters:

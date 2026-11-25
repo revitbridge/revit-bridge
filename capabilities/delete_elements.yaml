@@ -118,6 +118,18 @@ code_template: |
               {
                   AddParts(grid.GetPanelIds());
                   AddParts(grid.GetMullionIds());
+                  // Wall-type panels can be absent from GetPanelIds. Match only this input's own report.
+                  if (ownerId.Equals(report.Key))
+                  {
+                      foreach (var id in report.Value)
+                      {
+                          CheckBudget();
+                          if (candidates[id] is Wall panelWall &&
+                              panelWall.Category?.Id.Value == (long)BuiltInCategory.OST_CurtainWallPanels &&
+                              ownerId.Equals(panelWall.StackedWallOwnerId))
+                              AddParts(new[] { id });
+                      }
+                  }
               }
           }
           if (IsModelGroup(owner)) AddParts(((Group)owner).GetMemberIds());

@@ -16,7 +16,7 @@ record ElementId(long Value)
     public override string ToString() => Value.ToString();
 }
 
-enum BuiltInCategory { OST_IOSModelGroups = -2000095, OST_StairsRailingBaluster, OST_RailingSystemBaluster, OST_RailingSupport, OST_StairsSupports }
+enum BuiltInCategory { OST_IOSModelGroups = -2000095, OST_StairsRailingBaluster, OST_RailingSystemBaluster, OST_RailingSupport, OST_StairsSupports, OST_CurtainWallPanels }
 enum CategoryType { Model, Annotation, Internal, AnalyticalModel, Invalid }
 record Category(CategoryType CategoryType, ElementId Id);
 
@@ -137,6 +137,7 @@ class CurtainGrid
 class Wall(long id, Category c) : HostObject(id, c)
 {
     public CurtainGrid CurtainGrid;
+    public ElementId StackedWallOwnerId = new(-1);
     public List<ElementId> Walls = new();
     public bool IsStackedWall => Walls.Count > 0;
     public IList<ElementId> GetStackedWallMemberIds()

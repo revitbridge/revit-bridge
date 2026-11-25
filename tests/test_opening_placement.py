@@ -15,6 +15,6 @@ def test_opening_fits_host_and_reports_placed_point(tmp_path, tool):
     output = simulate(tmp_path, "opening_simulation", tool, {"Default": basic, "Upper": upper})
     assert "PASS default placement and final point" in output
     assert "PASS cross-level placement and flip" in output
-    assert ("PASS actual XYZ after flip" in output) == along
+    assert "PASS actual XYZ after flip" in output
     if "door" in tool:
         assert "PASS wall bottom, head, fallback heights and unreadable dimensions" in output

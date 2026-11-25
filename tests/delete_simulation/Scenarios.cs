@@ -119,6 +119,22 @@ static class Scenarios
         Run("curtain panels, a door used as a panel, mullions and grid lines", Rendered.One,
             [curtain, door, new Panel(12, Model), new CurtainGridLine(13, Model), new Mullion(14, Model)],
             [11, 12, 13, 14], [], [10], [11, 12, 13, 14]);
+        var curtainHost = new Wall(10, Model) { CurtainGrid = new CurtainGrid() };
+        var panelCategory = BuiltIn(BuiltInCategory.OST_CurtainWallPanels);
+        var wallPanel = new Wall(11, panelCategory) { StackedWallOwnerId = curtainHost.Id };
+        Run("owned wall panel omitted from curtain grid", Rendered.One, [curtainHost, wallPanel],
+            [11], [], [10], [11]);
+        var otherCurtain = new Wall(20, Model) { CurtainGrid = new CurtainGrid() };
+        var foreignPanel = new Wall(11, panelCategory) { StackedWallOwnerId = otherCurtain.Id };
+        Run("wall panel belongs to a different curtain", Rendered.One, [curtainHost, foreignPanel, otherCurtain],
+            [11], [10, 11, 20], [10], [], "REFUSED: Deletion also removes Wall 11", calls: 0);
+        Run("matching owner with a non-panel category", Rendered.One,
+            [curtainHost, new Wall(11, Model) { StackedWallOwnerId = curtainHost.Id }],
+            [11], [10, 11], [10], [], "REFUSED: Deletion also removes Wall 11", calls: 0);
+        Run("panel reported only by another input", Rendered.Both,
+            [curtainHost, new Floor(11, Model), new Wall(12, panelCategory) { StackedWallOwnerId = curtainHost.Id }],
+            [], [10, 11, 12], [10, 11], [], "REFUSED: Deletion also removes Wall 12", calls: 0,
+            setup: d => d.Live[new ElementId(11)].LogicalChildren.AddRange(Ids(12)));
         var stacked = new Wall(10, Model) { Walls = Ids(11) };
         Run("stacked wall members", Rendered.One, [stacked, new Wall(11, Model)], [11], [], [10], [11]);
         Run("internal-category model group's walls and openings", Rendered.One, [group, new Wall(11, Model), new Opening(12, Model), new LinearDimension(13, Annotation)],
