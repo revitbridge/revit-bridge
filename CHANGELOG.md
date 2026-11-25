@@ -6,6 +6,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-25
+
 ### Added
 
 - Linear workflow v1 definitions can be validated, saved and read from the
@@ -1514,7 +1516,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/revitbridge/revit-bridge/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/revitbridge/revit-bridge/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/revitbridge/revit-bridge/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/revitbridge/revit-bridge/compare/v0.9.0...v0.9.1
