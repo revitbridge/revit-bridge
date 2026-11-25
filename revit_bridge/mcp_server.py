@@ -158,17 +158,25 @@ class _Runtime:
 
 
 _request_runtime: ContextVar[_Runtime | None] = ContextVar("mcp_request_runtime", default=None)
+_http_request: ContextVar[bool] = ContextVar("mcp_http_request", default=False)
+
+
+def _device_runtime() -> _Runtime | None:
+    remote = _request_runtime.get()
+    if remote is None and _http_request.get():
+        raise RuntimeError("missing authenticated device context for HTTP request")
+    return remote
 
 
 def _runtime() -> _Runtime:
-    remote = _request_runtime.get()
+    remote = _device_runtime()
     if remote is not None:
         return remote
     return _Runtime(_PooledClient(), _tool_store, _gate, _ledger, _verifications, "mcp", LOCAL_SCOPE, os.environ)
 
 
 async def _get_client():
-    runtime = _request_runtime.get()
+    runtime = _device_runtime()
     if runtime is not None:
         return runtime.client
     return await RevitClientPool.get_client()
@@ -176,7 +184,7 @@ async def _get_client():
 
 def _device_file(name: str) -> str:
     """Resolve host-side file arguments within the paired device's staging directory."""
-    remote = _request_runtime.get()
+    remote = _device_runtime()
     if remote is None:
         return name
     directory = remote.tools.user_dir.parent.resolve() / "files"
@@ -747,6 +755,8 @@ async def capture_view_image(width: int = 1600, view_id: int | None = None):
 def api_stats() -> str:
     """Solidified tool statistics."""
     store = _runtime().tools
+    if _device_runtime() is not None:
+        return f"revit-bridge {__version__}\nSolidified tools: {len(store.list_tools())}"
     return (
         f"revit-bridge {__version__}\n"
         f"Solidified tools: {len(store.list_tools())} "
@@ -777,7 +787,7 @@ def guidance_index() -> str:
 
 async def connection_status() -> str:
     """Check whether the Revit add-in is reachable; with its capability and environment."""
-    runtime = _request_runtime.get()
+    runtime = _device_runtime()
     if runtime is None:
         status = await check_connection(environment=True)
     else:
@@ -810,9 +820,9 @@ def workflow_resource(name: str) -> str:
     return source if source is not None else _dumps({"error": "unknown_workflow", "name": name})
 
 
-def _register_handlers(server: MCPServer) -> None:
+def _register_handlers(server: MCPServer, adapt=lambda fn: fn) -> None:
     def tool(fn, annotations=None, *, meta=None):
-        _tool(annotations, meta=meta, server=server)(fn)
+        _tool(annotations, meta=meta, server=server)(adapt(fn))
 
     tool(get_project_snapshot, _READ_ONLY)
     tool(query, _READ_ONLY)
@@ -839,12 +849,12 @@ def _register_handlers(server: MCPServer) -> None:
     tool(list_workflows, _READ_ONLY)
     tool(get_workflow, _READ_ONLY)
 
-    server.resource("revit://stats")(api_stats)
-    server.resource("revit://tools/{name}")(tool_resource)
-    server.resource("revit://evidence/recent")(evidence_recent)
-    server.resource("revit://guidance/index")(guidance_index)
-    server.resource("revit://connection-status")(connection_status)
-    server.resource("revit://workflows/{name}", mime_type="application/yaml")(workflow_resource)
+    server.resource("revit://stats")(adapt(api_stats))
+    server.resource("revit://tools/{name}")(adapt(tool_resource))
+    server.resource("revit://evidence/recent")(adapt(evidence_recent))
+    server.resource("revit://guidance/index")(adapt(guidance_index))
+    server.resource("revit://connection-status")(adapt(connection_status))
+    server.resource("revit://workflows/{name}", mime_type="application/yaml")(adapt(workflow_resource))
 
 
 _register_handlers(mcp)

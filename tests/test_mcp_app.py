@@ -1,6 +1,9 @@
 import asyncio
 import json
+import os
 from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx2
 import pytest
@@ -12,6 +15,7 @@ from starlette.routing import Mount
 
 from revit_bridge import mcp_server
 from revit_bridge.capabilities.store import ToolStore
+from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import DOCUMENT_PROBE
 from revit_bridge.mcp_app import _DeviceGate, build_asgi_app, scope_directory
 from revit_bridge.revit.client import RevitClient
@@ -166,3 +170,91 @@ def test_two_workers_cannot_both_redeem_a_cached_confirmation(tmp_path):
     first.consume(token, projection, "east")
     with pytest.raises(GateError, match="already redeemed"):
         second.consume(token, projection, "east")
+
+
+def test_unbound_http_context_and_stdio_defaults(tmp_path, monkeypatch):
+    pooled = object()
+    pool = AsyncMock(return_value=pooled)
+    monkeypatch.setattr(mcp_server.RevitClientPool, "get_client", pool)
+    seen = []
+
+    async def resolve(request):
+        # Inside the HTTP app, before this request has been bound to a device.
+        with pytest.raises(RuntimeError, match="device"):
+            mcp_server._runtime()
+        with pytest.raises(RuntimeError, match="device"):
+            await mcp_server._get_client()
+        seen.append(True)
+        return "device", object()
+
+    async def scenario():
+        app = build_asgi_app(resolve, data_dir=tmp_path)
+        parent = Starlette(routes=[Mount("/bridge", app=app)], lifespan=app.router.lifespan_context)
+        async with parent.router.lifespan_context(parent), session(parent, "device") as client:
+            assert await call(client, "list_workflows") == []
+        assert seen and pool.await_count == 0
+        assert mcp_server._runtime().tools is mcp_server._tool_store
+        assert mcp_server._runtime().env is os.environ
+        assert await mcp_server._get_client() is pooled
+
+    asyncio.run(scenario())
+
+
+def test_remote_paths_in_tools_resources_and_evidence(tmp_path, monkeypatch):
+    async def resolve(request):
+        return "east", object()
+
+    root = scope_directory("east", tmp_path)
+    outside = tmp_path / "outside" / "screenshot.png"
+    Ledger(root / "evidence").append({"action": "capture_view", "result_summary": {"path": str(outside)},
+                                      "params": {"dll": str(root / "files" / "Test.dll")}})
+    monkeypatch.setattr(mcp_server.addin_test, "capture_view", AsyncMock(return_value={"path": str(outside)}))
+
+    async def scenario():
+        app = build_asgi_app(resolve, data_dir=tmp_path)
+        parent = Starlette(routes=[Mount("/bridge", app=app)], lifespan=app.router.lifespan_context)
+        async with parent.router.lifespan_context(parent), session(parent, "east") as client:
+            stats = (await client.read_resource("revit://stats")).contents[0].text
+            assert str(root) not in stats and str(mcp_server._tool_store.builtin_dir) not in stats
+            uri = "https://example.invalid/source"
+            solid = await call(client, "solidify_tool", name="demo", code="return 2;",
+                               description=str(root / "files" / "guide.txt"), source_query=uri)
+            assert Path(solid["path"]).as_posix() == "capabilities/demo.yaml"
+            pack = yaml.safe_load((await client.read_resource("revit://tools/demo")).contents[0].text)
+            assert pack["description"] == "files/guide.txt" and pack["source_query"] == uri
+            assert str(tmp_path) not in str((await call(client, "dry_run_code", code="return 1;",
+                                                         include=["missing.cs"]))["warnings"][0])
+            assert (await call(client, "capture_view")).get("path") is None
+            lines = await resource(client, "revit://evidence/recent")
+            assert lines == await call(client, "evidence")
+            assert lines[0]["result_summary"].get("path") is None
+            assert Path(lines[0]["params"]["dll"]).as_posix() == "files/Test.dll"
+        assert str(mcp_server._tool_store.builtin_dir) in mcp_server.api_stats()
+        assert Path(json.loads(mcp_server.solidify_tool("demo", "return 2;"))["path"]).is_absolute()
+
+    asyncio.run(scenario())
+
+
+def test_resolve_scope_dir_reads_local_catalog_and_falls_back(tmp_path, isolated_data_dir):
+    async def resolve(request):
+        return request.headers["x-device"], object()
+
+    local = ToolStore(isolated_data_dir / "capabilities")
+    local.solidify("east_only", "return 1;")
+    calls = []
+
+    def directory(scope):
+        calls.append(scope)
+        return isolated_data_dir if scope == "east" else None
+
+    async def scenario():
+        app = build_asgi_app(resolve, data_dir=tmp_path, resolve_scope_dir=directory)
+        parent = Starlette(routes=[Mount("/bridge", app=app)], lifespan=app.router.lifespan_context)
+        async with parent.router.lifespan_context(parent), session(parent, "east") as east, session(parent, "west") as west:
+            assert "east_only" in {p["name"] for p in await call(east, "list_tools")}
+            await check_workflow_catalog(east, west, isolated_data_dir)
+            await call(west, "solidify_tool", name="west_only", code="return 2;")
+            assert (scope_directory("west", tmp_path) / "capabilities/west_only.yaml").is_file()
+        assert sorted(calls) == ["east", "west"]
+
+    asyncio.run(scenario())

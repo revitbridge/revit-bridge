@@ -517,16 +517,24 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     if refusal:
         return _refused(refusal, name)
     conf = _confirmation_of(gate, token)
+
+    def record(resp, error, *, success=False, validation=None, refused=False):
+        return _record(
+            ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection,
+            conf=conf, code=None, document=document, resp=resp, validation=validation, success=success, error=error,
+            duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
+            refused=refused,
+        )
+
     try:
         resp = await client.send_code(code)
+    except asyncio.CancelledError:
+        record(None, "cancelled_after_dispatch")
+        raise
     except Exception as e:
         # Revit may or may not have run it: exactly the case that needs a ledger line.
         # No reply came back, so nothing is known about the pack: its usage is not touched.
-        evidence_id = _record(
-            ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
-            code=None, document=document, resp=None, validation=None, success=False, error=str(e),
-            duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
-        )
+        evidence_id = record(None, str(e))
         return ExecutionResult(success=False, tool=name, error=str(e), evidence_id=evidence_id, warnings=warnings,
                                hint=failure_hint(str(e)))
 
@@ -534,12 +542,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     if refused_text is not None:
         # The pack refused the input in Revit and the add-in rolled back: nothing to say about the
         # pack itself, so its usage counters stay as they are and no retry or exception hint is given.
-        evidence_id = _record(
-            ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
-            code=None, document=document, resp=resp, validation=None, success=False, error=refused_text,
-            duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
-            refused=True,
-        )
+        evidence_id = record(resp, refused_text, refused=True)
         return ExecutionResult(success=False, tool=name, result=resp.result, error=refused_text,
                                evidence_id=evidence_id, warnings=warnings, refused=True)
 
@@ -548,6 +551,9 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     if validator is not None and resp.success:
         try:
             validation = await validator.after(client, spec, pack.validator, before, resp.result)
+        except asyncio.CancelledError:
+            record(resp, "cancelled_during_validation")
+            raise
         except Exception as e:  # noqa: BLE001 - a validator that cannot run is a failed validation
             validation = _validation_error(validator.kind, e, before)
             read_back_unreachable = _transport_failure(e)
@@ -555,12 +561,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     error = resp.error if not resp.success else ("validation_failed" if validation and not validation.passed else None)
     if _replied(resp) and not read_back_unreachable:
         store.record_usage(name, success=success)
-    duration_ms = int((time.monotonic() - started) * 1000)
-    evidence_id = _record(
-        ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
-        code=None, document=document, resp=resp, validation=validation, success=success, error=error,
-        duration_ms=duration_ms, preconditions_failed=[], warnings=warnings,
-    )
+    evidence_id = record(resp, error, success=success, validation=validation)
     return ExecutionResult(
         success=success, tool=name, result=resp.result, error=error, validation=validation,
         evidence_id=evidence_id, warnings=warnings, hint=None if resp.success else failure_hint(error, RETRY_HINT),
@@ -596,16 +597,19 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
     conf = _confirmation_of(gate, token)
     try:
         resp = await client.send_code(code, parameters, confirm=device_confirmation(code, conf))
-    except Exception as e:
+    except (Exception, asyncio.CancelledError) as e:
         # Revit may or may not have run it: exactly the case that needs a ledger line
+        error = "cancelled_after_dispatch" if isinstance(e, asyncio.CancelledError) else str(e)
         evidence_id = _record(
             ledger, host=host, scope=scope, bypass=bypass, action="execute_code", tool=None, projection=projection,
             conf=conf,
-            code=code, document=document, resp=None, validation=None, success=False, error=str(e),
+            code=code, document=document, resp=None, validation=None, success=False, error=error,
             duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
         )
-        return ExecutionResult(success=False, error=str(e), evidence_id=evidence_id, warnings=warnings,
-                               hint=failure_hint(str(e)))
+        if isinstance(e, asyncio.CancelledError):
+            raise
+        return ExecutionResult(success=False, error=error, evidence_id=evidence_id, warnings=warnings,
+                               hint=failure_hint(error))
     duration_ms = int((time.monotonic() - started) * 1000)
     error = DECLINED_ERROR if _declined(resp) else resp.error       # the designer said No on the device
     evidence_id = _record(

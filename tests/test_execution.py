@@ -45,6 +45,43 @@ def code_token(gate: Gate, code: str) -> str:
     return gate.issue(spec).token
 
 
+@pytest.mark.parametrize("phase", ["execute_code", "run_tool", "validator_after"])
+def test_cancel_after_confirmation_records_once(host, phase):
+    code = "return 1;"
+    gate = host["gate"]
+    token = code_token(gate, code) if phase == "execute_code" else wall_token(gate)
+
+    async def scenario(client, fake):
+        send = client.send_code
+        entered = asyncio.Event()
+
+        async def pause(snippet, *args, **kwargs):
+            if gate.peek(token).used_at and (phase != "validator_after" or "GetElementCount" in snippet):
+                entered.set()
+                await asyncio.Event().wait()
+            return await send(snippet, *args, **kwargs)
+
+        client.send_code = pause
+        if phase == "execute_code":
+            execution = run_code(client=client, code=code, parameters=None, token=token,
+                                 gate=gate, ledger=host["ledger"], host="remote-mcp")
+        else:
+            execution = run_pack(client=client, name="create_wall", params=dict(WALL), token=token,
+                                 host="remote-mcp", **host)
+        task = asyncio.create_task(execution)
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        record, = host["ledger"].recent()
+        assert record["host"] == "remote-mcp" and record["token_prefix"] == token[:6]
+        assert not record["success"] and "cancel" in record["error"].lower()
+        if phase == "validator_after":
+            assert record["result_summary"]["ids"] == [4242]
+
+    with_fake(counting_handler(1, 2), scenario)
+
+
 def with_fake(handler, scenario):
     async def go():
         async with FakeRevit(handler) as fake:

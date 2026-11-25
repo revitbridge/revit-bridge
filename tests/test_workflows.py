@@ -1,6 +1,10 @@
+import errno
 import json
+import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -8,6 +12,7 @@ import yaml
 from revit_bridge import mcp_server
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.workflows import WorkflowStore, resolve_step_params, validate_workflow
+from revit_bridge import workflows
 
 
 @pytest.fixture
@@ -152,3 +157,142 @@ def test_resolve_sources_with_scalar_leaves(flow):
     for result in ({}, {"wall": {"a": {"b": []}}}, {"wall": {"a": {"b": [{}]}}}):
         with pytest.raises(ValueError, match=r"use.*id.*wall.*a\.b\.0"):
             resolve_step_params(second, {}, result)
+
+
+@pytest.mark.parametrize("field", ["input", "from", "tool"])
+def test_shared_value_never_formatted(tools, flow, field):
+    class NoRepr(list):
+        def __repr__(self):
+            pytest.fail("validation formatted a container")
+
+    value = NoRepr()
+    for _ in range(9):
+        value = NoRepr([value, value])
+    step = flow["steps"][1]
+    if field == "tool":
+        step["tool"] = value
+    else:
+        step["params"]["id"] = {field: value, **({"path": "a"} if field == "from" else {})}
+    problems = validate_workflow(flow, tools)
+    assert problems and len(" ".join(problems)) < 500
+    with pytest.raises(workflows.WorkflowError) as err:
+        WorkflowStore(tools).save(flow)
+    assert err.value.problems == problems
+
+
+def test_aliases_rejected_across_workflow_readers(tools, flow, monkeypatch):
+    store = WorkflowStore(tools)
+    path = store.save(flow)
+    # Each of nine levels is shared. Keep one edge between levels so a
+    # regression on the original implementation is safe to run in CI.
+    levels = [["leaf"]]
+    for _ in range(8):
+        levels.append([levels[-1]])
+    flow["steps"][0]["params"]["height"]["input"] = levels
+    flow["steps"][1]["params"]["id"]["from"] = levels[-1]
+    source = yaml.safe_dump(flow, sort_keys=False)
+    assert source.count("&id") == 9 and len(source.encode()) < 1024
+    path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "_tool_store", tools)
+    started = time.monotonic()
+    shared = yaml.safe_load(source)
+    errors = validate_workflow(shared, tools)
+    assert errors and len(" ".join(errors)) < 200
+    with pytest.raises(workflows.WorkflowError) as direct:
+        store.save(shared, overwrite=True)
+    assert direct.value.problems == errors
+    with pytest.raises(workflows.WorkflowError, match="anchor|alias") as err:
+        store._read(flow["name"])
+    assert len(str(err.value)) < 200
+    assert json.loads(mcp_server.list_workflows()) == []
+    for reader in (mcp_server.get_workflow, mcp_server.workflow_resource):
+        reply = json.loads(reader(flow["name"]))
+        assert reply == {"error": "invalid_workflow", "problems": err.value.problems}
+    with pytest.raises(workflows.WorkflowError, match="anchor|alias"):
+        workflows.parse_workflow_yaml(source)
+    assert time.monotonic() - started < 5
+
+
+def test_parse_workflow_limits(tools, flow):
+    store = WorkflowStore(tools)
+    path = store.save(flow)
+    source = path.read_text(encoding="utf-8")
+    assert workflows.parse_workflow_yaml(source) == flow
+    for extra, reason in [("x: &alone 1", "anchor"), ("x: *missing", "alias"),
+                          ("x: " + "[" * 65 + "1" + "]" * 65, "depth"),
+                          ("# " + "界" * 90000, "256 KiB")]:
+        text = source + extra
+        path.write_text(text, encoding="utf-8")
+        for parse in (lambda: workflows.parse_workflow_yaml(text), lambda: store.load(flow["name"])):
+            with pytest.raises(workflows.WorkflowError, match=reason):
+                parse()
+    flow["description"] = "x" * (256 * 1024)
+    with pytest.raises(workflows.WorkflowError, match="256 KiB"):
+        store.save(flow, overwrite=True)
+
+
+def test_shared_valid_parameters_save_as_plain_yaml(tools, flow):
+    first = flow["steps"][0]
+    flow["steps"][1] = dict(first, id="second")
+    store = WorkflowStore(tools)
+    source = store.save(flow).read_text(encoding="utf-8")
+    assert workflows.parse_workflow_yaml(source) == store.load(flow["name"]) == flow
+
+
+def test_error_budget_and_long_field_names(tools, flow):
+    flow.update({str(i) + "x" * 2000: 0 for i in range(100)})
+    errors = validate_workflow(flow, tools)
+    assert 0 < len(errors) <= 50
+    assert max(map(len, errors)) < 200
+
+
+def test_case_collision_preserves_original(tools, flow):
+    store = WorkflowStore(tools)
+    store.save(flow)
+    for overwrite in (False, True):
+        with pytest.raises(workflows.WorkflowError, match="case"):
+            store.save(dict(flow, name=flow["name"].upper()), overwrite=overwrite)
+    assert store.list_workflows() == [flow]
+    for name in ("MAKE_WALL", "USE_WALL"):
+        with pytest.raises(workflows.WorkflowError, match="tool"):
+            store.save(dict(flow, name=name))
+
+
+def test_exclusive_create_without_hard_links(tools, flow, monkeypatch):
+    from revit_bridge.workflows import store as store_module
+
+    def unsupported(*args):
+        raise OSError(errno.EOPNOTSUPP, "no hard links")
+
+    monkeypatch.setattr(store_module, "os", SimpleNamespace(name="posix", link=unsupported,
+                        replace=os.replace, fsync=os.fsync))
+    store = WorkflowStore(tools)
+    store.save(flow)
+    with pytest.raises(FileExistsError):
+        store.save(dict(flow, summary="another writer"))
+    assert store.load(flow["name"]) == flow
+
+
+@pytest.mark.parametrize("source", ["literal", "input", "from"])
+def test_resolve_declared_type(tools, flow, source):
+    step = flow["steps"][1]
+    tool = tools.load("use_wall")
+    for kind, good, bad in [("int", 1, [True, 1.2, "1"]), ("double", 1.2, [True, "1"]),
+                            ("boolean", False, [0, "false"]), ("string", "1", [1, True])]:
+        tool.parameters[0]["type"] = kind
+        def resolve(value):
+            step["params"]["id"] = {"input": "i"} if source == "input" else (
+                {"from": "wall", "path": "v"} if source == "from" else value)
+            return resolve_step_params(step, {"i": value}, {"wall": {"v": value}}, tool=tool)
+        assert resolve(good) == {"id": good}
+        for value in bad:
+            with pytest.raises(ValueError, match=f"id.*{kind}"):
+                resolve(value)
+
+
+def test_zero_padded_path_is_only_a_mapping_key(flow):
+    step = flow["steps"][1]
+    step["params"]["id"]["path"] = "007"
+    assert resolve_step_params(step, {}, {"wall": {"007": 3}}) == {"id": 3}
+    with pytest.raises(ValueError, match="007"):
+        resolve_step_params(step, {}, {"wall": list(range(8))})
