@@ -8,6 +8,13 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- Linear workflow v1 definitions can be validated, saved and read from the
+  `workflows/` directory beside user tools. Hosts can resolve each step's
+  inputs and earlier results before submitting it through the normal tool gate.
+  MCP exposes `list_workflows`, `get_workflow` and `revit://workflows/{name}`.
+- `revit_bridge.mcp_app.build_asgi_app` serves the stdio handlers over Streamable
+  HTTP with a host-supplied connection per request. Each paired device has its
+  own user tools, confirmations, verification plans and evidence ledger.
 - Packs can declare `ui_only: true` for changes to selection or view display. The loader
   and `list_tools` expose the flag. It defaults to false and is mutually exclusive with
   `read_only`. Five packs declare it: `select_elements`, `select_in_box`,
