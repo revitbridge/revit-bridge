@@ -51,6 +51,10 @@ import json
 import os
 import sys
 from collections.abc import Mapping
+from contextvars import ContextVar
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.types import ToolAnnotations
@@ -60,7 +64,7 @@ from revit_bridge import __version__, list_host_functions
 from revit_bridge import addin_test, checking, cli_output, dry_run, guidance_cli, skills_cli, view_commands
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities.store import ToolStore
-from revit_bridge.evidence.ledger import Ledger
+from revit_bridge.evidence.ledger import LOCAL_SCOPE, Ledger
 from revit_bridge.execution import ENV_ALLOW_UNCONFIRMED, ExecutionResult, run_code, run_pack
 from revit_bridge.execution import gate_refusal as _gate_refusal
 from revit_bridge.execution import revalidate as _revalidate
@@ -77,6 +81,7 @@ from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params as _missing_params
 from revit_bridge.spec.rules import reconcile as _reconcile
 from revit_bridge.spec.rules import validate_spec
+from revit_bridge.workflows import WorkflowError, WorkflowStore
 from revit_bridge.verification import VerificationStore
 from revit_bridge.verification import plan as _plan_verification
 from revit_bridge.verification import verify as _verify_execution
@@ -140,6 +145,57 @@ class _PooledClient:
         return await client.send_command(method, params)
 
 
+@dataclass(frozen=True)
+class _Runtime:
+    client: Any
+    tools: ToolStore
+    gate: Gate
+    ledger: Ledger
+    verifications: VerificationStore
+    host: str
+    scope: str
+    env: Mapping[str, str]
+
+
+_request_runtime: ContextVar[_Runtime | None] = ContextVar("mcp_request_runtime", default=None)
+_http_request: ContextVar[bool] = ContextVar("mcp_http_request", default=False)
+
+
+def _device_runtime() -> _Runtime | None:
+    remote = _request_runtime.get()
+    if remote is None and _http_request.get():
+        raise RuntimeError("missing authenticated device context for HTTP request")
+    return remote
+
+
+def _runtime() -> _Runtime:
+    remote = _device_runtime()
+    if remote is not None:
+        return remote
+    return _Runtime(_PooledClient(), _tool_store, _gate, _ledger, _verifications, "mcp", LOCAL_SCOPE, os.environ)
+
+
+async def _get_client():
+    runtime = _device_runtime()
+    if runtime is not None:
+        return runtime.client
+    return await RevitClientPool.get_client()
+
+
+def _device_file(name: str) -> str:
+    """Resolve host-side file arguments within the paired device's staging directory."""
+    remote = _device_runtime()
+    if remote is None:
+        return name
+    directory = remote.tools.user_dir.parent.resolve() / "files"
+    path = directory / name
+    if path.is_relative_to(directory):
+        path = path.resolve()
+        if path.is_relative_to(directory):
+            return str(path)
+    raise ValueError("file must be staged in this device's files directory")
+
+
 def _execution_json(result: ExecutionResult) -> str:
     """The tool reply: a refusal payload as is, otherwise the ExecutionResult fields."""
     if result.refusal is not None:
@@ -166,12 +222,13 @@ _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 _MUTATING = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 
-def _tool(annotations: ToolAnnotations | None = None, *, meta: dict | None = None):
+def _tool(annotations: ToolAnnotations | None = None, *, meta: dict | None = None, server=None):
     """``mcp.tool`` with the docstring cleaned (``inspect.cleandoc``) as the description. The SDK takes
     ``__doc__`` as it is; Python 3.13+ strips the source indentation when compiling, 3.11 and 3.12 do not,
     so without this the hosts on those versions would see every continuation line indented."""
     def register(fn):
-        return mcp.tool(annotations=annotations, meta=meta, description=inspect.cleandoc(fn.__doc__ or ""))(fn)
+        target = mcp if server is None else server
+        return target.tool(annotations=annotations, meta=meta, description=inspect.cleandoc(fn.__doc__ or ""))(fn)
     return register
 
 
@@ -181,7 +238,6 @@ def _dumps(payload) -> str:
 
 # -- Read-only tools (no gate) ------------------------------------------------
 
-@_tool(annotations=_READ_ONLY)
 async def get_project_snapshot(categories: list[str] | None = None) -> str:
     """Read-only picture of the open Revit model: document, units, active view,
     levels, grids, selection, links, phases and the family types of the given
@@ -196,7 +252,7 @@ async def get_project_snapshot(categories: list[str] | None = None) -> str:
     except ValueError as e:
         return _dumps({"error": "invalid_category", "message": str(e)})
     try:
-        client = await RevitClientPool.get_client()
+        client = await _get_client()
         snapshot = await take_snapshot(client, cats)
     except OSError as e:                     # refused, timed out, reset: no add-in
         return _dumps({"error": "revit_unreachable", "message": str(e) or type(e).__name__})
@@ -205,7 +261,6 @@ async def get_project_snapshot(categories: list[str] | None = None) -> str:
     return snapshot.model_dump_json(indent=2)
 
 
-@_tool(annotations=_READ_ONLY)
 async def query(kind: str, args: dict | None = None) -> str:
     """Read-only model query, no confirmation needed. kinds: levels, grids,
     family_types (args.categories), elements (args.category, args.limit<=200),
@@ -228,7 +283,7 @@ async def query(kind: str, args: dict | None = None) -> str:
     add-in) run C# inside a Revit transaction on the add-in side: they fail on
     read-only documents and leave an undo entry."""
     try:
-        client = await RevitClientPool.get_client()
+        client = await _get_client()
         return _dumps(await run_query(RevitQueryExecutor(client), kind, args))
     except OSError as e:
         return _dumps({"error": "revit_unreachable", "kind": kind, "message": str(e) or type(e).__name__})
@@ -238,7 +293,6 @@ async def query(kind: str, args: dict | None = None) -> str:
 
 # -- TaskSpec tools (no gate) -------------------------------------------------
 
-@_tool(annotations=_READ_ONLY)
 async def missing_params(tool: str, known: dict | str | None = None,
                          snapshot: dict | str | None = None, language: str = "zh") -> str:
     """The questions still open for a capability pack: one per required parameter
@@ -250,7 +304,7 @@ async def missing_params(tool: str, known: dict | str | None = None,
     {id, param, text, why, options, allow_other, kind, blocks}: kind
     "user_intent" (the designer's to answer), blocks = the steps it holds up
     (["spec", "execute"]: go on with work that does not depend on it)."""
-    pack = _tool_store.load(tool)
+    pack = _runtime().tools.load(tool)
     if pack is None:
         return _dumps({"error": "unknown_tool", "tool": tool})
     try:
@@ -267,14 +321,13 @@ async def missing_params(tool: str, known: dict | str | None = None,
             return _dumps({"error": "invalid_snapshot", "message": str(e)})
     else:
         try:
-            client = await RevitClientPool.get_client()
+            client = await _get_client()
             snap = await take_snapshot(client)
         except Exception:  # noqa: BLE001 - best effort: questions still go out, without options
             snap = None
     return _dumps([q.model_dump() for q in _missing_params(pack, known_values, snap, language)])
 
 
-@_tool(annotations=_READ_ONLY)
 async def reconcile(spec: dict | str, snapshot: dict | str | None = None) -> str:
     """Check a draft TaskSpec against the model: values that do not exist
     (levels, family types), missing parameters as questions, readings the
@@ -295,17 +348,16 @@ async def reconcile(spec: dict | str, snapshot: dict | str | None = None) -> str
             return _dumps({"error": "invalid_snapshot", "message": str(e)})
     else:
         try:
-            client = await RevitClientPool.get_client()
+            client = await _get_client()
             snap = await take_snapshot(client)
         except OSError as e:                     # same mapping as get_project_snapshot
             return _dumps({"error": "revit_unreachable", "message": str(e) or type(e).__name__})
         except Exception as e:
             return _dumps({"error": "snapshot_failed", "message": f"{type(e).__name__}: {e}"})
-    pack = _tool_store.load(draft.action.tool) if draft.action.kind == "run_tool" and draft.action.tool else None
+    pack = _runtime().tools.load(draft.action.tool) if draft.action.kind == "run_tool" and draft.action.tool else None
     return _dumps(_reconcile(draft, snap, pack).model_dump())
 
 
-@_tool()
 def confirm_spec(spec: dict | str, confirmed_by: str = "designer", channel: str = "chat") -> str:
     """Turn a designer-confirmed TaskSpec into a one-time execution token.
     Call only after the designer has seen the spec card and said yes.
@@ -315,11 +367,13 @@ def confirm_spec(spec: dict | str, confirmed_by: str = "designer", channel: str 
         parsed = TaskSpec.model_validate(_parse_json_arg(spec, "spec"))
     except (ValidationError, json.JSONDecodeError, TypeError) as e:
         return _dumps({"errors": [{"code": "invalid_spec", "param": None, "message": str(e)}]})
-    pack = _tool_store.load(parsed.action.tool) if parsed.action.kind == "run_tool" and parsed.action.tool else None
+    pack = _runtime().tools.load(parsed.action.tool) if parsed.action.kind == "run_tool" and parsed.action.tool else None
     errors = validate_spec(parsed, pack)
     if errors:
         return _dumps({"errors": [e.model_dump() for e in errors]})
-    conf = _gate.issue(parsed, confirmed_by=confirmed_by or "designer", channel=channel or "chat")
+    runtime = _runtime()
+    conf = runtime.gate.issue(parsed, confirmed_by=confirmed_by or "designer", channel=channel or "chat",
+                              scope=runtime.scope)
     return _dumps({
         "token": conf.token,
         "spec_hash": conf.spec_hash,
@@ -339,7 +393,6 @@ def _with_snippet_contract(fn):
     return fn
 
 
-@_tool(annotations=_READ_ONLY)
 @_with_snippet_contract
 async def check_code(code: str, parameters: list | None = None) -> str:
     """Compile C# for execute_code inside Revit WITHOUT running it: only
@@ -362,13 +415,12 @@ async def check_code(code: str, parameters: list | None = None) -> str:
     if refused is not None:
         return _dumps(refused)
     try:
-        client = await RevitClientPool.get_client()
+        client = await _get_client()
     except Exception as e:                            # refused, timed out, bad settings: not checked
         return _dumps(checking.not_checked(Capabilities.from_exception(e)))
     return _dumps(await checking.check_code(client, code, parameters, library=guidance_library))
 
 
-@_tool(annotations=_READ_ONLY)
 async def dry_run_code(code: str, parameters: list | None = None, include: list[str] | None = None) -> str:
     """Run C# in the open Revit model and always roll it back: nothing is kept, the undo
     stack is untouched. Needs no confirmation and no token. Use it to find out whether
@@ -378,18 +430,23 @@ async def dry_run_code(code: str, parameters: list | None = None, include: list[
     raised. It does not replace execute_code: a dry run changes nothing.
 
     include: paths of C# source files to compile together with the code, so the code can call into them. Use it to dry-run the add-in's own core-logic file unchanged - the same file you then build into the add-in. Each file must be complete (its own usings and namespace) and must not do file, process or network work."""
+    if include:
+        try:
+            include = [_device_file(name) for name in include]
+        except (OSError, ValueError) as exc:
+            return _dumps(dry_run.reply(error="invalid_include", hint=str(exc)))
     refused, _ = dry_run.prepare(code, include)       # the sandbox and the files need no Revit
     if refused is not None:
         return _dumps(refused)
     try:
-        client = await RevitClientPool.get_client()
+        client = await _get_client()
     except Exception as e:                            # refused, timed out, bad settings: nothing ran
         return _dumps(dry_run.not_asked(Capabilities.from_exception(e)))
-    return _dumps(await dry_run.dry_run_code(client, code, parameters, include=include, ledger=_ledger,
-                                             host="mcp"))
+    runtime = _runtime()
+    return _dumps(await dry_run.dry_run_code(client, code, parameters, include=include, ledger=runtime.ledger,
+                                             host=runtime.host, scope=runtime.scope))
 
 
-@_tool(annotations=_MUTATING)
 @_with_snippet_contract
 async def execute_code(code: str, parameters: list | None = None, token: str = "") -> str:
     """Send C# code to Revit for execution over the local TCP socket.
@@ -397,14 +454,14 @@ async def execute_code(code: str, parameters: list | None = None, token: str = "
     Requires a token from confirm_spec for a TaskSpec whose action is
     execute_code with exactly this code and parameters.
     Returns execution result or error message."""
-    result = await run_code(gate=_gate, ledger=_ledger, client=_PooledClient(), code=code,
-                            parameters=parameters, token=token, host="mcp", env=os.environ)
+    runtime = _runtime()
+    result = await run_code(gate=runtime.gate, ledger=runtime.ledger, client=runtime.client, code=code,
+                            parameters=parameters, token=token, host=runtime.host, scope=runtime.scope, env=runtime.env)
     return _execution_json(result)
 
 
 # -- Solidification Tools -----------------------------------------------------
 
-@_tool()
 def solidify_tool(
     name: str,
     code: str,
@@ -425,23 +482,23 @@ def solidify_tool(
         return _dumps({"error": "invalid_args", "message": str(e)})
     if not isinstance(params, list):
         return _dumps({"error": "invalid_args", "message": "parameters must be a list"})
+    store = _runtime().tools
     try:
-        tool = _tool_store.solidify(
+        tool = store.solidify(
             name=name, code=code, description=description, parameters=params,
             source_query=source_query, validator=validator_cfg,
         )
     except ValueError as e:
         return _dumps({"error": "invalid_pack", "problems": str(e).split("; ")})
-    return _dumps({"name": tool.name, "path": str(_tool_store._tool_path(name)), "version": tool.version})
+    return _dumps({"name": tool.name, "path": str(store._tool_path(name)), "version": tool.version})
 
 
-@_tool(annotations=_READ_ONLY)
 def list_tools(include_host_functions: bool = False) -> str:
     """The capability packs available to run_tool, as a JSON list of
     {name, description, read_only, ui_only, version, parameters: [{name, type, source, required, unit?}],
     preconditions, validator, used}. Pass include_host_functions=true to append native
     view descriptors. Call entries marked kind=host_function by their MCP name directly."""
-    tools = _tool_store.list_tools()
+    tools = _runtime().tools.list_tools()
     packs = [
         {
             "name": t.name,
@@ -462,24 +519,22 @@ def list_tools(include_host_functions: bool = False) -> str:
     return _dumps(packs + list_host_functions() if include_host_functions else packs)
 
 
-@_tool(annotations=_READ_ONLY)
 async def get_tool_choices(name: str) -> str:
     """Query Revit for dynamic parameter choices of a solidified tool.
     Call this BEFORE run_tool to discover available levels, family types, etc.
     Returns {param_name: [{label, value}, ...]} for parameters that need selection."""
-    dynamic_params = _tool_store.get_dynamic_params(name)
+    dynamic_params = _runtime().tools.get_dynamic_params(name)
     if not dynamic_params:
         return _dumps({"message": f"Tool '{name}' has no dynamic parameters"})
 
     try:
-        client = await RevitClientPool.get_client()
+        client = await _get_client()
         choices = await RevitQueryExecutor(client).get_tool_choices(dynamic_params)
         return _dumps(choices)
     except Exception as e:
         return _dumps({"success": False, "error": str(e)})
 
 
-@_tool(annotations=_MUTATING)
 async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
     """Execute a solidified tool by name with given parameters.
     IMPORTANT: Call get_tool_choices first for parameters with choices_from / source: tool:*.
@@ -492,28 +547,29 @@ async def run_tool(name: str, params: str = "{}", token: str = "") -> str:
         return _dumps({"success": False, "error": f"Invalid params JSON: {params}"})
     if not isinstance(param_dict, dict):
         return _dumps({"success": False, "error": "params must be a JSON object"})
-    result = await run_pack(store=_tool_store, gate=_gate, ledger=_ledger, client=_PooledClient(), name=name,
-                            params=param_dict, token=token, host="mcp", env=os.environ)
+    runtime = _runtime()
+    result = await run_pack(store=runtime.tools, gate=runtime.gate, ledger=runtime.ledger, client=runtime.client,
+                            name=name, params=param_dict, token=token, host=runtime.host, scope=runtime.scope,
+                            env=runtime.env)
     return _execution_json(result)
 
 
 # -- Evidence tools -----------------------------------------------------------
 
-@_tool(annotations=_READ_ONLY)
 def evidence(limit: int = 20, tool: str | None = None) -> str:
     """The most recent execution records from the evidence ledger, newest first
     (optionally for one tool): who confirmed what, what ran, what the validator said."""
     limit = max(1, min(int(limit or 20), 200))
-    return _dumps(_ledger.recent(limit, tool))
+    return _dumps(_runtime().ledger.recent(limit, tool))
 
 
-@_tool(annotations=_READ_ONLY)
 async def validate(evidence_id: str) -> str:
     """Re-run the validator's assertion for a recorded execution against the model
     as it is now (for the designer's later check). Returns the ValidationReport,
     or {error} when the record, its pack or a validator is missing."""
     try:
-        return _dumps(await _revalidate(store=_tool_store, ledger=_ledger, client=_PooledClient(),
+        runtime = _runtime()
+        return _dumps(await _revalidate(store=runtime.tools, ledger=runtime.ledger, client=runtime.client,
                                         evidence_id=evidence_id))
     except OSError as e:
         return _dumps({"error": "revit_unreachable", "message": str(e) or type(e).__name__})
@@ -521,7 +577,6 @@ async def validate(evidence_id: str) -> str:
 
 # -- Read-back verification (execute_code) ------------------------------------
 
-@_tool(annotations=_READ_ONLY)
 async def plan_verification(template: str, params: dict | str) -> str:
     """Plan how the result of an execute_code will be read back, BEFORE confirm_spec.
     Runs only the bridge's own read-only probes, never your code; no token.
@@ -546,10 +601,10 @@ async def plan_verification(template: str, params: dict | str) -> str:
         params_value = _parse_json_arg(params, "params")
     except json.JSONDecodeError as e:
         return _dumps({"error": "invalid_template", "problems": [f"params: {e}"]})
-    return _dumps(await _plan_verification(_verifications, _PooledClient(), template, params_value))
+    runtime = _runtime()
+    return _dumps(await _plan_verification(runtime.verifications, runtime.client, template, params_value))
 
 
-@_tool(annotations=_READ_ONLY)
 async def verify_execution(evidence_id: str, verification_id: str) -> str:
     """After execute_code: read the model back against the plan from plan_verification.
     Runs only the bridge's own read-only probes; no token. Returns {verified,
@@ -561,13 +616,13 @@ async def verify_execution(evidence_id: str, verification_id: str) -> str:
     executed and verified (verified true) / executed but verification failed (quote
     checks[].detail) / executed, not verified (no plan, or an error). The check is a
     ledger line of its own: evidence(tool="verify_execution")."""
-    return _dumps(await _verify_execution(_verifications, _ledger, _PooledClient(), evidence_id,
-                                          verification_id, host="mcp"))
+    runtime = _runtime()
+    return _dumps(await _verify_execution(runtime.verifications, runtime.ledger, runtime.client, evidence_id,
+                                          verification_id, host=runtime.host))
 
 
 # -- Guidance -----------------------------------------------------------------
 
-@_tool(annotations=_READ_ONLY)
 def get_guidance(
     mode: str = "recommend",
     stage: str | None = None,
@@ -612,13 +667,12 @@ _RESTORED = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 
 async def _pooled_or_refusal(reply):
     try:
-        return await RevitClientPool.get_client(), None
+        return await _get_client(), None
     except Exception as e:                            # refused, timed out, bad settings: nothing ran
         caps = Capabilities.from_exception(e)
         return None, reply(error=f"{caps.error_kind or 'unknown'}: {caps.reason}")
 
 
-@_tool(annotations=_RESTORED)
 async def test_addin_command(dll: str, command_class: str, picks: list[dict] | None = None,
                              input: dict | None = None, readback_code: str | None = None,  # noqa: A002
                              zoom_to: int | None = None, timeout_seconds: int = 120,
@@ -632,53 +686,62 @@ async def test_addin_command(dll: str, command_class: str, picks: list[dict] | N
     warning or error the command left to Revit (one the command deleted or resolved
     itself is not seen), and what your read-back code saw before the restore. It takes
     over the mouse and needs Revit in the foreground while it runs. Plan views only."""
+    try:
+        dll = _device_file(dll)
+    except (OSError, ValueError) as exc:
+        return _dumps(addin_test.test_reply(error="invalid_dll", hint=str(exc)))
     refused, _, _ = addin_test.check_test_args(dll, command_class, readback_code, timeout_seconds, restore)
     if refused is not None:                           # the DLL, the arguments and the sandbox need no Revit
         return _dumps(refused)
     client, refused = await _pooled_or_refusal(addin_test.test_reply)
     if refused is not None:
         return _dumps(refused)
+    runtime = _runtime()
     return _dumps(await addin_test.test_addin_command(
         client, dll, command_class, picks, input, readback_code, zoom_to, timeout_seconds, restore,
-        ledger=_ledger, host="mcp"))
+        ledger=runtime.ledger, host=runtime.host, scope=runtime.scope))
 
 
-@_tool(annotations=_RESTORED)
 async def zoom_view(element_id: int | None = None, margin_mm: float = 2500) -> str:
     """Zoom the active view to an element (with a margin) or to fit. Changes only the view."""
     client, refused = await _pooled_or_refusal(addin_test.view_reply)
     if refused is not None:
         return _dumps(refused)
-    return _dumps(await addin_test.zoom_view(client, element_id, margin_mm, ledger=_ledger, host="mcp"))
+    runtime = _runtime()
+    return _dumps(await addin_test.zoom_view(client, element_id, margin_mm, ledger=runtime.ledger,
+                                             host=runtime.host, scope=runtime.scope))
 
 
-@_tool(annotations=_RESTORED)
 async def capture_view(element_id: int | None = None, margin_mm: float = 1500) -> str:
     """Save a picture of the active view, optionally zoomed to an element first, and
     return its path. Use it when the data cannot settle a question; it is not a test."""
     client, refused = await _pooled_or_refusal(addin_test.capture_reply)
     if refused is not None:
         return _dumps(refused)
-    return _dumps(await addin_test.capture_view(client, element_id, margin_mm, ledger=_ledger, host="mcp"))
+    runtime = _runtime()
+    return _dumps(await addin_test.capture_view(client, element_id, margin_mm, ledger=runtime.ledger,
+                                                host=runtime.host, scope=runtime.scope))
 
 
-@_tool(annotations=_RESTORED, meta={"ui_only": True})
 async def open_view(name: str) -> str:
     """View only. Activate an existing Revit view by name."""
     client, refused = await _pooled_or_refusal(addin_test.view_reply)
     if refused is not None:
         return _dumps(refused)
-    return _dumps(await view_commands.open_view(client, name, ledger=_ledger))
+    runtime = _runtime()
+    return _dumps(await view_commands.open_view(client, name, ledger=runtime.ledger, host=runtime.host,
+                                                scope=runtime.scope))
 
 
-@_tool(annotations=_READ_ONLY, meta={"read_only": True})
 async def capture_view_image(width: int = 1600, view_id: int | None = None):
     """Read only. Export a Revit view as a PNG image with pixel dimensions and view name.
     Omit view_id to capture the active view. Maximum width is 1600 pixels and maximum size is 1 MiB."""
     client, refused = await _pooled_or_refusal(addin_test.view_reply)
     if refused is not None:
         return _dumps(refused)
-    result = await view_commands.capture_view_image(client, width, view_id, ledger=_ledger)
+    runtime = _runtime()
+    result = await view_commands.capture_view_image(client, width, view_id, ledger=runtime.ledger,
+                                                    host=runtime.host, scope=runtime.scope)
     encoded = result.pop("png_base64", None) if isinstance(result, dict) else None
     if not encoded:
         return _dumps(result)
@@ -689,33 +752,31 @@ async def capture_view_image(width: int = 1600, view_id: int | None = None):
 
 # -- Resources ----------------------------------------------------------------
 
-@mcp.resource("revit://stats")
 def api_stats() -> str:
     """Solidified tool statistics."""
-    tools = _tool_store.list_tools()
+    store = _runtime().tools
+    if _device_runtime() is not None:
+        return f"revit-bridge {__version__}\nSolidified tools: {len(store.list_tools())}"
     return (
         f"revit-bridge {__version__}\n"
-        f"Solidified tools: {len(tools)} "
-        f"(built-in: {_tool_store.builtin_dir}; user: {_tool_store.user_dir})"
+        f"Solidified tools: {len(store.list_tools())} "
+        f"(built-in: {store.builtin_dir}; user: {store.user_dir})"
     )
 
 
-@mcp.resource("revit://tools/{name}")
 def tool_resource(name: str) -> str:
     """Returns the YAML definition of a solidified tool by name."""
-    tool_path = _tool_store.path_of(name)
+    tool_path = _runtime().tools.path_of(name)
     if tool_path is None:
         return json.dumps({"error": f"Tool '{name}' not found."})
     return tool_path.read_bytes().decode("utf-8")
 
 
-@mcp.resource("revit://evidence/recent")
 def evidence_recent() -> str:
     """The 20 most recent evidence records."""
-    return _dumps(_ledger.recent(20))
+    return _dumps(_runtime().ledger.recent(20))
 
 
-@mcp.resource("revit://guidance/index")
 def guidance_index() -> str:
     """Every guidance lesson, one line each: id | layer | revit range | title."""
     try:
@@ -724,10 +785,79 @@ def guidance_index() -> str:
         return "".join(f"{line}\n" for line in ["guidance_invalid"] + [f"- {p}" for p in e.problems])
 
 
-@mcp.resource("revit://connection-status")
 async def connection_status() -> str:
     """Check whether the Revit add-in is reachable; with its capability and environment."""
-    return json.dumps(await check_connection(environment=True), indent=2, ensure_ascii=False)
+    runtime = _device_runtime()
+    if runtime is None:
+        status = await check_connection(environment=True)
+    else:
+        status = await check_connection(environment=True, client=runtime.client)
+    return json.dumps(status, indent=2, ensure_ascii=False)
+
+
+def list_workflows() -> str:
+    """List available linear workflows with their summaries and descriptions."""
+    workflows = WorkflowStore(_runtime().tools).list_workflows()
+    return _dumps([{key: flow[key] for key in ("name", "display_name", "summary", "description", "version")}
+                   for flow in workflows])
+
+
+def get_workflow(name: str) -> str:
+    """Read a workflow definition and validate its steps against the current tools."""
+    try:
+        flow = WorkflowStore(_runtime().tools).load(name)
+    except WorkflowError as exc:
+        return _dumps({"error": "invalid_workflow", "problems": exc.problems})
+    return _dumps(flow if flow is not None else {"error": "unknown_workflow", "name": name})
+
+
+def workflow_resource(name: str) -> str:
+    """The validated YAML source of a workflow."""
+    try:
+        source = WorkflowStore(_runtime().tools).read_yaml(name)
+    except WorkflowError as exc:
+        return _dumps({"error": "invalid_workflow", "problems": exc.problems})
+    return source if source is not None else _dumps({"error": "unknown_workflow", "name": name})
+
+
+def _register_handlers(server: MCPServer, adapt=lambda fn: fn) -> None:
+    def tool(fn, annotations=None, *, meta=None):
+        _tool(annotations, meta=meta, server=server)(adapt(fn))
+
+    tool(get_project_snapshot, _READ_ONLY)
+    tool(query, _READ_ONLY)
+    tool(missing_params, _READ_ONLY)
+    tool(reconcile, _READ_ONLY)
+    tool(confirm_spec)
+    tool(check_code, _READ_ONLY)
+    tool(dry_run_code, _READ_ONLY)
+    tool(execute_code, _MUTATING)
+    tool(solidify_tool)
+    tool(list_tools, _READ_ONLY)
+    tool(get_tool_choices, _READ_ONLY)
+    tool(run_tool, _MUTATING)
+    tool(evidence, _READ_ONLY)
+    tool(validate, _READ_ONLY)
+    tool(plan_verification, _READ_ONLY)
+    tool(verify_execution, _READ_ONLY)
+    tool(get_guidance, _READ_ONLY)
+    tool(test_addin_command, _RESTORED)
+    tool(zoom_view, _RESTORED)
+    tool(capture_view, _RESTORED)
+    tool(open_view, _RESTORED, meta={"ui_only": True})
+    tool(capture_view_image, _READ_ONLY, meta={"read_only": True})
+    tool(list_workflows, _READ_ONLY)
+    tool(get_workflow, _READ_ONLY)
+
+    server.resource("revit://stats")(adapt(api_stats))
+    server.resource("revit://tools/{name}")(adapt(tool_resource))
+    server.resource("revit://evidence/recent")(adapt(evidence_recent))
+    server.resource("revit://guidance/index")(adapt(guidance_index))
+    server.resource("revit://connection-status")(adapt(connection_status))
+    server.resource("revit://workflows/{name}", mime_type="application/yaml")(adapt(workflow_resource))
+
+
+_register_handlers(mcp)
 
 
 # -- check subcommand ---------------------------------------------------------

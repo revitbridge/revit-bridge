@@ -65,6 +65,33 @@ picks. Request `kind="element", source="selection"` to page through the active
 selection. Type searches accept Chinese and English category names and return
 matching types across categories.
 
+**Streamable HTTP.** Import `build_asgi_app` and `scope_directory` from
+`revit_bridge.mcp_app`. Pass an async `get_client(request)` that returns
+`(authenticated_device_id, connected_revit_client)` after the host verifies
+the pairing. The host owns the connection. For example,
+`app = build_asgi_app(get_client, channel="remote-mcp")` serves `/mcp`.
+The path is relative to the mount point. Enter `app.router.lifespan_context(app)`
+in the parent application's lifespan. For a public origin, pass the MCP SDK's
+`TransportSecuritySettings` with the host's allowed hosts and origins.
+
+Read a device's execution history with
+`Ledger(scope_directory(device_id) / "evidence")`. Use the same optional
+`data_dir` in the factory and directory lookup. The device directory also
+holds its `capabilities/`, `workflows/` and `verifications/`. Stage local
+source includes and add-in DLLs for that device in its `files/` directory.
+The confirmation channel in the spec and the ledger's `host` field retain
+their separate meanings. The factory's `channel` sets the latter.
+
+**Workflows.** `revit_bridge.workflows.WorkflowStore(tool_store)` saves v1 YAML
+beside the user tools. Call `save(definition, overwrite=False)`, `load(name)`,
+`list_workflows()` or `delete(name)`. A load validates against the current
+catalog. Invalid definitions raise `WorkflowError` with a list of `problems`.
+For an editor, `validate_workflow(definition, tool_store)` returns that list
+directly. Before running any steps, validate the full definition. For each
+step, `resolve_step_params(step, inputs, results_by_step_id)` returns the
+parameters or raises `ValueError` naming the missing input or result path.
+The host submits each step through its usual confirmation and execution flow.
+
 From a checkout: `uv sync` then `uv run revit-bridge`.
 
 **Develop a standalone C# add-in, phase by phase** — the skills in

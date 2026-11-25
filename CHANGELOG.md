@@ -8,6 +8,13 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- Linear workflow v1 definitions can be validated, saved and read from the
+  `workflows/` directory beside user tools. Hosts can resolve each step's
+  inputs and earlier results before submitting it through the normal tool gate.
+  MCP exposes `list_workflows`, `get_workflow` and `revit://workflows/{name}`.
+- `revit_bridge.mcp_app.build_asgi_app` serves the stdio handlers over Streamable
+  HTTP with a host-supplied connection per request. Each paired device has its
+  own user tools, confirmations, verification plans and evidence ledger.
 - `link_revit_model` links RVT files by origin or shared coordinates. `link_cad`
   links DWG and DXF files in the active view or on a named level. Both check the
   paths of existing link types and refuse a second link to the same file.
