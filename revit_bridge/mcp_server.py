@@ -35,12 +35,15 @@ Tools:
     - test_addin_command : run a built add-in DLL's command in Revit, then restore (no gate)
     - zoom_view         : zoom the active view to an element or to fit (no gate)
     - capture_view      : save a picture of the active view (no gate)
+    - open_view         : activate a named view
+    - capture_view_image: export a bounded in-memory PNG
 
 The server never calls a model: the host does. Connection settings come from
 ``REVIT_BRIDGE_*`` environment variables (see README, Configure).
 """
 from __future__ import annotations
 
+import base64
 import argparse
 import asyncio
 import inspect
@@ -49,12 +52,12 @@ import os
 import sys
 from collections.abc import Mapping
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Image, MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
-from revit_bridge import __version__
-from revit_bridge import addin_test, checking, cli_output, dry_run, guidance_cli, skills_cli
+from revit_bridge import __version__, list_host_functions
+from revit_bridge import addin_test, checking, cli_output, dry_run, guidance_cli, skills_cli, view_commands
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
@@ -163,12 +166,12 @@ _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 _MUTATING = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 
-def _tool(annotations: ToolAnnotations | None = None):
+def _tool(annotations: ToolAnnotations | None = None, *, meta: dict | None = None):
     """``mcp.tool`` with the docstring cleaned (``inspect.cleandoc``) as the description. The SDK takes
     ``__doc__`` as it is; Python 3.13+ strips the source indentation when compiling, 3.11 and 3.12 do not,
     so without this the hosts on those versions would see every continuation line indented."""
     def register(fn):
-        return mcp.tool(annotations=annotations, description=inspect.cleandoc(fn.__doc__ or ""))(fn)
+        return mcp.tool(annotations=annotations, meta=meta, description=inspect.cleandoc(fn.__doc__ or ""))(fn)
     return register
 
 
@@ -433,16 +436,18 @@ def solidify_tool(
 
 
 @_tool(annotations=_READ_ONLY)
-def list_tools() -> str:
+def list_tools(include_host_functions: bool = False) -> str:
     """The capability packs available to run_tool, as a JSON list of
-    {name, description, version, parameters: [{name, type, source, required, unit?}],
-    preconditions, validator, used}. Check here before writing code."""
+    {name, description, read_only, ui_only, version, parameters: [{name, type, source, required, unit?}],
+    preconditions, validator, used}. Pass include_host_functions=true to append native
+    view descriptors. Call entries marked kind=host_function by their MCP name directly."""
     tools = _tool_store.list_tools()
-    return _dumps([
+    packs = [
         {
             "name": t.name,
             "description": t.description,
             "read_only": t.read_only,
+            "ui_only": t.ui_only,
             "version": t.version,
             "parameters": [
                 {k: p[k] for k in ("name", "type", "source", "required", "unit", "choices_from", "default") if k in p}
@@ -453,7 +458,8 @@ def list_tools() -> str:
             "used": t.execution_count,
         }
         for t in tools
-    ])
+    ]
+    return _dumps(packs + list_host_functions() if include_host_functions else packs)
 
 
 @_tool(annotations=_READ_ONLY)
@@ -654,6 +660,31 @@ async def capture_view(element_id: int | None = None, margin_mm: float = 1500) -
     if refused is not None:
         return _dumps(refused)
     return _dumps(await addin_test.capture_view(client, element_id, margin_mm, ledger=_ledger, host="mcp"))
+
+
+@_tool(annotations=_RESTORED, meta={"ui_only": True})
+async def open_view(name: str) -> str:
+    """View only. Activate an existing Revit view by name."""
+    client, refused = await _pooled_or_refusal(addin_test.view_reply)
+    if refused is not None:
+        return _dumps(refused)
+    return _dumps(await view_commands.open_view(client, name, ledger=_ledger))
+
+
+@_tool(annotations=_READ_ONLY, meta={"read_only": True})
+async def capture_view_image(width: int = 1600, view_id: int | None = None):
+    """Read only. Export a Revit view as a PNG image with pixel dimensions and view name.
+    Omit view_id to capture the active view. Maximum width is 1600 pixels and maximum size is 1 MiB."""
+    client, refused = await _pooled_or_refusal(addin_test.view_reply)
+    if refused is not None:
+        return _dumps(refused)
+    result = await view_commands.capture_view_image(client, width, view_id, ledger=_ledger)
+    encoded = result.pop("png_base64", None) if isinstance(result, dict) else None
+    if not encoded:
+        return _dumps(result)
+    # The picture travels as MCP image content: base64 inside the JSON text would exceed
+    # host output limits and a model cannot see it as an image.
+    return [_dumps(result), Image(data=base64.b64decode(encoded), format="png")]
 
 
 # -- Resources ----------------------------------------------------------------

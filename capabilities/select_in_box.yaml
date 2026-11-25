@@ -1,0 +1,166 @@
+schema_version: 1
+name: select_in_box
+ui_only: true
+display_name: Select In Box
+description: "View only. Select instances inside or intersecting a 3D model-space box, optionally by category."
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  double Feet(string text)
+  {
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException("REFUSED: Invalid length " + text + ". Give finite numbers in millimetres.");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  }
+  XYZ Point(string text)
+  {
+      var parts = text.Split(',');
+      if (parts.Length != 3)
+          throw new InvalidOperationException("REFUSED: Each point needs three comma-separated coordinates in millimetres.");
+      var point = new XYZ(Feet(parts[0]), Feet(parts[1]), Feet(parts[2]));
+      if (!XYZ.IsWithinLengthLimits(point))
+          throw new InvalidOperationException("REFUSED: Coordinates exceed the model limits. Give points nearer the model origin.");
+      return point;
+  }
+  ElementId ParseId(string text)
+  {
+      long number;
+      if (!long.TryParse(text.Trim(), System.Globalization.NumberStyles.None,
+              System.Globalization.CultureInfo.InvariantCulture, out number) || number <= 0)
+          throw new InvalidOperationException("REFUSED: Invalid id " + text + ". Give positive element ids separated by commas.");
+      // Revit 2024 widened both the BuiltInCategory backing type and the ElementId constructor.
+      var native = (BuiltInCategory)number - (BuiltInCategory)0;
+      if ((long)native != number)
+          throw new InvalidOperationException("REFUSED: Id " + number + " is too large for this Revit year. Pick an element in the active document.");
+      return new ElementId(native);
+  }
+  var timer = System.Diagnostics.Stopwatch.StartNew();
+  void CheckTime()
+  {
+      // Bound managed model lookups inside this single API callback.
+      if (timer.ElapsedMilliseconds > 200)
+          throw new InvalidOperationException("REFUSED: The model lookup took too long. Narrow the range or use fewer elements.");
+  }
+
+  string first = "{corner1_mm}", second = "{corner2_mm}", ids = "{element_ids}";
+  double padding = Feet("{padding_mm}");
+  if (padding < 0)
+      throw new InvalidOperationException("REFUSED: Padding would shrink the box. Give zero or a positive distance.");
+  if (ids.Length != 0 && (first.Length != 0 || second.Length != 0))
+      throw new InvalidOperationException("REFUSED: Two range sources given. Supply either both corners or element ids.");
+
+  XYZ lo = null, hi = null;
+  void Include(XYZ p)
+  {
+      lo = lo == null ? p : new XYZ(Math.Min(lo.X, p.X), Math.Min(lo.Y, p.Y), Math.Min(lo.Z, p.Z));
+      hi = hi == null ? p : new XYZ(Math.Max(hi.X, p.X), Math.Max(hi.Y, p.Y), Math.Max(hi.Z, p.Z));
+  }
+  if (ids.Length == 0)
+  {
+      Include(Point(first));
+      Include(Point(second));
+  }
+  else
+  {
+      var parts = ids.Split(',');
+      if (parts.Length > 5000)
+          throw new InvalidOperationException("REFUSED: Received " + parts.Length + " reference ids. Use at most 5000.");
+      foreach (string part in parts)
+      {
+          CheckTime();
+          var id = ParseId(part);
+          var e = document.GetElement(id);
+          // Element.BoundingBox is axis-aligned in the model coordinate system.
+          var box = e == null || e is ElementType ? null : e.get_BoundingBox(null);
+          if (box == null)
+              throw new InvalidOperationException("REFUSED: No model bounds for element " + id + ". Pick model instances with geometry.");
+          Include(box.Min);
+          Include(box.Max);
+      }
+  }
+  var offset = new XYZ(padding, padding, padding);
+  lo -= offset;
+  hi += offset;
+  if (!XYZ.IsWithinLengthLimits(lo) || !XYZ.IsWithinLengthLimits(hi))
+      throw new InvalidOperationException("REFUSED: Padded box exceeds model limits. Reduce its extent or padding.");
+  if (lo.X >= hi.X || lo.Y >= hi.Y || lo.Z >= hi.Z)
+      throw new InvalidOperationException("REFUSED: The box has zero extent. Separate its corners on all three axes or add padding.");
+
+  BuiltInCategory ParseCategory(string text)
+  {
+      BuiltInCategory category;
+      if (!text.StartsWith("OST_", StringComparison.Ordinal) || !Enum.TryParse(text, out category)
+          || !Enum.IsDefined(typeof(BuiltInCategory), category) || Category.GetCategory(document, category) == null)
+          throw new InvalidOperationException("REFUSED: Unknown category " + text + ". Give a BuiltInCategory such as OST_Walls.");
+      return category;
+  }
+  string mode = "{mode}", categoryText = "{category}";
+  if (mode != "inside" && mode != "intersect")
+      throw new InvalidOperationException("REFUSED: Unknown box test. Choose inside or intersect.");
+  var outline = new Outline(lo, hi);
+  ElementFilter filter = mode == "inside" ? (ElementFilter)new BoundingBoxIsInsideFilter(outline)
+      : new BoundingBoxIntersectsFilter(outline);
+  var elements = new FilteredElementCollector(document).WhereElementIsNotElementType().WhereElementIsViewIndependent();
+  if (categoryText != "") elements.OfCategory(ParseCategory(categoryText));
+  elements.WherePasses(filter);
+  int count = elements.GetElementCount();
+  if (count > 5000)
+      throw new InvalidOperationException("REFUSED: " + count + " elements match. Narrow the range or category to at most 5000.");
+  if (count == 0)
+      throw new InvalidOperationException("REFUSED: No elements match. Check the category and range or filter.");
+  var selection = new UIDocument(document).Selection;
+  selection.SetElementIds(elements.ToElementIds());
+  return new { Status = "Selected", Count = selection.GetElementIds().Count };
+parameters:
+  - name: corner1_mm
+    type: string
+    description: "First corner as X,Y,Z in millimetres relative to the model's internal origin. Supply both corners or element_ids."
+    source: designer
+    required: false
+    default: ""
+  - name: corner2_mm
+    type: string
+    description: "Opposite corner as X,Y,Z in millimetres relative to the model's internal origin"
+    source: designer
+    required: false
+    default: ""
+  - name: element_ids
+    type: string
+    description: "Comma-separated ids whose combined model bounding box defines the range"
+    source: designer
+    choices_from: elements
+    required: false
+    default: ""
+  - name: padding_mm
+    type: double
+    description: "Outward distance on each face of the box"
+    unit: mm
+    source: default
+    required: false
+    default: 0
+  - name: mode
+    type: string
+    description: "inside (whole bounding box) or intersect (overlap)"
+    source: default
+    required: false
+    default: "inside"
+  - name: category
+    type: string
+    description: "Optional BuiltInCategory identifier such as OST_Walls"
+    source: default
+    required: false
+    default: ""
+preconditions:
+  - text: "Supply two model-space corners or reference element ids in the active document."
+applies_when:
+  - "select in box"
+validator: null
+fixtures:
+  - name: inside_corners
+    params: {"corner1_mm":"0,0,0","corner2_mm":"4000,5000,3000"}
+    expect: {"Status":"Selected"}
+  - name: intersect_walls
+    params: {"element_ids":"101,102","padding_mm":500,"category":"OST_Walls","mode":"intersect"}
+    expect: {"Status":"Selected"}

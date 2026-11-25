@@ -41,6 +41,7 @@ dry run included (see ``revit_bridge.dry_run``).
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import secrets
@@ -76,9 +77,25 @@ def code_fields(code: str | None) -> dict:
     }
 
 
-def summarize_result(result: Any) -> dict:
-    """The part of a result worth keeping: ids, a status, or a size."""
+def summarize_result(result: Any, *, tool: str | None = None) -> dict:
+    """Keep only the digest and dimensions for a capture, even if other fields contain image data."""
     from revit_bridge.validators.base import extract_ids
+
+    if tool == "capture_view":
+        if not isinstance(result, dict):
+            return {}
+        encoded, width, height = (result.get(k) for k in ("png_base64", "width", "height"))
+        max_bytes = 1024 * 1024
+        if (not isinstance(encoded, str) or len(encoded) > 4 * ((max_bytes + 2) // 3)
+                or type(width) is not int or not 0 < width <= 1600 or type(height) is not int or height <= 0):
+            return {}
+        try:
+            png = base64.b64decode(encoded, validate=True)
+        except ValueError:
+            return {}
+        if not png.startswith(b"\x89PNG\r\n\x1a\n") or len(png) > max_bytes:
+            return {}
+        return {"sha256": hashlib.sha256(png).hexdigest(), "width": width, "height": height}
 
     summary: dict = {"ids": extract_ids(result)}
     if isinstance(result, dict):

@@ -27,10 +27,12 @@ path.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import re
+import time
 from dataclasses import dataclass, field
 
 from revit_bridge.revit.capabilities import METHOD_NOT_FOUND, UNKNOWN, Capabilities, discover, forget
@@ -389,8 +391,10 @@ def sanitize_categories(raw_categories) -> list[str]:
 class RevitQueryExecutor:
     """Execute add-in commands / snippets to read model data."""
 
-    def __init__(self, client: RevitClient):
+    def __init__(self, client: RevitClient, *, clock=time.monotonic, sleep=asyncio.sleep):
         self.client = client
+        self._clock = clock
+        self._sleep = sleep
 
     # The three 0.1 queries return [] when Revit fails (web callers rely on
     # that); ``strict=True`` raises RevitQueryError instead, so a failure can
@@ -446,6 +450,18 @@ class RevitQueryExecutor:
         """Get currently selected elements without triggering selection mode."""
         resp = await self.client.send_command("get_selected_elements", {})
         return _list_result(resp, strict)
+
+    async def watch_selection(self, mode: str, category: str | None = None, timeout_s: float = 120,
+                              settle_ms: int = 1200, poll_ms: int = 400) -> dict:
+        """Observe a changed selection and return document-scoped element mentions.
+
+        Single mode completes on one changed element. Multiple and box wait for
+        a stable nonempty set. Cancel the coroutine to stop observing.
+        """
+        from revit_bridge.snapshot.selection import watch_selection
+
+        return await watch_selection(self, mode, category, timeout_s, settle_ms, poll_ms,
+                                     clock=self._clock, sleep=self._sleep)
 
     async def get_project_units(self) -> dict:
         """Read the project's display unit for lengths.

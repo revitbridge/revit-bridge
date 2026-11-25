@@ -1,0 +1,109 @@
+schema_version: 1
+name: select_by_filter
+ui_only: true
+display_name: Select By Filter
+description: "View only. Select instances in the active view or model by category, exact type name and associated level."
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  BuiltInCategory ParseCategory(string text)
+  {
+      BuiltInCategory category;
+      if (!text.StartsWith("OST_", StringComparison.Ordinal) || !Enum.TryParse(text, out category)
+          || !Enum.IsDefined(typeof(BuiltInCategory), category) || Category.GetCategory(document, category) == null)
+          throw new InvalidOperationException("REFUSED: Unknown category " + text + ". Give a BuiltInCategory such as OST_Walls.");
+      return category;
+  }
+  var timer = System.Diagnostics.Stopwatch.StartNew();
+  void CheckTime()
+  {
+      // Bound managed model lookups inside this single API callback.
+      if (timer.ElapsedMilliseconds > 200)
+          throw new InvalidOperationException("REFUSED: The model lookup took too long. Narrow the range or use fewer elements.");
+  }
+  string categoryText = "{category}", typeName = "{type_name}", levelName = "{level_name}", scope = "{scope}";
+  if (categoryText == "" && typeName == "" && levelName == "")
+      throw new InvalidOperationException("REFUSED: No filter was supplied. Give a category, type name or level.");
+  if (scope != "view" && scope != "model")
+      throw new InvalidOperationException("REFUSED: Unknown scope. Choose view or model.");
+  if (scope == "view" && !FilteredElementCollector.IsViewValidForElementIteration(document, document.ActiveView.Id))
+      throw new InvalidOperationException("REFUSED: This view cannot list instances. Open a model view or use model scope.");
+  var elements = scope == "model" ? new FilteredElementCollector(document).WhereElementIsViewIndependent()
+      : new FilteredElementCollector(document, document.ActiveView.Id);
+  elements.WhereElementIsNotElementType().WherePasses(new ElementClassFilter(typeof(View), true));
+  BuiltInCategory? category = null;
+  if (categoryText != "")
+  {
+      category = ParseCategory(categoryText);
+      elements.OfCategory(category.Value);
+  }
+  if (levelName != "")
+  {
+      var level = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+          .FirstOrDefault(l => l.Name == levelName);
+      if (level == null)
+          throw new InvalidOperationException("REFUSED: Unknown level " + levelName + ". Choose an existing level.");
+      elements.WherePasses(new ElementLevelFilter(level.Id));
+  }
+  if (typeName != "")
+  {
+      var types = new FilteredElementCollector(document).WhereElementIsElementType();
+      if (category.HasValue) types.OfCategory(category.Value);
+      var filters = new List<ElementFilter>();
+      var parameter = new ElementId(BuiltInParameter.ELEM_TYPE_PARAM);
+      foreach (var type in types.OfType<ElementType>())
+      {
+          CheckTime();
+          if (type.Name == typeName || type.FamilyName + ": " + type.Name == typeName)
+              filters.Add(new ElementParameterFilter(ParameterFilterRuleFactory.CreateEqualsRule(parameter, type.Id)));
+      }
+      if (filters.Count == 0)
+          throw new InvalidOperationException("REFUSED: Unknown type " + typeName + ". Check the category and use an exact name from list_types.");
+      elements.WherePasses(filters.Count == 1 ? filters[0] : new LogicalOrFilter(filters));
+  }
+  int count = elements.GetElementCount();
+  if (count > 5000)
+      throw new InvalidOperationException("REFUSED: " + count + " elements match. Narrow the range or category to at most 5000.");
+  if (count == 0)
+      throw new InvalidOperationException("REFUSED: No elements match. Check the category and range or filter.");
+  var selection = new UIDocument(document).Selection;
+  selection.SetElementIds(elements.ToElementIds());
+  return new { Status = "Selected", Count = selection.GetElementIds().Count };
+parameters:
+  - name: category
+    type: string
+    description: "Optional BuiltInCategory identifier such as OST_Walls"
+    source: designer
+    required: false
+    default: ""
+  - name: type_name
+    type: string
+    description: "Exact type name or Family: Type, as listed by list_types for the requested category"
+    source: default
+    required: false
+    default: ""
+  - name: level_name
+    type: string
+    description: "Exact name of the instance's associated level"
+    source: answer
+    choices_from: levels
+    required: false
+    default: ""
+  - name: scope
+    type: string
+    description: "view (current view) or model (active document)"
+    source: default
+    required: false
+    default: "view"
+preconditions:
+  - text: "Supply at least one filter. Level filtering uses the associated level."
+applies_when:
+  - "select by filter"
+validator: null
+fixtures:
+  - name: visible_walls
+    params: {"category":"OST_Walls"}
+    expect: {"Status":"Selected"}
+  - name: model_doors
+    params: {"category":"OST_Doors","type_name":"Single Door: Narrow","level_name":"L2","scope":"model"}
+    expect: {"Status":"Selected"}

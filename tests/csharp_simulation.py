@@ -10,6 +10,10 @@ from revit_bridge.capabilities.store import ToolStore
 
 
 def simulate(tmp_path, fixture_dir, pack_name, scenarios):
+    return simulate_packs(tmp_path, fixture_dir, {pack_name: scenarios})
+
+
+def simulate_packs(tmp_path, fixture_dir, packs):
     dotnet = shutil.which("dotnet")
     if not dotnet:
         if os.environ.get("CI"):
@@ -39,10 +43,11 @@ def simulate(tmp_path, fixture_dir, pack_name, scenarios):
 
     store = ToolStore(user_dir=tmp_path / "user")
     methods = []
-    for name, params in scenarios.items():
-        code, errors = store.render(pack_name, params)
-        assert not errors and code
-        methods.append(f"public static object {name}(Document document) {{\n{code}\n}}")
+    for pack_name, scenarios in packs.items():
+        for name, params in scenarios.items():
+            code, errors = store.render(pack_name, params)
+            assert not errors and code
+            methods.append(f"public static object {name}(Document document) {{\n{code}\n}}")
     source = "using System;\nusing System.Linq;\nusing System.Collections.Generic;\nstatic class Rendered {\n"
     (tmp_path / "Rendered.cs").write_text(source + "\n".join(methods) + "\n}", encoding="utf-8")
     run("build", project.name, "--configfile", "NuGet.Config", "-v:q")

@@ -123,7 +123,8 @@ def test_catalogue_and_details_declare_exactly_the_instance_id_parameters(tmp_pa
             if choice == "elements" or (choice or "").startswith("elements:"):
                 declared[tool["name"], parameter["name"]] = choice
     csv = ("change_type", "change_type_by_name", "copy_elements", "delete_elements", "mirror_elements",
-           "move_elements", "rotate_elements", "set_parameter")
+           "move_elements", "rotate_elements", "set_parameter", "select_elements", "select_in_box",
+           "zoom_to_elements", "set_section_box")
     walls = ("create_door", "create_door_on_wall", "create_window", "create_window_on_wall")
     assert declared == {
         **{(name, "element_ids"): "elements" for name in csv},

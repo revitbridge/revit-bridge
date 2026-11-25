@@ -664,9 +664,12 @@ def test_tool_names_and_the_check_code_schema():
         "get_project_snapshot", "query", "missing_params", "reconcile", "confirm_spec", "check_code",
         "dry_run_code", "execute_code", "solidify_tool", "list_tools", "get_tool_choices", "run_tool", "evidence",
         "validate", "get_guidance", "plan_verification", "verify_execution", "test_addin_command", "zoom_view",
-        "capture_view",
+        "capture_view", "open_view", "capture_view_image",
     }
-    assert len(tools) == 20
+    assert tools["open_view"].description.startswith("View only.")
+    assert tools["open_view"].meta == {"ui_only": True}
+    assert tools["capture_view_image"].meta == {"read_only": True}
+    assert tools["capture_view_image"].annotations.read_only_hint is True
     check = tools["check_code"]
     assert check.annotations.model_dump(by_alias=True)["readOnlyHint"] is True
     assert set(check.input_schema["properties"]) == {"code", "parameters"} and check.input_schema["required"] == ["code"]

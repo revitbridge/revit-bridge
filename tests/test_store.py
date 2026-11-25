@@ -21,6 +21,8 @@ BUILTIN_NAMES = {
     "create_grids_array", "copy_elements", "rotate_elements", "mirror_elements", "delete_elements",
     "create_floor_by_points", "create_ceiling_by_points", "create_roof_by_points",
     "create_door_on_wall", "create_window_on_wall", "change_type_by_name",
+    "select_elements", "select_in_box", "select_by_filter", "clear_selection",
+    "zoom_to_elements", "set_view_orientation", "set_section_box",
 }
 # Demo artefacts with type, level and coordinates hard-coded in C#: kept as examples, never loaded.
 # create_room is also a built-in name now; the example of that name must still not be what loads.
@@ -552,7 +554,7 @@ def test_every_built_in_fixture_renders_as_before(tmp_path):
                 expected = expected.replace("{" + key + "}", str(value))
             assert code == expected, tool.name
             rendered += 1
-    assert rendered == 62
+    assert rendered == 79
 
 
 def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):

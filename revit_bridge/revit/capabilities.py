@@ -23,6 +23,7 @@ open document on the add-in side.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 import weakref
 from dataclasses import dataclass, field
@@ -38,6 +39,39 @@ DISCOVERY_TIMEOUT = 10.0
 SUPPORTED = "supported"
 UNSUPPORTED = "unsupported"
 UNKNOWN = "unknown"
+
+
+class MethodUnavailable(RuntimeError):
+    """A command absent from discovery, or rejected by the add-in with -32601."""
+
+    def __init__(self, method: str):
+        super().__init__(f"To use {method}, upgrade the add-in to <version placeholder> or later.")
+
+
+async def send_listed_command(client, method: str, params: dict, *, timeout: float | None = None):
+    """Dispatch once, after discovery. Some device clients own their transport deadline."""
+    caps = await discover(client)
+    if caps.state == UNKNOWN:
+        if caps.error_kind == "unreachable":
+            raise ConnectionError(caps.reason)
+        raise RuntimeError(f"Cannot read add-in capabilities ({caps.error_kind}): {caps.reason}")
+    if not caps.has_method(method):
+        raise MethodUnavailable(method)
+    kwargs = {}
+    if timeout is not None:
+        try:
+            inspect.signature(client.send_command).bind(method, params, timeout=timeout)
+        except (TypeError, ValueError):
+            pass  # This transport accepts only (method, params).
+        else:
+            kwargs["timeout"] = timeout
+    response = await client.send_command(method, params, **kwargs)
+    if not response.success:
+        if response.error_code == METHOD_NOT_FOUND:
+            forget(client)
+            raise MethodUnavailable(method)
+        raise RuntimeError(response.error or f"{method} failed")
+    return response.result
 
 
 def _cjk(*code_points: int) -> str:
