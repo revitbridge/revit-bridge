@@ -77,7 +77,7 @@ code_template: |
       original.Add(sample);
   }
   XYZ offset = new XYZ(Feet("{x}"), Feet("{y}"), Feet("{z}"));
-  if (offset.IsZeroLength())
+  if (offset.GetLength() < UnitUtils.ConvertToInternalUnits(0.1, UnitTypeId.Millimeters))
       throw new InvalidOperationException("REFUSED: Give a nonzero copy vector.");
   Transform transform = Transform.CreateTranslation(offset);
   ICollection<ElementId> resultIds;

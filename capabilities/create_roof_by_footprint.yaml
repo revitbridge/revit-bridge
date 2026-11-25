@@ -2,7 +2,12 @@ schema_version: 1
 name: create_roof_by_footprint
 display_name: Create Roof By Footprint
 description: >-
-  Create one rectangular roof of a named type on a level using its corner, width and length in mm. Slope is measured in degrees.
+  Create one flat footprint roof on a level from a rectangle given by its corner
+  (x, y) and its width along X and length along Y, all in mm. No edge defines a slope; change
+  slopes in Revit afterwards. The roof type is a roof type name; when two families have a type
+  of that name, give it as "Family: Type". Refusals (no such level or type, a width or length
+  that is not more than zero) stop the run and change nothing.
+  Use offset to shift the roof above the level (mm) and slope to pitch its edges (degrees).
 version: "1.0.0"
 revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |

@@ -53,6 +53,7 @@ code_template: |
       Autodesk.Revit.DB.Structure.StructuralType.Column);
   if (column == null) throw new InvalidOperationException("Revit returned no column.");
   string baseText = "{base_offset}", topText = "{top_offset}";
+  if (top != null && topText == "") topText = "0";
   if (top != null || topText != "" || baseText != "")
   {
       Func<BuiltInParameter, double> offset = key =>
@@ -75,7 +76,38 @@ code_template: |
   double angle = number("{rotation}") * Math.PI / 180;
   if (angle != 0)
       ElementTransformUtils.RotateElement(document, column.Id, Line.CreateBound(location, location + XYZ.BasisZ), angle);
-  return new { ElementId = column.Id.Value, Status = "Created", FamilyType = symbol.Name, Level = level.Name };
+  document.Regenerate();
+  Level ReadLevel(BuiltInParameter key)
+  {
+      Parameter parameter = column.get_Parameter(key);
+      return parameter != null && parameter.HasValue ? document.GetElement(parameter.AsElementId()) as Level : null;
+  }
+  double? ReadOffset(BuiltInParameter key)
+  {
+      Parameter parameter = column.get_Parameter(key);
+      return parameter != null && parameter.HasValue ? (double?)parameter.AsDouble() : null;
+  }
+  Level actualBase = ReadLevel(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM);
+  Level actualTop = ReadLevel(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM);
+  double? actualBaseOffset = ReadOffset(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+  double? actualTopOffset = ReadOffset(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM);
+  double? height = actualTop?.ProjectElevation + actualTopOffset - actualBase?.ProjectElevation - actualBaseOffset;
+  if ((top != null && actualTop?.Id != top.Id)
+      || (topText != "" && (!actualTopOffset.HasValue || Math.Abs(actualTopOffset.Value - feet(topText)) > 1e-8))
+      || (baseText != "" && (!actualBaseOffset.HasValue || Math.Abs(actualBaseOffset.Value - feet(baseText)) > 1e-8)))
+      throw new InvalidOperationException("Column constraint read-back failed.");
+  if (height.HasValue && height.Value <= 0)
+      throw new InvalidOperationException("REFUSED: Effective column top must be above its base.");
+  if (!height.HasValue)
+  {
+      // Families without level constraints can still expose their physical height.
+      var box = column.get_BoundingBox(null);
+      if (box != null) height = box.Max.Z - box.Min.Z;
+  }
+  double? Mm(double? value) => value.HasValue
+      ? (double?)UnitUtils.ConvertFromInternalUnits(value.Value, UnitTypeId.Millimeters) : null;
+  return new { ElementId = column.Id.Value, Status = "Created", FamilyType = symbol.Name, Level = level.Name,
+      TopLevel = actualTop?.Name, TopOffsetMm = Mm(actualTopOffset), HeightMm = Mm(height) };
 parameters:
   - name: type_name
     type: string
@@ -133,10 +165,13 @@ preconditions:
     value: 1
   - kind: category_present
     category: OST_StructuralColumns
+  - text: "structural column families must be loaded"
 not_for:
   - "architectural columns"
 applies_when:
-  - "create structural column"
+  - "structural column at coordinates"
+  - "create column"
+  - "place column"
 validator:
   kind: created_ids
   category: OST_StructuralColumns

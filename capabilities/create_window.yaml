@@ -2,9 +2,13 @@ schema_version: 1
 name: create_window
 display_name: Create Window
 description: >-
-  Place one window in a basic wall at the wall point nearest the given x,y.
-  Use a loaded type name or Family: Type. The wall's base level is used unless another level is given.
-  Dimensions are in mm. Set flip to reverse facing.
+  Place one window in a basic wall, at the point of the wall nearest to (x, y) in mm,
+  with its sill the given height (mm) above the wall's base level. The window type is a loaded
+  window type name; when two families have a type of that name, give it as "Family: Type".
+  Refusals (no such wall, curtain or stacked wall, no such or ambiguous type, a point off the
+  wall or too close to its ends, a window that would stick out of the wall) stop the run and
+  change nothing.
+  The optional level_name sets the level for sill height and flip reverses the window facing.
 version: "1.0.0"
 revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |

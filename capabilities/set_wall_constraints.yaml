@@ -66,11 +66,27 @@ code_template: |
           throw new InvalidOperationException("REFUSED: The wall has no value for " + key);
       return p;
   };
-  Level baseLevel = baseName == "" ? document.GetElement(current(BuiltInParameter.WALL_BASE_CONSTRAINT).AsElementId()) as Level : levelByName(baseName);
-  if (baseLevel == null) throw new InvalidOperationException("REFUSED: Cannot resolve the wall base level.");
-  double baseZ = baseLevel.ProjectElevation + (baseText == "" ? current(BuiltInParameter.WALL_BASE_OFFSET).AsDouble() : feet(baseText));
+  Level oldBase = document.GetElement(current(BuiltInParameter.WALL_BASE_CONSTRAINT).AsElementId()) as Level;
+  if (oldBase == null) throw new InvalidOperationException("REFUSED: Cannot resolve the wall base level.");
+  double oldBaseOffset = current(BuiltInParameter.WALL_BASE_OFFSET).AsDouble();
+  double oldBaseZ = oldBase.ProjectElevation + oldBaseOffset;
+  ElementId oldTopId = current(BuiltInParameter.WALL_HEIGHT_TYPE).AsElementId();
+  double oldTopZ;
+  double oldTopOffset = 0;
+  if (oldTopId == ElementId.InvalidElementId)
+      oldTopZ = oldBaseZ + current(BuiltInParameter.WALL_USER_HEIGHT_PARAM).AsDouble();
+  else
+  {
+      Level oldTop = document.GetElement(oldTopId) as Level;
+      if (oldTop == null) throw new InvalidOperationException("REFUSED: Cannot resolve the wall top level.");
+      oldTopOffset = current(BuiltInParameter.WALL_TOP_OFFSET).AsDouble();
+      oldTopZ = oldTop.ProjectElevation + oldTopOffset;
+  }
+  Level baseLevel = baseName == "" ? oldBase : levelByName(baseName);
+  double baseZ = baseLevel.ProjectElevation + (baseText == "" ? oldBaseOffset : feet(baseText));
   ElementId topId = topName != "" ? levelByName(topName).Id
-      : heightText != "" ? ElementId.InvalidElementId : current(BuiltInParameter.WALL_HEIGHT_TYPE).AsElementId();
+      : heightText != "" ? ElementId.InvalidElementId : oldTopId;
+  if (topName != "" && topText == "") topText = "0";
   double topZ;
   if (topId == ElementId.InvalidElementId)
   {
@@ -81,23 +97,26 @@ code_template: |
   {
       Level topLevel = document.GetElement(topId) as Level;
       if (topLevel == null) throw new InvalidOperationException("REFUSED: Cannot resolve the wall top level.");
-      // A previously unconnected wall has no effective top offset.
-      double previous = current(BuiltInParameter.WALL_HEIGHT_TYPE).AsElementId() == ElementId.InvalidElementId
-          ? 0 : current(BuiltInParameter.WALL_TOP_OFFSET).AsDouble();
-      topZ = topLevel.ProjectElevation + (topText == "" ? previous : feet(topText));
+      topZ = topLevel.ProjectElevation + (topText == "" ? oldTopOffset : feet(topText));
   }
   if (topZ <= baseZ) throw new InvalidOperationException("REFUSED: Effective wall top must be above its base.");
-  if (baseName != "") setId(wall, BuiltInParameter.WALL_BASE_CONSTRAINT, baseLevel.Id);
-  if (baseText != "") setLength(wall, BuiltInParameter.WALL_BASE_OFFSET, feet(baseText));
-  if (topName != "") setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, topId);
-  if (topText != "") setLength(wall, BuiltInParameter.WALL_TOP_OFFSET, feet(topText));
-  if (heightText != "")
+  void WriteBase()
   {
-      double value = feet(heightText);
-      if (value <= 0) throw new InvalidOperationException("REFUSED: Height must be positive.");
-      setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, ElementId.InvalidElementId);
-      setLength(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM, value);
+      if (baseName != "") setId(wall, BuiltInParameter.WALL_BASE_CONSTRAINT, baseLevel.Id);
+      if (baseText != "") setLength(wall, BuiltInParameter.WALL_BASE_OFFSET, feet(baseText));
   }
+  void WriteTop()
+  {
+      if (topName != "") setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, topId);
+      if (topText != "") setLength(wall, BuiltInParameter.WALL_TOP_OFFSET, feet(topText));
+      if (heightText != "")
+      {
+          setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, ElementId.InvalidElementId);
+          setLength(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM, feet(heightText));
+      }
+  }
+  if (baseZ >= oldTopZ) { WriteTop(); WriteBase(); }
+  else { WriteBase(); WriteTop(); }
   document.Regenerate();
   Func<BuiltInParameter, string, bool> matchesOffset = (key, text) =>
   {
@@ -113,17 +132,23 @@ code_template: |
       throw new InvalidOperationException("Wall constraint read-back failed.");
   double actualBaseZ = baseLevel.ProjectElevation + current(BuiltInParameter.WALL_BASE_OFFSET).AsDouble();
   double actualTopZ;
+  Level actualTopLevel = null;
+  double? actualTopOffset = null;
   if (actualTopId == ElementId.InvalidElementId)
       actualTopZ = actualBaseZ + current(BuiltInParameter.WALL_USER_HEIGHT_PARAM).AsDouble();
   else
   {
-      Level actualTopLevel = document.GetElement(actualTopId) as Level;
+      actualTopLevel = document.GetElement(actualTopId) as Level;
       if (actualTopLevel == null) throw new InvalidOperationException("Cannot read back the wall top level.");
-      actualTopZ = actualTopLevel.ProjectElevation + current(BuiltInParameter.WALL_TOP_OFFSET).AsDouble();
+      actualTopOffset = current(BuiltInParameter.WALL_TOP_OFFSET).AsDouble();
+      actualTopZ = actualTopLevel.ProjectElevation + actualTopOffset.Value;
   }
   if (actualTopZ <= actualBaseZ)
       throw new InvalidOperationException("REFUSED: The regenerated wall top must be above its base.");
-  return new { Status = "Changed", ElementId = wall.Id.Value, HeightIgnored = heightIgnored };
+  double Mm(double value) => UnitUtils.ConvertFromInternalUnits(value, UnitTypeId.Millimeters);
+  return new { Status = "Changed", ElementId = wall.Id.Value, HeightIgnored = heightIgnored,
+      TopLevel = actualTopLevel?.Name, TopOffsetMm = actualTopOffset.HasValue ? (double?)Mm(actualTopOffset.Value) : null,
+      HeightMm = Mm(actualTopZ - actualBaseZ) };
 parameters:
   - name: element_id
     type: integer

@@ -2,8 +2,13 @@ schema_version: 1
 name: create_ceiling
 display_name: Create Ceiling
 description: >-
-  Create one rectangular ceiling on Revit 2023 or later using a named type, level, corner,
-  width and length. Dimensions and height above the level are in mm.
+  Create one ceiling on a level from a rectangle given by its corner (x, y) and its
+  width along X and length along Y, at a height above the level, all in mm. Needs Revit 2023 or
+  later (the API cannot create ceilings before 2022, and the add-in has no 2022 build). The
+  ceiling type is a ceiling type name;
+  when two families have a type of that name, give it as "Family: Type". Refusals (no such level
+  or type, a width or length that is not more than zero, a negative height) stop the run and
+  change nothing.
 version: "1.0.0"
 revit_versions: ["2023", "2024", "2025", "2026", "2027"]
 code_template: |

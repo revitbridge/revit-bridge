@@ -2,9 +2,12 @@ schema_version: 1
 name: create_door
 display_name: Create Door
 description: >-
-  Place one door in a basic wall at the wall point nearest the given x,y.
-  Use a loaded type name or Family: Type. The wall's base level is used unless another level is given.
-  Dimensions are in mm. Set flip to reverse facing.
+  Place one door in a basic wall, at the point of the wall nearest to (x, y) in mm,
+  on the wall's base level. The door type is a loaded door type name; when two families have a
+  type of that name, give it as "Family: Type". Refusals (no such wall, curtain or stacked
+  wall, no such or ambiguous type, a point off the wall or too close to its ends for the
+  door's width) stop the run and change nothing.
+  The optional level_name chooses the placement level and flip reverses the door facing.
 version: "1.0.0"
 revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |

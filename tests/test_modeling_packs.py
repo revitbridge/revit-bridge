@@ -108,3 +108,25 @@ def test_reference_wall_defaults_to_the_anchors_model_elevation(tmp_path):
         assert 'baseElevation = levelName == "" ? point.Z : level.ProjectElevation' in code
         assert "WALL_BASE_OFFSET, baseElevation - level.ProjectElevation" in code
         assert "top.ProjectElevation <= baseElevation" in code
+
+
+def test_polygon_ceiling_requires_height_and_checks_it_before_creation(tmp_path):
+    store = ToolStore(user_dir=tmp_path / "user")
+    pack = store.load("create_ceiling_by_points")
+    params = dict(pack.fixtures[0]["params"])
+    params.pop("height")
+    assert store.render(pack.name, params)[1]
+    code, errors = store.render(pack.name, {**params, "height": -1})
+    assert not errors and 'toFeet("Height above the level", "-1")' in code
+    assert code.index("if (height < 0)") < code.index("Ceiling.Create(document")
+
+
+@pytest.mark.parametrize("name", ["create_wall_from_element", "create_walls_by_points"])
+def test_referenced_and_path_walls_bind_top_even_with_negative_height(name, tmp_path):
+    store = ToolStore(user_dir=tmp_path / "user")
+    pack = store.load(name)
+    params = {**pack.fixtures[0]["params"], "top_level_name": "L2", "height": -1}
+    code, errors = store.render(name, params)
+    assert not errors and 'topName = "L2", heightText = "-1"' in code
+    assert 'top != null || heightText == "" ? "3000" : heightText' in code
+    assert "HeightIgnored = heightIgnored" in code

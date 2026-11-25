@@ -1,8 +1,9 @@
 schema_version: 1
 name: create_floor
 display_name: Create Floor
-description: >-
-  Create one rectangular floor of a named type on a level using its corner, width and length in mm.
+description: Create a rectangular floor slab of a named floor type on a level, from an
+  origin corner and a width/length.
+  Use offset for the height above the level (mm) and structural for a structural slab.
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |

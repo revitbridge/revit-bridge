@@ -6,9 +6,7 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
-### Modeling tools
-
-#### Added
+### Added
 
 - Inspect model instances with `list_elements`, `get_element_geometry` and
   `get_element_parameters`. The parameter listing includes raw and formatted values.
@@ -24,16 +22,30 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   each instance. `delete_elements` checks the supplied IDs and reports auxiliary
   elements removed by Revit.
 
-#### Changed
+### Changed
 
 - Existing modelling tools retain their 0.9.1 required parameters and defaults.
-  A wall's top-level constraint takes precedence over its unconnected height.
+  The following inputs are optional:
+  - `create_wall` accepts `type_name`, `top_level_name`, `top_offset`, `base_offset`,
+    `structural` and `location_line`; `create_structural_column` accepts
+    `top_level_name`, `top_offset`, `base_offset` and `rotation`.
+  - `create_beam` accepts `start_offset`, `end_offset` and `structural_usage`.
+    `create_level` accepts `create_plan_view`.
+  - `create_floor` accepts `offset` and `structural`; `create_roof_by_footprint`
+    accepts `offset` and `slope`. Both `create_door` and `create_window` accept
+    `level_name` and `flip`.
+  - `change_type`, `move_elements` and `set_parameter` accept `element_ids` for
+    explicit targets. `change_type` also accepts 64-bit type IDs.
+- A wall's top-level constraint takes precedence over its unconnected height.
+  `create_wall` refuses a nonpositive unconnected height that previously passed
+  silently. `create_floor` refuses zero dimensions before creation, where the
+  previous version reported a failure.
 - Name-based placement refuses ambiguous types and accepts a qualified
   `Family: Type` name. A missing level or type in wall, floor, column or beam
   creation now produces a `REFUSED` result where those tools previously returned
   `Status="Error"`.
 
-#### Fixed
+### Fixed
 
 - Parameter read-back compares element IDs as 64-bit integers. Adjacent IDs
   above the exact precision of a floating-point number are now distinguished.

@@ -36,13 +36,15 @@ code_template: |
   const double ReadBackTolerance = 1e-6;
 
   // 1. The host wall, by id: it must exist, be a wall, and be a basic wall with a location line.
-  int wallNumber;
-  if (!int.TryParse(wallText, System.Globalization.NumberStyles.Integer, invariant, out wallNumber) || wallNumber <= 0)
-      throw new InvalidOperationException("REFUSED: The host wall must be given by its element id (a whole number from 1 to 2147483647), got \"" + wallText + "\".");
-  // ElementId(int) on 2021-2023, obsolete on 2024-2025, gone from 2026 (the int then converts to
-  // ElementId(Int64)): one line for every year, without the 2024-2025 warning.
+  long wallNumber;
+  if (!long.TryParse(wallText, System.Globalization.NumberStyles.None, invariant, out wallNumber) || wallNumber <= 0)
+      throw new InvalidOperationException("REFUSED: Supply a positive host wall id.");
+  // The enum's underlying integer and the ElementId constructor widened together in 2024.
+  var nativeId = (BuiltInCategory)wallNumber - (BuiltInCategory)0;
+  if ((long)nativeId != wallNumber)
+      throw new InvalidOperationException("REFUSED: The host wall id exceeds this Revit version's range.");
   #pragma warning disable 618
-  Wall wall = document.GetElement(new ElementId(wallNumber)) as Wall;
+  Wall wall = document.GetElement(new ElementId(nativeId)) as Wall;
   #pragma warning restore 618
   if (wall == null)
       throw new InvalidOperationException("REFUSED: There is no wall with id " + wallText + " in this model. Pick a wall from the list.");
@@ -99,12 +101,14 @@ code_template: |
   // coordinates (the box's) whatever the level type's elevation base.
   Parameter heightParameter = lengthOf(symbol, BuiltInParameter.WINDOW_HEIGHT, BuiltInParameter.FAMILY_HEIGHT_PARAM);
   BoundingBoxXYZ wallBox = wall.get_BoundingBox(null);
+  if (wallBox == null)
+      throw new InvalidOperationException("REFUSED: Cannot verify the requested window elevation on the host wall.");
   double bottom = level.ProjectElevation + sill;
-  if (wallBox != null && bottom < wallBox.Min.Z - tolerance)
+  if (bottom < wallBox.Min.Z - tolerance)
       throw new InvalidOperationException("REFUSED: A sill " + toMm(sill) + " mm above level " + level.Name + " is below the bottom of wall " + wallText + ".");
-  if (wallBox != null && bottom >= wallBox.Max.Z - tolerance)
+  if (bottom >= wallBox.Max.Z - tolerance)
       throw new InvalidOperationException("REFUSED: A sill " + toMm(sill) + " mm above level " + level.Name + " is at or above the top of wall " + wallText + ". Lower the sill.");
-  if (wallBox != null && heightParameter != null && bottom + heightParameter.AsDouble() > wallBox.Max.Z + tolerance)
+  if (heightParameter != null && bottom + heightParameter.AsDouble() > wallBox.Max.Z + tolerance)
       throw new InvalidOperationException("REFUSED: The window does not fit: its head would be " + toMm(bottom + heightParameter.AsDouble() - wallBox.Max.Z)
           + " mm above the top of wall " + wallText + ". Lower the sill or pick a shorter type.");
 
@@ -150,7 +154,7 @@ code_template: |
       YMm = toMm(onWall.Y),
       SillHeightMm = toMm(sillParameter.AsDouble()),
       WidthChecked = widthParameter != null,
-      HeightChecked = wallBox != null && heightParameter != null
+      HeightChecked = heightParameter != null
   };
 parameters:
   - name: wall_id

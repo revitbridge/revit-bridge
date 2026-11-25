@@ -3,12 +3,12 @@ name: delete_elements
 display_name: Delete Elements
 description: >-
   Delete the supplied ids (at most 100). Every supplied element is checked
-  first; pinned elements, element types (deleting one deletes all its instances), views and
-  levels stop the run and nothing is deleted. Unlisted dependent model hosts and family instances
-  stop the deletion. AlsoDeleted lists the first 100 additional ids (such as sketches and tags);
-  AlsoDeletedCount reports the total. If classification exceeds the time budget,
-  the operation rolls back. Returns
-  the ids deleted; there is no validator, the tool checks that every one is gone.
+  first. Pinned elements, element types, views and levels stop the run. Nested family
+  components, curtain panels and mullions, stacked wall members and model group members
+  may be removed with their owner. Other dependent model elements and unclassified
+  dependencies stop the deletion. AlsoDeleted lists the first 100 additional ids and
+  AlsoDeletedCount reports the total. If classification exceeds the time budget, the
+  operation rolls back. The tool checks that every supplied id is gone.
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
@@ -17,33 +17,28 @@ code_template: |
   // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
   var invariant = System.Globalization.CultureInfo.InvariantCulture;
   Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
-  const int MaxSelected = 100;
+  const int MaxRequested = 100;
 
   string idsText = "{element_ids}";
-  List<ElementId> selected;
   if (string.IsNullOrWhiteSpace(idsText))
       throw new InvalidOperationException("REFUSED: Give the element ids to delete.");
+  string[] tokens = idsText.Split(',');
+  if (tokens.Length > MaxRequested)
+      throw new InvalidOperationException("REFUSED: Give at most 100 element ids.");
+  var inputIds = new List<ElementId>();
+  var requested = new HashSet<ElementId>();
+  foreach (string part in tokens)
   {
-      selected = new List<ElementId>();
-      string[] parts = idsText.Split(',');
-      if (parts.Length > MaxSelected)
-          throw new InvalidOperationException("REFUSED: Give at most 100 element ids.");
-      foreach (string part in parts)
-      {
-          long number;
-          if (!long.TryParse(part.Trim(), System.Globalization.NumberStyles.None, invariant, out number) || number <= 0)
-              throw new InvalidOperationException("REFUSED: Invalid element id " + part + ".");
-          #pragma warning disable 618
-          var id = new ElementId(number);
-          #pragma warning restore 618
-          if (selected.Contains(id))
-              throw new InvalidOperationException("REFUSED: Duplicate element id " + part + ".");
-          selected.Add(id);
-      }
+      long number;
+      if (!long.TryParse(part.Trim(), System.Globalization.NumberStyles.None, invariant, out number) || number <= 0)
+          throw new InvalidOperationException("REFUSED: Invalid element id " + part + ".");
+      var id = new ElementId(number);
+      if (!requested.Add(id))
+          throw new InvalidOperationException("REFUSED: Duplicate element id " + part + ".");
+      inputIds.Add(id);
   }
-  var requested = new HashSet<ElementId>(selected);
   var problems = new List<string>();
-  foreach (ElementId id in selected)
+  foreach (ElementId id in inputIds)
   {
       Element element = document.GetElement(id);
       if (element == null) { problems.Add(idOf(id) + " no longer exists"); continue; }
@@ -53,58 +48,84 @@ code_template: |
       if (element.Pinned) { problems.Add(idOf(id) + " is pinned; unpin it in Revit first"); continue; }
   }
   if (problems.Count > 0)
-      throw new InvalidOperationException("REFUSED: Nothing was deleted: " + problems.Count + " of " + selected.Count + " supplied ids cannot be deleted by this tool. "
+      throw new InvalidOperationException("REFUSED: Nothing was deleted: " + problems.Count + " of " + inputIds.Count + " supplied ids cannot be deleted by this tool. "
           + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
 
-  // Deleted elements cannot be opened afterwards. Snapshot model host/instance IDs with quick
-  // filters before the single deletion. Only candidates outside Settings.Categories need opening.
   var clock = System.Diagnostics.Stopwatch.StartNew();
   void CheckBudget()
   {
       if (clock.ElapsedMilliseconds >= 250)
-          throw new InvalidOperationException("REFUSED: The model-instance check exceeded its time budget. No elements were deleted.");
+          throw new InvalidOperationException("REFUSED: The dependency check exceeded its time budget.");
   }
-  var knownCategories = new List<ElementId>();
-  var modelCategories = new List<ElementId>();
-  foreach (Category category in document.Settings.Categories)
+  // Only these ownership relationships authorize removing model components with an input.
+  var owned = new HashSet<ElementId>(requested);
+  var pending = new Queue<ElementId>(inputIds);
+  void AddParts(IEnumerable<ElementId> parts)
+  {
+      foreach (var id in parts)
+      {
+          CheckBudget();
+          if (owned.Add(id)) pending.Enqueue(id);
+      }
+  }
+  while (pending.Count > 0)
   {
       CheckBudget();
-      if (category.CategoryType == CategoryType.Model) modelCategories.Add(category.Id);
-      knownCategories.Add(category.Id);
-  }
-  var modelInstances = new HashSet<ElementId>();
-  var unclassified = new HashSet<ElementId>();
-  using (var classes = new ElementMulticlassFilter(new List<Type> { typeof(HostObject), typeof(FamilyInstance) }))
-  {
-      if (modelCategories.Count != 0)
-      using (var filter = new ElementMulticategoryFilter(modelCategories))
-      using (var collection = new FilteredElementCollector(document))
-      using (var ids = collection.WherePasses(classes).WherePasses(filter).GetElementIdIterator())
+      Element owner = document.GetElement(pending.Dequeue());
+      if (owner is FamilyInstance family) AddParts(family.GetSubComponentIds());
+      if (owner is Wall wall)
       {
-          while (ids.MoveNext()) { CheckBudget(); modelInstances.Add(ids.Current); }
-      }
-      using (var collection = new FilteredElementCollector(document))
-      using (var outside = knownCategories.Count == 0 ? null : new ElementMulticategoryFilter(knownCategories, true))
-      {
-          collection.WherePasses(classes);
-          if (outside != null) collection.WherePasses(outside);
-          foreach (Element element in collection)
+          if (wall.IsStackedWall) AddParts(wall.GetStackedWallMemberIds());
+          CurtainGrid grid = wall.CurtainGrid;
+          if (grid != null)
           {
-              CheckBudget();
-              ElementId id = element.Id;
-              try
-              {
-                  Category category = element.Category;
-                  if (category == null) unclassified.Add(id);
-                  else if (category.CategoryType == CategoryType.Model) modelInstances.Add(id);
-              }
-              catch (Autodesk.Revit.Exceptions.InvalidOperationException) { unclassified.Add(id); }
+              AddParts(grid.GetPanelIds());
+              AddParts(grid.GetMullionIds());
           }
+      }
+      if (owner is Group group && group.Category?.Id.Value == (long)BuiltInCategory.OST_IOSModelGroups)
+          AddParts(group.GetMemberIds());
+  }
+
+  // Revit's actual cascade can include more than a parent's logical children.
+  // Classify reachable dependencies while they still exist. An unexpected id stays unknown.
+  var modelDependents = new HashSet<ElementId>();
+  var allowedExtras = new HashSet<ElementId>(owned);
+  var visited = new HashSet<ElementId>(owned);
+  pending = new Queue<ElementId>(owned);
+  while (pending.Count > 0)
+  {
+      CheckBudget();
+      Element parent = document.GetElement(pending.Dequeue());
+      if (parent == null) continue;
+      foreach (ElementId id in parent.GetDependentElements(null))
+      {
+          CheckBudget();
+          if (!visited.Add(id)) continue;
+          Element dependent = document.GetElement(id);
+          if (dependent == null) continue;
+          pending.Enqueue(id);
+          // A Revit Sketch identifies its own role even when its category is unavailable.
+          if (dependent is Sketch)
+          {
+              allowedExtras.Add(id);
+              continue;
+          }
+          CategoryType categoryType;
+          try
+          {
+              categoryType = dependent.Category?.CategoryType ?? CategoryType.Invalid;
+          }
+          catch (Autodesk.Revit.Exceptions.InvalidOperationException) { continue; }
+          if (categoryType == CategoryType.Model) modelDependents.Add(id);
+          else if (categoryType == CategoryType.Annotation || categoryType == CategoryType.AnalyticalModel
+              || categoryType == CategoryType.Internal)
+              allowedExtras.Add(id);
       }
   }
   CheckBudget();
   ICollection<ElementId> deleted;
-  try { deleted = document.Delete(selected); }
+  try { deleted = document.Delete(inputIds); }
   catch (Autodesk.Revit.Exceptions.ArgumentException ex) when (!(ex is Autodesk.Revit.Exceptions.ArgumentNullException))
   {
       throw new InvalidOperationException("REFUSED: Revit would not delete the supplied ids: " + ex.Message);
@@ -117,25 +138,26 @@ code_template: |
   {
       CheckBudget();
       if (missing.Remove(id)) continue;
-      if (modelInstances.Contains(id))
-          throw new InvalidOperationException("REFUSED: Deletion also removes model instance " + id + "; include its id explicitly.");
-      if (unclassified.Contains(id))
-          throw new InvalidOperationException("Could not verify the category of dependent instance " + id + "; rolling back.");
+      if (modelDependents.Contains(id))
+          throw new InvalidOperationException("REFUSED: Deletion also removes model element " + id + "; include its id explicitly.");
+      if (!allowedExtras.Contains(id))
+          throw new InvalidOperationException("REFUSED: Could not classify dependent element " + id + "; rolling back.");
       extraCount++;
       if (also.Count < 100) also.Add(idOf(id));
   }
   if (missing.Count > 0)
       throw new InvalidOperationException("The deletion result did not contain every requested id.");
-  var survivors = selected.Where(id => document.GetElement(id) != null).ToList();
+  var survivors = inputIds.Where(id => document.GetElement(id) != null).ToList();
   if (survivors.Count > 0)
-      throw new InvalidOperationException("Revit did not delete " + survivors.Count + " selected element(s) ("
+      throw new InvalidOperationException("Revit did not delete " + survivors.Count + " requested element(s) ("
           + string.Join(", ", survivors.Take(5).Select(id => idOf(id))) + "); nothing was deleted.");
+  CheckBudget();
 
   return new
   {
       Status = "Deleted",
-      ElementIds = selected.Select(id => idOf(id)).ToList(),
-      Count = selected.Count,
+      ElementIds = inputIds.Select(id => idOf(id)).ToList(),
+      Count = inputIds.Count,
       AlsoDeleted = also,
       AlsoDeletedCount = extraCount
   };

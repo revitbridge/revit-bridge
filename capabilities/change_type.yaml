@@ -2,8 +2,14 @@ schema_version: 1
 name: change_type
 display_name: Change Type
 description: >-
-  Change up to 100 selected or listed instances to another type of the same category, using its
-  element id. Revit 2024 or later is required for reading back 64-bit ids.
+  Change the elements selected in Revit (at most 100) to another type of the same category.
+  The category is an OST_* name and the type is given by its id (from list_types). Every
+  selected element is checked first; an element of another category, in a group, or that
+  cannot take the type stops the run and nothing is changed. Elements that already have the
+  type are listed under AlreadyThisType; if all have it, nothing is changed and the run says
+  so. The validator reads the type back from every changed element; it needs Revit 2024 or
+  later (its read-back uses ElementId.Value), so the tool is for Revit 2024 or later.
+  Supply element_ids to change the listed instances instead of the current selection.
 version: "1.0.0"
 revit_versions: ["2024", "2025", "2026", "2027"]
 code_template: |

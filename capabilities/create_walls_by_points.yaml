@@ -39,10 +39,9 @@ code_template: |
   };
 
   string topName = "{top_level_name}", heightText = "{height}", typeName = "{type_name}";
-  if (topName != "" && heightText != "")
-      throw new InvalidOperationException("REFUSED: Choose either top_level_name or height.");
+  bool heightIgnored = topName != "" && heightText != "";
   Level top = topName == "" ? null : levelByName(topName);
-  double unconnectedHeight = feet(heightText == "" ? "3000" : heightText);
+  double unconnectedHeight = feet(top != null || heightText == "" ? "3000" : heightText);
   if (unconnectedHeight <= 0)
       throw new InvalidOperationException("REFUSED: Height must be positive.");
   WallType wallType = null;
@@ -93,7 +92,7 @@ code_template: |
   var ids = new List<long>();
   for (int i = 1; i < points.Count; i++)
       ids.Add(create(points[i - 1], points[i]).Id.Value);
-  return new { Status = "Created", ElementIds = ids, Count = ids.Count };
+  return new { Status = "Created", ElementIds = ids, Count = ids.Count, HeightIgnored = heightIgnored };
 parameters:
   - name: level_name
     type: string

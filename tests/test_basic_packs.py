@@ -332,7 +332,7 @@ def test_messages_name_no_internal_enum_and_parameter_types_are_spelled_once(nam
     data = data_for(name)
     assert not re.search(r"\+\s*[\w.]*(?:Kind|PlacementType|StorageType)\s*\+", data["code_template"]), name
     # integer, as the earlier packs spell it (delete_elements_by_category, modify_wall_height)
-    assert {p["type"] for p in data["parameters"]} <= {"string", "double", "integer", "bool", "number"}, name
+    assert {p["type"] for p in data["parameters"]} <= {"string", "double", "integer", "bool"}, name
 
 
 @pytest.mark.parametrize("name", ("create_door", "create_window", "create_room", "create_ceiling"))
@@ -368,7 +368,7 @@ def test_parameters_that_pick_from_the_model_offer_real_choices():
                     assert param["source"].startswith("tool:"), (name, param)
             elif param["name"].endswith(("_id", "level_name", "type_name")):
                 # The planner's ruling: change_type.type_id is the designer's id from list_types.
-                assert name == "change_type" and param["name"] in {"type_id", "type_name"}, (name, param["name"])
+                assert (name, param["name"]) == ("change_type", "type_id"), (name, param["name"])
             else:
                 assert "choices_from" not in param, (name, param["name"])
 

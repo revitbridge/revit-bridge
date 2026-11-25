@@ -3,7 +3,7 @@ name: create_ceiling_by_points
 display_name: Create Ceiling By Points
 description: >-
   Create one ceiling from 3 to 256 plan vertices supplied as x,y pairs in mm. The loop closes automatically.
-  A repeated closing point is also accepted. Offset is measured from the level in mm.
+  A repeated closing point is also accepted. Supply the height above the level in mm.
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
@@ -43,7 +43,9 @@ code_template: |
           + string.Join(", ", types.Select(t => t.FamilyName).Distinct()) + "). Give the type as \"Family: Type\".");
   CeilingType ceilingType = types[0];
 
-  double height = toFeet("Offset above the level", "{offset}");
+  double height = toFeet("Height above the level", "{height}");
+  if (height < 0)
+      throw new InvalidOperationException("REFUSED: Ceiling height above the level must be zero or positive.");
   double z = level.ProjectElevation;
   string[] pairs = "{points}".Split(';');
   if (pairs.Length < 3 || pairs.Length > 257)
@@ -118,13 +120,12 @@ parameters:
     description: "Polygon outline in mm, as x,y; x,y; x,y, with an implicit closing edge."
     source: designer
     required: true
-  - name: offset
+  - name: height
     type: double
-    description: "Vertical offset from the level (mm)."
+    description: "Height above the level (mm, zero or positive)."
     unit: mm
     source: designer
-    required: false
-    default: 0
+    required: true
 preconditions:
   - kind: levels_min
     value: 1
@@ -144,13 +145,13 @@ validator:
   expected: 1
 fixtures:
   - name: basic
-    params: {level_name: "L1", type_name: "Generic", points: "0,0; 5000,0; 0,4000"}
+    params: {level_name: "L1", type_name: "Generic", points: "0,0; 5000,0; 0,4000", height: 0}
     expect: {Status: "Created"}
   - name: polygon
-    params: {"level_name":"L1","type_name":"Generic","points":"0,0; 5000,0; 4000,4000; 0,4000","offset":2000}
+    params: {"level_name":"L1","type_name":"Generic","points":"0,0; 5000,0; 4000,4000; 0,4000","height":2000}
     expect: {"Status":"Created"}
   - name: repeated_closing_point
-    params: {"level_name":"L1","type_name":"Generic","points":"0,0; 5000,0; 4000,4000; 0,4000; 0,0","offset":2000}
+    params: {"level_name":"L1","type_name":"Generic","points":"0,0; 5000,0; 4000,4000; 0,4000; 0,0","height":2000}
     expect: {"Status":"Created"}
 approved_by: null
 approved_at: null
