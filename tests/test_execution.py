@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 
 import pytest
 
@@ -90,6 +92,22 @@ def test_run_pack_runs_the_built_in_pack_when_the_user_copy_is_broken_and_says_s
     assert result.success is True
     assert len(result.warnings) == 1 and result.warnings[0].startswith(f"user pack {broken} cannot be read")
     assert host["ledger"].get(result.evidence_id)["warnings"] == result.warnings
+
+
+def test_capture_pack_returns_image_but_records_only_digest_and_dimensions(host):
+    # The fake endpoint supplies the native export still required by this pack.
+    png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRyoAAAAASUVORK5CYII="
+    capture = {"png_base64": png, "width": 1, "height": 1, "view": "Sample view"}
+    host["store"].solidify("capture_view", "return 1;")
+    spec = TaskSpec(task="capture", action=Action(kind="run_tool", tool="capture_view"), parameters=[])
+    token = host["gate"].issue(spec).token
+    out = with_fake(counting_handler(0, 0, capture), lambda c, _: run_pack(
+        client=c, name="capture_view", params={}, token=token, host="web", **host))
+    assert out.success and out.result == capture
+    record = host["ledger"].get(out.evidence_id)
+    assert record["result_summary"] == {"sha256": hashlib.sha256(base64.b64decode(png)).hexdigest(),
+                                        "width": 1, "height": 1}
+    assert png not in str(record) and "Sample view" not in str(record)
 
 
 def test_run_pack_refuses_without_a_token_and_never_touches_revit(host):

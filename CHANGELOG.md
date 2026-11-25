@@ -6,6 +6,26 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Packs can declare `ui_only: true` for changes to selection or view display. The loader
+  and `list_tools` expose the flag. It defaults to false and is mutually exclusive with
+  `read_only`. Six built-ins declare it: `select_elements`, `select_in_box`,
+  `select_by_filter`, `clear_selection`, `zoom_to_elements` and `set_view_orientation`.
+  Selection tools refuse results over 5,000 elements before applying them.
+- `set_section_box` sets or disables the active 3D view's section box. It uses the
+  normal model-change confirmation path. All seven new packs compile against the
+  Revit 2021 and 2023–2027 APIs.
+- `RevitQueryExecutor.trigger_selection` accepts single, multiple and box picks,
+  an optional category, a status-bar prompt and a timeout (120 seconds by default).
+  It requires the native `trigger_selection_in_revit` command. Older add-ins report
+  that dependency. A completed pick carries the originating document identity.
+  Acknowledged cancellation and timeout have distinct results.
+- For a `capture_view` pack result, the evidence ledger retains only the PNG digest and
+  pixel dimensions. A capture pack still needs an add-in command that exports the
+  current view without taking desktop input. Opening a named view also needs a
+  native call outside the snippet runner's transaction.
+
 ## [0.10.1] - 2026-11-25
 
 ### Added

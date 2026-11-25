@@ -435,7 +435,7 @@ def solidify_tool(
 @_tool(annotations=_READ_ONLY)
 def list_tools() -> str:
     """The capability packs available to run_tool, as a JSON list of
-    {name, description, version, parameters: [{name, type, source, required, unit?}],
+    {name, description, read_only, ui_only, version, parameters: [{name, type, source, required, unit?}],
     preconditions, validator, used}. Check here before writing code."""
     tools = _tool_store.list_tools()
     return _dumps([
@@ -443,6 +443,7 @@ def list_tools() -> str:
             "name": t.name,
             "description": t.description,
             "read_only": t.read_only,
+            "ui_only": t.ui_only,
             "version": t.version,
             "parameters": [
                 {k: p[k] for k in ("name", "type", "source", "required", "unit", "choices_from", "default") if k in p}

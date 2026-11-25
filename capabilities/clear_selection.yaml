@@ -1,0 +1,25 @@
+schema_version: 1
+name: clear_selection
+ui_only: true
+display_name: Clear Selection
+description: "View only. Clear the active document's current selection."
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  var selection = new UIDocument(document).Selection;
+  int previous = selection.GetElementIds().Count;
+  selection.SetElementIds(new List<ElementId>());
+  return new { Status = "Cleared", PreviousCount = previous, Count = selection.GetElementIds().Count };
+parameters: []
+preconditions:
+  - text: "Open a model document."
+applies_when:
+  - "clear selection"
+validator: null
+fixtures:
+  - name: one_selected
+    params: {}
+    expect: {"Status":"Cleared","PreviousCount":1,"Count":0}
+  - name: already_empty
+    params: {}
+    expect: {"Status":"Cleared","PreviousCount":0,"Count":0}

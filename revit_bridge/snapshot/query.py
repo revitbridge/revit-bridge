@@ -411,36 +411,39 @@ class RevitQueryExecutor:
         resp = await self.client.send_code(LEVELS_CODE)
         return _list_result(resp, strict)
 
-    async def trigger_selection(self) -> list[dict]:
-        """Trigger Revit interactive pick mode — user clicks an element in Revit.
+    async def trigger_selection(self, mode: str = "single", category: str | None = None,
+                                prompt: str = "Select in Revit", timeout_s: int = 120) -> list[dict] | dict:
+        """Return picked mention items, or the device's {cancelled: true} / {timed_out: true}.
 
-        Uses UIDocument.Selection.PickObject() which blocks until user picks.
-        Falls back to get_selected_elements if PickObject fails.
+        The native command owns the pick and deadline. On completion it snapshots
+        {document_id, items} in the picked document. Each row has id, name (type),
+        family, category (OST_*), shown (localized category), level and length (mm).
         """
-        # Use PickObject for interactive selection — this shows a Revit prompt
-        pick_code = (
-            'var uidoc = new UIDocument(document);\n'
-            'var reference = uidoc.Selection.PickObject(\n'
-            '    Autodesk.Revit.UI.Selection.ObjectType.Element,\n'
-            '    "Please select a host element (wall/floor)");\n'
-            'var element = document.GetElement(reference);\n'
-            'return new {\n'
-            '    Id = element.Id.Value,\n'
-            '    Name = element.Name,\n'
-            '    Category = element.Category != null ? element.Category.Name : ""\n'
-            '};\n'
-        )
-        resp = await self.client.send_code(pick_code)
-        if resp.success and resp.result:
-            data = resp.result if isinstance(resp.result, list) else [resp.result]
-            return data
+        from revit_bridge.mention_elements import picked_items
 
-        # Fallback: return currently selected elements
-        _log.warning(f"[trigger_selection] PickObject failed: {resp.error}, trying get_selected_elements")
-        resp = await self.client.send_command("get_selected_elements", {})
-        if resp.success and resp.result:
-            return resp.result if isinstance(resp.result, list) else [resp.result]
-        return []
+        if mode not in ("single", "multiple", "box"):
+            raise ValueError("mode must be single, multiple or box")
+        if category is not None and (not isinstance(category, str) or not CATEGORY_RE.fullmatch(category)):
+            raise ValueError("category must be a BuiltInCategory identifier such as OST_Walls")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("prompt must be non-empty text")
+        if type(timeout_s) is not int or timeout_s <= 0:
+            raise ValueError("timeout_s must be a positive whole number of seconds")
+        params = {"mode": mode, "prompt": prompt, "timeout_s": timeout_s}
+        if category is not None:
+            params["category"] = category
+        # Allow the native deadline to end the session and acknowledge cleanup.
+        resp = await self.client.send_command("trigger_selection_in_revit", params, timeout=timeout_s + 10)
+        if not resp.success:
+            if resp.error_code == METHOD_NOT_FOUND:
+                raise RevitQueryError("Interactive selection requires an add-in with trigger_selection_in_revit.")
+            raise RevitQueryError(resp.error or "Interactive selection failed")
+        data = resp.result
+        if isinstance(data, dict):
+            for flag in ("cancelled", "timed_out"):
+                if set(data) == {flag} and data[flag] is True:
+                    return {flag: True}
+        return picked_items(data, mode, category)
 
     async def get_selected_elements(self, strict: bool = False) -> list[dict]:
         """Get currently selected elements without triggering selection mode."""

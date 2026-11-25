@@ -122,7 +122,7 @@ def test_the_listing_shows_the_fourteen_packs_next_to_the_eight_earlier_ones():
     store = ToolStore()                       # the package's own built-in directory
     listed = {tool.name for tool in store.list_tools()}
     assert set(NAMES) <= listed and set(PREEXISTING) <= listed
-    assert len(listed) == len(NAMES) + len(PREEXISTING) + 18
+    assert len(listed) == len(NAMES) + len(PREEXISTING) + 18 + 7
     for name in NAMES:
         assert store.path_of(name) == store.builtin_dir / f"{name}.yaml"
 

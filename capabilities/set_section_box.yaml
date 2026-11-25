@@ -1,0 +1,153 @@
+schema_version: 1
+name: set_section_box
+display_name: Set Section Box
+description: "Set the active 3D view's section box from model-space corners or element bounds, or turn it off."
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  var view = document.ActiveView as View3D;
+  if (view == null || view.IsTemplate)
+      throw new InvalidOperationException("REFUSED: A section box needs a 3D view. Open a 3D model view first.");
+  if (bool.Parse("{reset}"))
+  {
+      view.IsSectionBoxActive = false;
+      if (view.IsSectionBoxActive)
+          throw new InvalidOperationException("REFUSED: The box is still active. Check the view template's section box settings.");
+      return new { Status = "Reset", Active = view.IsSectionBoxActive };
+  }
+
+  double Feet(string text)
+  {
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException("REFUSED: Invalid length " + text + ". Give finite numbers in millimetres.");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  }
+  XYZ Point(string text)
+  {
+      var parts = text.Split(',');
+      if (parts.Length != 3)
+          throw new InvalidOperationException("REFUSED: Each point needs three comma-separated coordinates in millimetres.");
+      var point = new XYZ(Feet(parts[0]), Feet(parts[1]), Feet(parts[2]));
+      if (!XYZ.IsWithinLengthLimits(point))
+          throw new InvalidOperationException("REFUSED: Coordinates exceed the model limits. Give points nearer the model origin.");
+      return point;
+  }
+  ElementId ParseId(string text)
+  {
+      long number;
+      if (!long.TryParse(text.Trim(), System.Globalization.NumberStyles.None,
+              System.Globalization.CultureInfo.InvariantCulture, out number) || number <= 0)
+          throw new InvalidOperationException("REFUSED: Invalid id " + text + ". Give positive element ids separated by commas.");
+      // Revit 2024 widened both the BuiltInCategory backing type and the ElementId constructor.
+      var native = (BuiltInCategory)number - (BuiltInCategory)0;
+      if ((long)native != number)
+          throw new InvalidOperationException("REFUSED: Id " + number + " is too large for this Revit year. Pick an element in the active document.");
+      return new ElementId(native);
+  }
+  var timer = System.Diagnostics.Stopwatch.StartNew();
+  void CheckTime()
+  {
+      // Bound managed model lookups inside this single API callback.
+      if (timer.ElapsedMilliseconds > 200)
+          throw new InvalidOperationException("REFUSED: The model lookup took too long. Narrow the range or use fewer elements.");
+  }
+
+  string first = "{corner1_mm}", second = "{corner2_mm}", ids = "{element_ids}";
+  double padding = Feet("{padding_mm}");
+  if (padding < 0)
+      throw new InvalidOperationException("REFUSED: Padding would shrink the box. Give zero or a positive distance.");
+  if (ids.Length != 0 && (first.Length != 0 || second.Length != 0))
+      throw new InvalidOperationException("REFUSED: Two range sources given. Supply either both corners or element ids.");
+
+  XYZ lo = null, hi = null;
+  void Include(XYZ p)
+  {
+      lo = lo == null ? p : new XYZ(Math.Min(lo.X, p.X), Math.Min(lo.Y, p.Y), Math.Min(lo.Z, p.Z));
+      hi = hi == null ? p : new XYZ(Math.Max(hi.X, p.X), Math.Max(hi.Y, p.Y), Math.Max(hi.Z, p.Z));
+  }
+  if (ids.Length == 0)
+  {
+      Include(Point(first));
+      Include(Point(second));
+  }
+  else
+  {
+      var parts = ids.Split(',');
+      if (parts.Length > 5000)
+          throw new InvalidOperationException("REFUSED: Received " + parts.Length + " reference ids. Use at most 5000.");
+      foreach (string part in parts)
+      {
+          CheckTime();
+          var id = ParseId(part);
+          var e = document.GetElement(id);
+          // Element.BoundingBox is axis-aligned in the model coordinate system.
+          var box = e == null || e is ElementType ? null : e.get_BoundingBox(null);
+          if (box == null)
+              throw new InvalidOperationException("REFUSED: No model bounds for element " + id + ". Pick model instances with geometry.");
+          Include(box.Min);
+          Include(box.Max);
+      }
+  }
+  var offset = new XYZ(padding, padding, padding);
+  lo -= offset;
+  hi += offset;
+  if (!XYZ.IsWithinLengthLimits(lo) || !XYZ.IsWithinLengthLimits(hi))
+      throw new InvalidOperationException("REFUSED: Padded box exceeds model limits. Reduce its extent or padding.");
+  if (lo.X >= hi.X || lo.Y >= hi.Y || lo.Z >= hi.Z)
+      throw new InvalidOperationException("REFUSED: The box has zero extent. Separate its corners on all three axes or add padding.");
+
+  view.SetSectionBox(new BoundingBoxXYZ { Min = lo, Max = hi });
+  view.IsSectionBoxActive = true;
+  if (!view.IsSectionBoxActive)
+      throw new InvalidOperationException("REFUSED: The box could not be activated. Check the view template's section box settings.");
+  return new { Status = "Set", Active = view.IsSectionBoxActive };
+parameters:
+  - name: corner1_mm
+    type: string
+    description: "First model-space corner as X,Y,Z in millimetres. Supply both corners or element_ids."
+    source: designer
+    required: false
+    default: ""
+  - name: corner2_mm
+    type: string
+    description: "Opposite model-space corner as X,Y,Z in millimetres"
+    source: designer
+    required: false
+    default: ""
+  - name: element_ids
+    type: string
+    description: "Comma-separated ids whose combined model bounding box defines the range"
+    source: designer
+    choices_from: elements
+    required: false
+    default: ""
+  - name: padding_mm
+    type: double
+    description: "Outward distance on each face of the box"
+    unit: mm
+    source: default
+    required: false
+    default: 0
+  - name: reset
+    type: bool
+    description: "Turn off the section box and ignore range inputs"
+    source: default
+    required: false
+    default: false
+preconditions:
+  - text: "Activate a 3D model view that permits section box changes."
+applies_when:
+  - "set section box"
+validator: null
+fixtures:
+  - name: corners
+    params: {"corner1_mm":"-500,0,-100","corner2_mm":"6500,4000,2800"}
+    expect: {"Status":"Set","Active":true}
+  - name: padded_elements
+    params: {"element_ids":"101,102","padding_mm":250}
+    expect: {"Status":"Set","Active":true}
+  - name: reset
+    params: {"reset":true}
+    expect: {"Status":"Reset","Active":false}

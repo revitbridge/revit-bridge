@@ -130,6 +130,25 @@ def _items(rows):
     return items
 
 
+def picked_items(data, mode, category):
+    """Normalize the captured pick in its original document, without rereading the live selection."""
+    if not isinstance(data, dict) or "cancelled" in data or "timed_out" in data:
+        raise RevitQueryError("Invalid interactive selection reply")
+    rows = data.get("items")
+    document_id = data.get("document_id")
+    if not isinstance(document_id, str) or not document_id or not isinstance(rows, list):
+        raise RevitQueryError("Missing document identity or items in interactive selection")
+    if len(rows) > 5000:
+        raise RevitQueryError(f"REFUSED: {len(rows)} elements picked. Narrow the selection to 5000 or fewer.")
+    if mode == "single" and len(rows) != 1:
+        raise RevitQueryError("Expected one picked element")
+    items = _items(rows)
+    if (len({i["id"] for i in items}) != len(rows)
+            or (category is not None and any(i["category"] != category for i in items))):
+        raise RevitQueryError("Invalid element ids or category in interactive selection")
+    return [dict(i, document_id=document_id) for i in items]
+
+
 def _snapshot(data, positions):
     if (not isinstance(data, dict) or not isinstance(data.get("view"), str) or
             type(data.get("total")) is not int or data["total"] < 0 or

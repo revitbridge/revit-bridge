@@ -58,12 +58,16 @@ WITHOUT_VALIDATOR = {
     "set_parameter", "move_elements", "delete_selected", "delete_elements",
     "copy_elements", "rotate_elements", "mirror_elements",
     "get_element_geometry", "get_element_parameters", "change_type_by_name",
+    # These tools change UI state or a 3D view's section box. The existing
+    # model-count, created-id and element-parameter validators cannot verify them.
+    "select_elements", "select_in_box", "select_by_filter", "clear_selection",
+    "zoom_to_elements", "set_view_orientation", "set_section_box",
 }
 
 
 def test_every_builtin_pack_is_valid_v1_with_a_validator():
     files = sorted(builtin_capabilities_dir().glob("*.yaml"))
-    assert len(files) == 40
+    assert len(files) == 47
     assert WITHOUT_VALIDATOR <= {path.stem for path in files}
     for path in files:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))

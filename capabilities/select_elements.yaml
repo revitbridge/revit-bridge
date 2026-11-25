@@ -1,0 +1,94 @@
+schema_version: 1
+name: select_elements
+ui_only: true
+display_name: Select Elements
+description: "View only. Replace, add to, or remove from the current selection using element ids."
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  var timer = System.Diagnostics.Stopwatch.StartNew();
+  void CheckTime()
+  {
+      // Bound managed model lookups inside this single API callback.
+      if (timer.ElapsedMilliseconds > 200)
+          throw new InvalidOperationException("REFUSED: The model lookup took too long. Narrow the range or use fewer elements.");
+  }
+  ElementId ParseId(string text)
+  {
+      long number;
+      if (!long.TryParse(text.Trim(), System.Globalization.NumberStyles.None,
+              System.Globalization.CultureInfo.InvariantCulture, out number) || number <= 0)
+          throw new InvalidOperationException("REFUSED: Invalid id " + text + ". Give positive element ids separated by commas.");
+      // Revit 2024 widened both the BuiltInCategory backing type and the ElementId constructor.
+      var native = (BuiltInCategory)number - (BuiltInCategory)0;
+      if ((long)native != number)
+          throw new InvalidOperationException("REFUSED: Id " + number + " is too large for this Revit year. Pick an element in the active document.");
+      return new ElementId(native);
+  }
+
+  string mode = "{mode}";
+  if (mode != "replace" && mode != "add" && mode != "remove")
+      throw new InvalidOperationException("REFUSED: Unknown mode. Choose replace, add or remove.");
+  var parts = "{element_ids}".Split(',');
+  if (parts.Length > 5000)
+      throw new InvalidOperationException("REFUSED: Received " + parts.Length + " id entries. Narrow the list to at most 5000.");
+  var requested = new HashSet<ElementId>();
+  foreach (string part in parts)
+  {
+      CheckTime();
+      ElementId id = ParseId(part);
+      var element = document.GetElement(id);
+      if (element == null || element is ElementType)
+          throw new InvalidOperationException("REFUSED: " + id + " is not a current element instance. Pick ids from the active document.");
+      requested.Add(id);
+  }
+
+  var selection = new UIDocument(document).Selection;
+  if (mode != "replace")
+  {
+      var result = new HashSet<ElementId>();
+      int count = 0;
+      foreach (var id in selection.GetElementIds())
+      {
+          CheckTime();
+          if (mode == "remove" && requested.Contains(id)) continue;
+          count++;
+          if (count <= 5000) result.Add(id);
+          if (mode == "add") requested.Remove(id);
+      }
+      if (mode == "add") count += requested.Count;
+      if (count > 5000)
+          throw new InvalidOperationException("REFUSED: The result would select " + count + " elements. Narrow the selection to at most 5000.");
+      if (mode == "add") result.UnionWith(requested);
+      requested = result;
+  }
+  selection.SetElementIds(requested);
+  return new { Status = "Selected", Count = selection.GetElementIds().Count };
+parameters:
+  - name: element_ids
+    type: string
+    description: "One or more comma-separated element ids in the active document"
+    source: designer
+    choices_from: elements
+    required: true
+  - name: mode
+    type: string
+    description: "replace, add or remove"
+    source: default
+    required: false
+    default: "replace"
+preconditions:
+  - text: "Use element instance ids from the active document."
+applies_when:
+  - "select elements"
+validator: null
+fixtures:
+  - name: replace_pair
+    params: {"element_ids":"101,102"}
+    expect: {"Status":"Selected","Count":2}
+  - name: add_one
+    params: {"element_ids":"103","mode":"add"}
+    expect: {"Status":"Selected"}
+  - name: remove_one
+    params: {"element_ids":"101","mode":"remove"}
+    expect: {"Status":"Selected"}
