@@ -531,7 +531,8 @@ def test_the_variants_share_the_default_steps_verbatim():
 LINK_STEP = ("links, type_categories. With args.link_id (a picked link's id) levels, family_types, elements, "
              "counts, type_categories read that link; its ids are not the open model's: never pass them to a tool.")
 
-SELECTIONS_RULE = ('Picks in "Designer\'s selections": value = the name, evidence "mention:<kind>#<id>", source '
+SELECTIONS_RULE = ('Picks in "Designer\'s selections": element value = id as a decimal string; '
+                   'level/type/link value = the name. Use evidence "mention:<kind>#<id>", source '
                    'tool if the pack parameter has choices_from or tool:* source, else designer; never re-ask.')
 
 

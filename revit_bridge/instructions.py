@@ -304,8 +304,8 @@ _NEVER_CODE = "- Write code: if no tool fits, say that no existing tool can do i
 # (A picked link's queries carry args.link_id: step 2 says so, next to the rule on its ids.)
 _SELECTIONS = """\
 ## Designer's selections
-Picks in "Designer's selections": value = the name, evidence "mention:<kind>#<id>", source
-tool if the pack parameter has choices_from or tool:* source, else designer; never re-ask.
+Picks in "Designer's selections": element value = id as a decimal string; level/type/link value = the name.
+Use evidence "mention:<kind>#<id>", source tool if the pack parameter has choices_from or tool:* source, else designer; never re-ask.
 """
 
 _NEVER_CLAIM = "- Claim success on an error or on a failed validation; do not soften errors.\n"
