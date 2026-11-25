@@ -17,20 +17,22 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   sets or disables its section box. Both use the normal model-change confirmation path.
   All seven new packs compile against the
   Revit 2021 and 2023–2027 APIs.
-- `RevitQueryExecutor.trigger_selection()` keeps the 0.10.1 element list. With the
-  native command, passing a mode (single, multiple or box), category, prompt or
-  timeout (default 120 seconds) requests mention items with `document_id` and
-  distinct `cancelled` and `timed_out` replies. A no-argument call returns an
-  empty list for either terminal reply. On older add-ins an unfiltered single pick
-  runs the original `PickObject` snippet and falls back to `get_selected_elements`
-  if the snippet fails. That path returns the original element rows. Other picks
-  on older add-ins give an upgrade hint.
-- The native host functions `revit_bridge.view_commands.open_view` (UI only) and
-  `capture_view` (read only) activate a named view and export a PNG respectively.
-  MCP exposes them as `open_view` and `capture_view_image`. The existing MCP
-  `capture_view` returns a file path. The PNG export returns the view name and
-  pixel dimensions. Its ledger entry records only the image digest and dimensions
-  from the result.
+- `RevitQueryExecutor.watch_selection(mode, category=None, timeout_s=120, settle_ms=1200,
+  poll_ms=400)` observes normal Revit selection. Single mode returns a changed singleton
+  immediately. Multiple and box modes wait for a changed nonempty set to settle.
+  The result contains element mention `items` with `document_id`. A category filter
+  adds `filtered_out`, the number excluded across the whole selection. Timeout and
+  document switches return `{"timed_out": true}` and `{"document_changed": true}`.
+  Cancel the coroutine to stop polling. Older add-ins return `unsupported_addin`
+  with an upgrade hint so the host can offer Get current selection.
+- `RevitQueryExecutor.trigger_selection()` uses the 0.10.1 `PickObject` snippet,
+  falls back to `get_selected_elements`, and returns the original list of element rows.
+- The host functions `open_view` and `capture_view_image` in `revit_bridge.view_commands`
+  activate a named view and export a PNG with its view name and pixel dimensions.
+  The capture ledger records the image digest and dimensions. Hosts can discover
+  both functions with `revit_bridge.list_host_functions()` or MCP
+  `list_tools(include_host_functions=true)`. Call each function by its descriptor
+  name. The default MCP listing contains packs, and MCP `capture_view` returns a file path.
 
 ## [0.10.1] - 2026-11-25
 

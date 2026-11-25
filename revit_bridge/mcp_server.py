@@ -55,7 +55,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
-from revit_bridge import __version__
+from revit_bridge import __version__, list_host_functions
 from revit_bridge import addin_test, checking, cli_output, dry_run, guidance_cli, skills_cli, view_commands
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities.store import ToolStore
@@ -435,12 +435,13 @@ def solidify_tool(
 
 
 @_tool(annotations=_READ_ONLY)
-def list_tools() -> str:
+def list_tools(include_host_functions: bool = False) -> str:
     """The capability packs available to run_tool, as a JSON list of
     {name, description, read_only, ui_only, version, parameters: [{name, type, source, required, unit?}],
-    preconditions, validator, used}. Check here before writing code."""
+    preconditions, validator, used}. Pass include_host_functions=true to append native
+    view descriptors. Call entries marked kind=host_function by their MCP name directly."""
     tools = _tool_store.list_tools()
-    return _dumps([
+    packs = [
         {
             "name": t.name,
             "description": t.description,
@@ -456,7 +457,8 @@ def list_tools() -> str:
             "used": t.execution_count,
         }
         for t in tools
-    ])
+    ]
+    return _dumps(packs + list_host_functions() if include_host_functions else packs)
 
 
 @_tool(annotations=_READ_ONLY)
@@ -675,7 +677,7 @@ async def capture_view_image(width: int = 1600, view_id: int | None = None) -> s
     client, refused = await _pooled_or_refusal(addin_test.view_reply)
     if refused is not None:
         return _dumps(refused)
-    return _dumps(await view_commands.capture_view(client, width, view_id, ledger=_ledger))
+    return _dumps(await view_commands.capture_view_image(client, width, view_id, ledger=_ledger))
 
 
 # -- Resources ----------------------------------------------------------------

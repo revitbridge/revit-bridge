@@ -109,19 +109,6 @@ async def _read(executor, prelude, parameters=(), *, selection=False):
     return response.result
 
 
-def _element_item(row, number):
-    name, shown, level = row.get("name"), row.get("shown"), row.get("level")
-    details = [shown or name or f"#{number}"]
-    if isinstance(row.get("length"), (int, float)):
-        details.append(f"{row['length']:.0f} mm")
-    if level:
-        details.append(level)
-    summary = ", ".join(" ".join(str(s).split()) for s in details)
-    return dict(kind="element", id=number, name=name, family=row.get("family"),
-                category=row.get("category"), category_label=shown, level=level, summary=summary,
-                label=name or f"#{number}", detail=summary)
-
-
 def _items(rows):
     items = []
     for row in rows:
@@ -130,53 +117,17 @@ def _items(rows):
         number = element_id_or_none(row.get("id"))
         if number is None:
             continue
-        items.append(_element_item(row, number))
+        name, shown, level = row.get("name"), row.get("shown"), row.get("level")
+        details = [shown or name or f"#{number}"]
+        if isinstance(row.get("length"), (int, float)):
+            details.append(f"{row['length']:.0f} mm")
+        if level:
+            details.append(level)
+        summary = ", ".join(" ".join(str(s).split()) for s in details)
+        items.append(dict(kind="element", id=number, name=name, family=row.get("family"),
+                          category=row.get("category"), category_label=shown, level=level, summary=summary,
+                          label=name or f"#{number}", detail=summary))
     return items
-
-
-def picked_items(data, mode, category, *, legacy=False):
-    """Normalize the captured pick in its original document, without rereading the live selection."""
-    if not isinstance(data, dict) or "cancelled" in data or "timed_out" in data:
-        raise RevitQueryError("Invalid interactive selection reply")
-    rows = data.get("elements")
-    if not isinstance(rows, list):
-        raise RevitQueryError("Missing elements in interactive selection")
-    if len(rows) > 5000:
-        raise RevitQueryError(f"REFUSED: {len(rows)} elements picked. Narrow the selection to 5000 or fewer.")
-    if legacy and not rows:
-        return []
-    if mode == "single" and len(rows) != 1:
-        raise RevitQueryError("Expected one picked element")
-    result = []
-    seen = set()
-    document_id = data.get("document_id")
-    for row in rows:
-        if not isinstance(row, dict):
-            raise RevitQueryError("Invalid picked element")
-        number = element_id_or_none(row.get("id", row.get("Id")))
-        if number is None or number in seen:
-            raise RevitQueryError("Invalid or duplicate picked element id")
-        seen.add(number)
-        if legacy:
-            if "Id" in row:
-                result.append(row)
-            else:
-                result.append({"Id": number, "Name": row.get("name") or "",
-                               "Category": row.get("category_label") or row.get("shown") or row.get("category") or ""})
-            continue
-        origin = row.get("document_id", data.get("document_id"))
-        if not isinstance(origin, str) or not origin or (document_id is not None and origin != document_id):
-            raise RevitQueryError("Missing or inconsistent document identity in interactive selection")
-        if category is not None and row.get("category") != category:
-            raise RevitQueryError("Unexpected category in interactive selection")
-        document_id = origin
-        item = _element_item(dict(row, shown=row.get("category_label") or row.get("shown")), number)
-        # The native command can supply the formatted mention from the picked document.
-        for key in ("label", "detail", "summary"):
-            if isinstance(row.get(key), str):
-                item[key] = row[key]
-        result.append(dict(item, document_id=origin))
-    return result
 
 
 def _snapshot(data, positions):

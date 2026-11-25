@@ -39,6 +39,40 @@ def invoke(monkeypatch, device, tool, params):
     return json.loads(reply.content[0].text)
 
 
+def test_host_descriptors_extend_mcp_listing_on_request():
+    from revit_bridge import list_host_functions
+
+    # A user pack can have the same name as a host function.
+    mcp_server._tool_store.solidify("open_view", "return 1;", "Example pack")
+    packs = json.loads(mcp_server.list_tools())
+    assert any(pack["name"] == "open_view" for pack in packs)
+    result = asyncio.run(mcp_server.mcp.call_tool("list_tools", {"include_host_functions": True}))
+    descriptors = list_host_functions()
+    assert not result.is_error and json.loads(result.content[0].text) == packs + descriptors
+    open_tool, capture = descriptors
+    assert [(tool["name"], tool["class"], tool["required_addin_command"]) for tool in descriptors] == [
+        ("open_view", "ui_only", ACTIVATE), ("capture_view_image", "read_only", EXPORT)]
+    assert open_tool["description"].startswith("View only.") and capture["description"].startswith("Read only.")
+    assert all(tool["kind"] == "host_function" and "\n" not in tool["description"] for tool in descriptors)
+    assert open_tool["parameters"] == [dict(name="name", type="string", required=True)]
+    assert capture["parameters"] == [dict(name="width", type="integer", required=False, default=1600),
+                                     dict(name="view_id", type="integer", required=False, default=None)]
+
+
+def test_web_host_can_call_descriptor_names_directly():
+    from revit_bridge import list_host_functions, view_commands
+
+    results = [dict(view_id=2, view_name="L1", view_type="FloorPlan"),
+               dict(png_base64=ENCODED, width=1, height=1, view_name="L1")]
+    for descriptor, result in zip(list_host_functions(), results, strict=True):
+        params = {"name": "L1"} if descriptor["name"] == "open_view" else {}
+        device = Device(RevitResponse(success=True, result=result))
+        function = getattr(view_commands, descriptor["name"])
+        reply = asyncio.run(function(device, **params, ledger=mcp_server._ledger, host="web"))
+        assert reply["error"] is None and all(reply[k] == v for k, v in result.items())
+        assert device.calls[-1][0] == descriptor["required_addin_command"]
+
+
 def test_open_view_calls_native_command_and_records_ui_only(monkeypatch):
     view = dict(view_id=518, view_name="L1", view_type="FloorPlan")
     device = Device(RevitResponse(success=True, result=view))

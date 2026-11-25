@@ -5,6 +5,7 @@ import time
 
 from revit_bridge.addin_test import view_reply
 from revit_bridge.evidence.ledger import LOCAL_SCOPE, Ledger, summarize_result
+from revit_bridge.host_functions import ACTIVATE_VIEW, EXPORT_VIEW_IMAGE
 from revit_bridge.revit.capabilities import MethodUnavailable, send_listed_command
 
 
@@ -12,11 +13,11 @@ async def open_view(client, name: str, *, ledger: Ledger, host: str = "mcp", sco
     """View only. Activate an existing view by name, outside the snippet runner's transaction."""
     if not isinstance(name, str) or not name.strip():
         return view_reply(error="invalid_args", hint="Give the name of an existing view.")
-    return await _view(client, "open_view", "activate_view_in_revit", {"name": name}, ledger, host, scope)
+    return await _view(client, "open_view", ACTIVATE_VIEW, {"name": name}, ledger, host, scope)
 
 
-async def capture_view(client, width: int = 1600, view_id: int | None = None, *,
-                       ledger: Ledger, host: str = "mcp", scope: str = LOCAL_SCOPE) -> dict:
+async def capture_view_image(client, width: int = 1600, view_id: int | None = None, *,
+                             ledger: Ledger, host: str = "mcp", scope: str = LOCAL_SCOPE) -> dict:
     """Read only. Export a view as PNG. The add-in reduces the width to meet the 1 MiB limit."""
     if type(width) is not int or not 1 <= width <= 1600:
         return view_reply(error="invalid_args", hint="Choose a width of 1 to 1600 pixels.")
@@ -25,7 +26,10 @@ async def capture_view(client, width: int = 1600, view_id: int | None = None, *,
         if type(view_id) is not int or view_id <= 0:
             return view_reply(error="invalid_args", hint="Give a positive view id or omit it for the active view.")
         params["view_id"] = view_id
-    return await _view(client, "capture_view", "export_view_image_in_revit", params, ledger, host, scope)
+    return await _view(client, "capture_view", EXPORT_VIEW_IMAGE, params, ledger, host, scope)
+
+
+capture_view = capture_view_image  # Original package entry point.
 
 
 async def _view(client, tool, method, params, ledger, host, scope):

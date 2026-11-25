@@ -27,20 +27,18 @@ path.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import re
+import time
 from dataclasses import dataclass, field
-from typing import Any
 
-from revit_bridge.revit.capabilities import (
-    METHOD_NOT_FOUND, UNKNOWN, Capabilities, MethodUnavailable, discover, forget, send_listed_command,
-)
+from revit_bridge.revit.capabilities import METHOD_NOT_FOUND, UNKNOWN, Capabilities, discover, forget
 from revit_bridge.revit.client import RevitClient
 
 _log = logging.getLogger("revit_bridge.snapshot.query")
-_OMITTED: Any = object()
 
 # Category values interpolated into C# must match this exact shape (P0-4), always with
 # ``fullmatch`` (``^...$`` with ``match`` would let a trailing newline through). Letters,
@@ -393,8 +391,10 @@ def sanitize_categories(raw_categories) -> list[str]:
 class RevitQueryExecutor:
     """Execute add-in commands / snippets to read model data."""
 
-    def __init__(self, client: RevitClient):
+    def __init__(self, client: RevitClient, *, clock=time.monotonic, sleep=asyncio.sleep):
         self.client = client
+        self._clock = clock
+        self._sleep = sleep
 
     # The three 0.1 queries return [] when Revit fails (web callers rely on
     # that); ``strict=True`` raises RevitQueryError instead, so a failure can
@@ -415,47 +415,13 @@ class RevitQueryExecutor:
         resp = await self.client.send_code(LEVELS_CODE)
         return _list_result(resp, strict)
 
-    async def trigger_selection(self, mode: str = _OMITTED, category: str | None = _OMITTED,
-                                prompt: str = _OMITTED, timeout_s: int = _OMITTED) -> list[dict] | dict:
-        """With no arguments return the 0.10.1 element list. An explicit option requests mentions.
+    async def trigger_selection(self) -> list[dict]:
+        """Trigger Revit interactive pick mode — user clicks an element in Revit.
 
-        Defaults are single pick, no category, "Select in Revit" and 120 seconds.
-        A native pick can acknowledge cancellation or timeout. Older add-ins use
-        the original single-pick/current-selection path and its original rows.
+        Uses UIDocument.Selection.PickObject() which blocks until user picks.
+        Falls back to get_selected_elements if PickObject fails.
         """
-        from revit_bridge.mention_elements import picked_items
-
-        legacy = all(value is _OMITTED for value in (mode, category, prompt, timeout_s))
-        mode = "single" if mode is _OMITTED else mode
-        category = None if category is _OMITTED else category
-        prompt = "Select in Revit" if prompt is _OMITTED else prompt
-        timeout_s = 120 if timeout_s is _OMITTED else timeout_s
-        if mode not in ("single", "multiple", "box"):
-            raise ValueError("mode must be single, multiple or box")
-        if category is not None and (not isinstance(category, str) or not CATEGORY_RE.fullmatch(category)):
-            raise ValueError("category must be a BuiltInCategory identifier such as OST_Walls")
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ValueError("prompt must be non-empty text")
-        if type(timeout_s) is not int or timeout_s <= 0:
-            raise ValueError("timeout_s must be a positive whole number of seconds")
-        params = {"mode": mode, "prompt": prompt, "timeout_s": timeout_s}
-        if category is not None:
-            params["category"] = category
-        try:
-            data = await send_listed_command(self.client, "trigger_selection_in_revit", params, timeout=timeout_s + 10)
-        except MethodUnavailable as exc:
-            if mode == "single" and category is None:
-                return await self._legacy_pick()
-            raise RevitQueryError(str(exc)) from exc
-        except RuntimeError as exc:
-            raise RevitQueryError(str(exc)) from exc
-        if isinstance(data, dict):
-            for flag in ("cancelled", "timed_out"):
-                if set(data) == {flag} and data[flag] is True:
-                    return [] if legacy else {flag: True}
-        return picked_items(data, mode, category, legacy=legacy)
-
-    async def _legacy_pick(self) -> list[dict]:
+        # Use PickObject for interactive selection — this shows a Revit prompt
         pick_code = (
             'var uidoc = new UIDocument(document);\n'
             'var reference = uidoc.Selection.PickObject(\n'
@@ -470,14 +436,32 @@ class RevitQueryExecutor:
         )
         resp = await self.client.send_code(pick_code)
         if resp.success and resp.result:
-            return _list_result(resp, strict=False)
-        _log.warning("[trigger_selection] PickObject failed: %s, trying get_selected_elements", resp.error)
-        return await self.get_selected_elements()
+            data = resp.result if isinstance(resp.result, list) else [resp.result]
+            return data
+
+        # Fallback: return currently selected elements
+        _log.warning(f"[trigger_selection] PickObject failed: {resp.error}, trying get_selected_elements")
+        resp = await self.client.send_command("get_selected_elements", {})
+        if resp.success and resp.result:
+            return resp.result if isinstance(resp.result, list) else [resp.result]
+        return []
 
     async def get_selected_elements(self, strict: bool = False) -> list[dict]:
         """Get currently selected elements without triggering selection mode."""
         resp = await self.client.send_command("get_selected_elements", {})
         return _list_result(resp, strict)
+
+    async def watch_selection(self, mode: str, category: str | None = None, timeout_s: float = 120,
+                              settle_ms: int = 1200, poll_ms: int = 400) -> dict:
+        """Observe a changed selection and return document-scoped element mentions.
+
+        Single mode completes on one changed element. Multiple and box wait for
+        a stable nonempty set. Cancel the coroutine to stop observing.
+        """
+        from revit_bridge.snapshot.selection import watch_selection
+
+        return await watch_selection(self, mode, category, timeout_s, settle_ms, poll_ms,
+                                     clock=self._clock, sleep=self._sleep)
 
     async def get_project_units(self) -> dict:
         """Read the project's display unit for lengths.
