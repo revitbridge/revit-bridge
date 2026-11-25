@@ -6,7 +6,7 @@
     {
       "name": "revit-bridge",
       "source": "./plugin",
-      "version": "0.9.1",
+      "version": "0.10.0",
       "description": "Skill, MCP server and confirmation-token hook for working in a running Revit model.",
       "author": { "name": "revitbridge", "url": "https://github.com/revitbridge" },
       "homepage": "https://github.com/revitbridge/revit-bridge",
@@ -18,7 +18,7 @@
     {
       "name": "revit-journal-analysis",
       "source": "./plugin/skills/revit-journal-analysis",
-      "version": "0.9.1",
+      "version": "0.10.0",
       "description": "One skill, nothing else: read Autodesk Revit journal files and quote the evidence with line numbers - how a session ended, crash markers and dumps, licence and model-open errors, add-in loading. No MCP server, no hooks. The revit-bridge plugin already includes it.",
       "author": { "name": "revitbridge", "url": "https://github.com/revitbridge" },
       "homepage": "https://github.com/revitbridge/revit-bridge",
