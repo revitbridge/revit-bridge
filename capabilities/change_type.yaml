@@ -132,6 +132,7 @@ parameters:
     type: string
     description: "Comma-separated element ids. Omit to use the current selection."
     source: designer
+    choices_from: elements
     required: false
     default: ""
 preconditions:

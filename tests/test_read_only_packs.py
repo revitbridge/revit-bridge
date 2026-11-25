@@ -12,6 +12,8 @@ from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import run_pack
 from revit_bridge.spec.gate import Gate
+from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec
+from revit_bridge.spec.rules import missing_params, validate_spec
 
 
 READERS = {"count_by_level", "elements_in_link", "list_types", "query_levels", "query_model_stats",
@@ -95,3 +97,60 @@ def test_read_only_declaration_keeps_the_normal_execution_gate(tmp_path, user_ov
     result = asyncio.run(run_pack(store=store, gate=Gate(tmp_path / "pending"), ledger=Ledger(tmp_path / "evidence"),
                                   client=None, name="query_levels", params={}, token="", host="web"))
     assert result.error == "confirmation_required" and result.evidence_id is None
+
+
+def test_catalogue_and_details_declare_exactly_the_instance_id_parameters(tmp_path, monkeypatch):
+    store = ToolStore(user_dir=tmp_path)
+    monkeypatch.setattr(mcp_server, "_tool_store", store)
+    declared = {}
+    for tool in json.loads(mcp_server.list_tools()):
+        detail = yaml.safe_load(mcp_server.tool_resource(tool["name"]))
+        assert not validate_pack(detail)
+        for parameter, full in zip(tool["parameters"], detail["parameters"], strict=True):
+            choice = parameter.get("choices_from")
+            assert choice == full.get("choices_from")
+            if choice == "elements" or (choice or "").startswith("elements:"):
+                declared[tool["name"], parameter["name"]] = choice
+    csv = ("change_type", "change_type_by_name", "copy_elements", "delete_elements", "mirror_elements",
+           "move_elements", "rotate_elements", "set_parameter")
+    walls = ("create_door", "create_door_on_wall", "create_window", "create_window_on_wall")
+    assert declared == {
+        **{(name, "element_ids"): "elements" for name in csv},
+        **{(name, "wall_id"): "elements:OST_Walls" for name in walls},
+        **{(name, "element_id"): "elements:OST_Walls" for name in ("set_wall_constraints", "modify_wall_height")},
+        **{(name, "element_id"): "elements" for name in ("get_element_parameters", "get_element_geometry")},
+        ("create_wall_from_element", "reference_id"): "elements",
+    }
+    link = store.get_dynamic_params("elements_in_link")[0]
+    assert (link["name"], link["choices_from"]) == ("link_id", "links")
+
+
+@pytest.mark.parametrize("tool,name,allowed", [
+    ("get_element_parameters", "element_id", {Source.designer, Source.answer, Source.preference, Source.tool}),
+    ("set_wall_constraints", "element_id", {Source.designer, Source.answer, Source.preference, Source.tool}),
+    ("delete_elements", "element_ids", {Source.designer, Source.answer, Source.preference, Source.tool}),
+    ("get_element_geometry", "element_id", set(Source)),
+    ("create_door", "wall_id", {Source.tool, Source.answer}),
+    ("elements_in_link", "link_id", {Source.tool, Source.answer}),
+    ("change_type", "type_id", {Source.designer, Source.answer, Source.preference}),
+])
+def test_element_choice_keeps_the_parameters_other_evidence_sources(tmp_path, tool, name, allowed):
+    store = ToolStore(user_dir=tmp_path)
+    pack = store.load(tool)
+    for source in Source:
+        binding = ParamBinding(name=name, value=101, source=source,
+                               evidence="preference:checked" if source is Source.preference else "checked")
+        spec = TaskSpec(task="Read instance", action=Action(kind="run_tool", tool=tool), parameters=[binding])
+        errors = [e.code for e in validate_spec(spec, pack) if e.param == name]
+        assert (not errors) == (source in allowed), (source, errors)
+    if tool == "get_element_geometry":
+        ok, errors, filled = store.validate_params(tool, {})
+        assert ok and not errors and filled[name] == ""
+
+
+@pytest.mark.parametrize("language", ["zh", "en"])
+def test_a_manual_id_question_keeps_its_source_before_a_pick(tmp_path, language):
+    from dataclasses import replace
+    pack = ToolStore(user_dir=tmp_path).load("get_element_parameters")
+    original = replace(pack, parameters=[{k: v for k, v in p.items() if k != "choices_from"} for p in pack.parameters])
+    assert missing_params(pack, {}, None, language) == missing_params(original, {}, None, language)

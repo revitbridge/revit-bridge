@@ -60,6 +60,7 @@ parameters:
     type: integer
     description: "Element id, omit to read the current selection"
     source: default
+    choices_from: elements
     required: false
     default: ""
 preconditions:

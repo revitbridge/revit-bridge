@@ -68,6 +68,7 @@ parameters:
     type: integer
     description: Element id in the active document
     source: designer
+    choices_from: elements
     required: true
   - name: names
     type: string

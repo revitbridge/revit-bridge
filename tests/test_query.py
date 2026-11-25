@@ -81,6 +81,32 @@ def test_project_units_detection():
     assert detect_length_unit("", "Millimeters") == "mm"
 
 
+def test_instance_choices_use_selected_ids_and_link_choice_keeps_legacy_values(tmp_path):
+    store = ToolStore(user_dir=tmp_path)
+    def handler(request):
+        code = request["params"]["code"]
+        if "Selection.GetElementIds().Take(50)" in code:
+            return FakeRevit.code_result(request["id"], [None, {"Id": 0}, {"Id": "9007199254740993", "Name": "Column"}])
+        if "BuiltInCategory.OST_Walls" in code:
+            assert "WhereElementIsNotElementType().Take(50)" in code
+            return FakeRevit.code_result(request["id"], [None, {"Id": False}, {"Id": "602", "Name": "Basic wall"}])
+        assert "BuiltInCategory.OST_RvtLinks" in code
+        return FakeRevit.code_result(request["id"], [{"Id": -1}, {"Id": 701, "Name": "Linked model"}, None,
+                                                     {"Id": "702", "Name": None}])
+    async def scenario(executor, fake):
+        sources = [p for name in ("get_element_parameters", "delete_elements", "set_wall_constraints", "elements_in_link")
+                   for p in store.get_dynamic_params(name) if p["name"] in ("element_id", "element_ids", "link_id")]
+        sources[2] = dict(sources[2], name="wall")
+        return await executor.get_tool_choices([*sources, {"name": "old_link", "choices_from": "elements:OST_RvtLinks"}])
+    choices = _run(handler, scenario)
+    assert choices["element_id"] == [{"label": "Column (ID: 9007199254740993)", "value": 9007199254740993}]
+    assert choices["element_ids"] == [{"label": "Column (ID: 9007199254740993)", "value": "9007199254740993"}]
+    assert choices["wall"] == [{"label": "Basic wall (ID: 602)", "value": 602}]
+    assert choices["link_id"] == choices["old_link"] == [
+        {"label": "Linked model (ID: 701)", "value": 701}, {"label": "? (ID: 702)", "value": 702},
+    ]
+
+
 def test_rendered_parameters_cannot_break_out_of_string_literals(tmp_path):
     assert escape_param_value('a"b\\c\nd') == 'a\\"b\\\\c\\nd'
     assert escape_param_value(3000) == "3000"

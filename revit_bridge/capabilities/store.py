@@ -42,7 +42,7 @@ from revit_bridge.paths import (
     builtin_capabilities_dir,
     user_capabilities_dir,
 )
-from revit_bridge.capabilities.schema import NUMERIC_TYPES, PACK_SCHEMA_VERSION, validate_pack
+from revit_bridge.capabilities.schema import NUMERIC_TYPES, PACK_SCHEMA_VERSION, optional_element_pick, validate_pack
 from revit_bridge.capabilities.usage import USAGE_FILE, UsageStore, empty_usage
 
 __all__ = [
@@ -165,7 +165,7 @@ class SolidifiedTool:
     Parameter dicts carry the v1 vocabulary after loading:
       - ``source``: "designer" | "tool:<kind>" | "answer" | "default"
       - ``choices_from``: query kind for ``get_tool_choices`` (levels,
-        family_types:<OST_*>, floor_types, elements:<OST_*>)
+        family_types:<OST_*>, floor_types, links, elements[:<OST_*>])
       - ``unit``: "mm" | "m" | "feet" for lengths
       - ``required``: bool; ``default``: the declared default value
     """
@@ -781,6 +781,8 @@ class ToolStore:
                 "name": p["name"],
                 "choices_from": p["choices_from"],
                 "description": p.get("description", ""),
+                **({"type": p["type"]} if p["choices_from"] == "elements" else {}),
+                **({"source": p["source"]} if optional_element_pick(p) else {}),
             }
             for p in tool.parameters
             if "choices_from" in p

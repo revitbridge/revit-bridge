@@ -19,7 +19,8 @@ SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
 CATEGORY_RE = re.compile(r"^OST_[A-Za-z]+$")
 PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_]\w*)\}")
-CHOICES_FROM_RE = re.compile(r"^(levels|floor_types|family_types:OST_[A-Za-z]+|elements:OST_[A-Za-z]+)$")
+ELEMENT_CHOICES = r"elements(?::OST_[A-Za-z]+)?"
+CHOICES_FROM_RE = re.compile(rf"^(levels|links|floor_types|family_types:OST_[A-Za-z]+|{ELEMENT_CHOICES})$")
 PARAM_REF_RE = re.compile(r"^\{([A-Za-z_]\w*)\}$")
 
 TOP_LEVEL_FIELDS = frozenset({
@@ -110,6 +111,13 @@ def validate_pack(data: Any) -> list[str]:
     return errors
 
 
+def optional_element_pick(param: dict) -> bool:
+    """An element picker can supplement an existing designer value or selection default."""
+    choices = param.get("choices_from")
+    return (param.get("source") in ("designer", "default") and isinstance(choices, str)
+            and re.fullmatch(ELEMENT_CHOICES, choices) is not None)
+
+
 def _validate_param(index: int, param: Any, declared: dict[str, dict]) -> list[str]:
     errors: list[str] = []
     label = f"parameters[{index}]"
@@ -140,11 +148,11 @@ def _validate_param(index: int, param: Any, declared: dict[str, dict]) -> list[s
 
     choices = param.get("choices_from")
     if choices is not None and (not isinstance(choices, str) or not CHOICES_FROM_RE.match(choices)):
-        errors.append(f"{label}: choices_from must be levels | floor_types | family_types:OST_* | elements:OST_*, "
+        errors.append(f"{label}: choices_from must be levels | links | floor_types | family_types:OST_* | elements[:OST_*], "
                       f"got {choices!r}")
     if source.startswith("tool:") and choices is None and not CHOICES_FROM_RE.match(source[5:]):
         errors.append(f"{label}: source {source!r} names no usable query; add choices_from")
-    if choices is not None and source and not source.startswith("tool:") and source != "answer":
+    if choices is not None and source and not source.startswith("tool:") and source != "answer" and not optional_element_pick(param):
         errors.append(f"{label}: a choices_from parameter must have source tool:<query> or answer")
 
     if "required" not in param or not isinstance(param["required"], bool):

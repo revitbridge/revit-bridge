@@ -71,8 +71,8 @@ parameters:
   - name: link_id
     type: integer
     description: Element id of the Revit link instance in the open model
-    source: tool:elements
-    choices_from: elements:OST_RvtLinks
+    source: tool:links
+    choices_from: links
     required: true
   - name: category
     type: string

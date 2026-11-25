@@ -44,7 +44,19 @@ _log = logging.getLogger("revit_bridge.snapshot.query")
 CATEGORY_RE = re.compile(r"OST_[A-Za-z0-9_]+")
 
 # ``choices_from`` values a capability pack may declare for a parameter.
-CHOICE_SOURCES = ("levels", "family_types:<OST_Category>", "floor_types", "elements:<OST_Category>")
+CHOICE_SOURCES = ("levels", "links", "family_types:<OST_Category>", "floor_types", "elements", "elements:<OST_Category>")
+
+# Unqualified element picks refer to the designer's selection, including for
+# comma-separated id parameters. Read at most one small page, without a pick prompt.
+_SELECTED_CHOICES = """
+var rows = new List<object>();
+foreach (ElementId id in new UIDocument(document).Selection.GetElementIds().Take(50)) {
+    string name = null;
+    try { name = document.GetElement(id)?.Name; } catch (Exception) { }
+    rows.Add(new { Id = id.ToString(), Name = name });
+}
+return rows;
+"""
 
 
 # BuiltInCategory reference — the categories the bridge knows how to query.
@@ -705,32 +717,47 @@ class RevitQueryExecutor:
                 if resp.success and resp.result:
                     data = resp.result if isinstance(resp.result, list) else [resp.result]
                     items = [{"label": _type_name(ft), "value": _type_name(ft)} for ft in data]
-            elif source.startswith("elements:"):
-                category = source.split(":", 1)[1]
+            elif source == "elements":
+                response = await self.client.send_code(_SELECTED_CHOICES)
+                items = _element_choices(response, as_text=param.get("type") == "string")
+            elif source == "links" or source.startswith("elements:"):
+                # Keep the old link picker, including its id values and labels.
+                category = "OST_RvtLinks" if source == "links" else source.split(":", 1)[1]
                 if not CATEGORY_RE.fullmatch(category):
                     _log.warning(f"[get_tool_choices] invalid category in {source!r}")
                     choices[param["name"]] = []
                     continue
+                # A supplemental picker suggests a page; the designer can still
+                # supply any valid id. Existing tool-sourced category lists keep their scope.
+                page = ".Take(50)" if param.get("source") in ("designer", "default") else ""
                 code = (
-                    f'var elems = new FilteredElementCollector(document)\n'
-                    f'    .OfCategory(BuiltInCategory.{category})\n'
-                    f'    .WhereElementIsNotElementType()\n'
-                    f'    .Select(e => new {{ Id = e.Id.Value, Name = e.Name }}).ToList();\n'
-                    f'return elems;'
+                    'var rows = new List<object>();\n'
+                    'using (var collector = new FilteredElementCollector(document)) {\n'
+                    f'    foreach (var e in collector.OfCategory(BuiltInCategory.{category})\n'
+                    f'             .WhereElementIsNotElementType(){page}) {{\n'
+                    '        string name = null;\n'
+                    '        try { name = e.Name; } catch (Exception) { }\n'
+                    '        rows.Add(new { Id = e.Id.ToString(), Name = name });\n'
+                    '    }\n'
+                    '}\n'
+                    'return rows;'
                 )
-                resp = await self.client.send_code(code)
-                if resp.success and resp.result:
-                    data = resp.result if isinstance(resp.result, list) else [resp.result]
-                    items = [
-                        {"label": f"{el.get('Name', '?')} (ID: {el.get('Id', '?')})",
-                         "value": el.get("Id", "")}
-                        for el in data
-                    ]
+                items = _element_choices(await self.client.send_code(code))
             else:
                 _log.warning(f"[get_tool_choices] unknown choices_from {source!r}")
 
             choices[param["name"]] = items
         return choices
+
+
+def _element_choices(response, *, as_text: bool = False) -> list[dict]:
+    items = []
+    for row in _list_result(response, strict=False):
+        number = element_id_or_none(row.get("Id")) if isinstance(row, dict) else None
+        if number is not None:
+            items.append({"label": f"{row.get('Name') or '?'} (ID: {number})",
+                          "value": str(number) if as_text else number})
+    return items
 
 
 def _list_result(resp, strict: bool) -> list[dict]:

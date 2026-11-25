@@ -131,6 +131,7 @@ parameters:
     type: integer
     description: Element id in the active document
     source: designer
+    choices_from: elements:OST_Walls
     required: true
   - name: base_level_name
     type: string

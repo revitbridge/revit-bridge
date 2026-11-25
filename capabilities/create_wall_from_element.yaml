@@ -126,6 +126,7 @@ parameters:
     type: integer
     description: Linear reference element id
     source: designer
+    choices_from: elements
     required: true
   - name: anchor
     type: string

@@ -355,7 +355,10 @@ def test_parameters_that_pick_from_the_model_offer_real_choices():
         "create_room": {"level_name": "levels"},
         "create_roof_by_footprint": {"level_name": "levels", "type_name": "family_types:OST_Roofs"},
         "create_ceiling": {"level_name": "levels", "type_name": "family_types:OST_Ceilings"},
-        "elements_in_link": {"link_id": "elements:OST_RvtLinks"},
+        "elements_in_link": {"link_id": "links"},
+        "set_parameter": {"element_ids": "elements"},
+        "move_elements": {"element_ids": "elements"},
+        "change_type": {"element_ids": "elements"},
     }
     for name in NAMES:
         for param in data_for(name)["parameters"]:
@@ -364,6 +367,9 @@ def test_parameters_that_pick_from_the_model_offer_real_choices():
                 assert param["choices_from"] == wanted, (name, param)
                 if (name, param["name"]) in {("create_door", "level_name"), ("create_window", "level_name")}:
                     assert param["source"] == "answer" and param["required"] is False
+                elif wanted == "elements":
+                    assert param["source"] == "designer" and param["required"] is False
+                    assert param["default"] == ""
                 else:
                     assert param["source"].startswith("tool:"), (name, param)
             elif param["name"].endswith(("_id", "level_name", "type_name")):

@@ -14,6 +14,15 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 - Selected and rechecked element items include `document_id`, an opaque identifier for
   the open document on the current device. Hosts can compare it before accepting a pick.
 - Hosts can pass `confirm_button_label` to `host_instructions` for no-code chat prompts.
+- Built-in instance id parameters declare `choices_from: elements` or a category such
+  as `elements:OST_Walls`. Unqualified pickers offer up to 50 current selections.
+  The link instance picker declares `links` and keeps its existing id choices.
+
+### Changed
+
+- Type searches allow up to 1,500 ms per inventory read. If the first read on a
+  connection reaches that time limit, the picker reads it once more. A complete
+  result can warm the clean document cache. A partial result reports its warning.
 
 ### Compatibility
 
