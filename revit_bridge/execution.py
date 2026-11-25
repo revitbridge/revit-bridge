@@ -87,6 +87,7 @@ RETRY_HINT = (
 )
 CONFIRM_TITLE = "revit-bridge"
 DECLINED_ERROR = "declined_on_device"
+_FILE_PACKS = {"link_revit_model", "link_cad", "load_family"}
 # E3: a failed run whose error names .NET exception types points at the fix lessons for them.
 EXCEPTION_HINT = ('call get_guidance(stage="fix", exceptions={exceptions}) and read those lessons before '
                   'changing the code; the changed code needs check_code and a new confirmation.')
@@ -115,6 +116,18 @@ def refusal_message(error: str | None) -> str | None:
     if match is None:
         return None
     return match.group("message").strip() or None
+
+
+def _pack_error(name: str, params: dict, error: str | None) -> str | None:
+    """Keep native and transport diagnostics with file paths out of responses and evidence."""
+    if not error or name not in _FILE_PACKS:
+        return error
+    path = params.get("path")
+    # Native diagnostics may normalize case, change separators, or quote an escaped path.
+    echoes_input = isinstance(path, str) and path and path.casefold() in error.casefold()
+    if echoes_input or re.search(r"[a-zA-Z]:[/\\]|[/\\]{2}", error):
+        return "The file operation could not be confirmed. Check the file and its status in Revit before retrying."
+    return error
 
 
 class ExecutionResult(BaseModel):
@@ -346,6 +359,9 @@ def _record(ledger: Ledger, *, host: str, scope: str, bypass: bool, action: str,
         "preconditions_failed": preconditions_failed,
         "warnings": list(warnings),
     }
+    if tool and tool.name in _FILE_PACKS:
+        # The confirmation binds the full projection. Read-back uses model IDs/counts only.
+        record["params"] = {k: v for k, v in record["params"].items() if k != "path"}
     if refused:
         record["refused"] = True
     try:
@@ -488,7 +504,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
         await ensure_connected(client)
         failed, document = await preconditions(client, pack, warnings)
     except Exception as e:                     # noqa: BLE001 - nothing reached Revit: nothing to record
-        error = str(e) or type(e).__name__
+        error = _pack_error(name, params, str(e) or type(e).__name__)
         return ExecutionResult(success=False, tool=name, error=error, warnings=warnings, hint=failure_hint(error))
 
     def refused(error: str) -> ExecutionResult:
@@ -534,11 +550,12 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     except Exception as e:
         # Revit may or may not have run it: exactly the case that needs a ledger line.
         # No reply came back, so nothing is known about the pack: its usage is not touched.
-        evidence_id = record(None, str(e))
-        return ExecutionResult(success=False, tool=name, error=str(e), evidence_id=evidence_id, warnings=warnings,
-                               hint=failure_hint(str(e)))
+        error = _pack_error(name, params, str(e))
+        evidence_id = record(None, error)
+        return ExecutionResult(success=False, tool=name, error=error, evidence_id=evidence_id, warnings=warnings,
+                               hint=failure_hint(error))
 
-    refused_text = None if resp.success else refusal_message(resp.error)
+    refused_text = None if resp.success else _pack_error(name, params, refusal_message(resp.error))
     if refused_text is not None:
         # The pack refused the input in Revit and the add-in rolled back: nothing to say about the
         # pack itself, so its usage counters stay as they are and no retry or exception hint is given.
@@ -559,6 +576,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
             read_back_unreachable = _transport_failure(e)
     success = bool(resp.success) and (validation is None or validation.passed)
     error = resp.error if not resp.success else ("validation_failed" if validation and not validation.passed else None)
+    error = _pack_error(name, params, error)
     if _replied(resp) and not read_back_unreachable:
         store.record_usage(name, success=success)
     evidence_id = record(resp, error, success=success, validation=validation)

@@ -1,0 +1,73 @@
+schema_version: 1
+name: list_mep_types
+display_name: List Mep Types
+description: "Read only. List pipe and duct types and their system types. PipeDiametersBySegment lists configured nominal diameters per pipe segment in millimetres. A pipe type's routing preferences select the applicable segment. Round duct diameters are also in millimetres."
+version: "1.0.0"
+revit_versions: ["2021","2023","2024","2025","2026","2027"]
+read_only: true
+code_template: |
+  var timer = System.Diagnostics.Stopwatch.StartNew();
+  void CheckTime()
+  {
+      if (timer.ElapsedMilliseconds > 250)
+          throw new InvalidOperationException("REFUSED: Model lookup exceeded its time budget. Retry in an idle model.");
+  }
+  if (!int.TryParse("{limit}", out int limit) || limit < 1 || limit > 200)
+      throw new InvalidOperationException("REFUSED: Invalid row limit. Enter a whole number from 1 to 200.");
+  IEnumerable<T> Elements<T>() where T : Element =>
+      new FilteredElementCollector(document).OfClass(typeof(T)).Cast<T>();
+  object Page<T>(IEnumerable<T> source)
+  {
+      var rows = source.Take(limit + 1).ToList();
+      return new { Items = rows.Take(limit).ToList(), Truncated = rows.Count > limit };
+  }
+  object Types<T>() where T : ElementType => Page(Elements<T>().Select(t =>
+  {
+      CheckTime();
+      return t.Name;
+  }));
+  object Sizes(IEnumerable<MEPSize> sizes) => Page(sizes.Where(size =>
+  {
+      CheckTime();
+      return size.UsedInSizeLists;
+  }).Select(size => UnitUtils.ConvertFromInternalUnits(size.NominalDiameter, UnitTypeId.Millimeters)));
+
+  bool pipes = Elements<Autodesk.Revit.DB.Plumbing.PipeType>().Any();
+  bool ducts = Elements<Autodesk.Revit.DB.Mechanical.DuctType>().Any();
+  if (!pipes && !ducts)
+      throw new InvalidOperationException("REFUSED: The model has no MEP types loaded. Load pipe or duct types or open an MEP project.");
+  var segments = Elements<Autodesk.Revit.DB.Plumbing.PipeSegment>().Select(segment =>
+  {
+      CheckTime();
+      return new { PipeSegmentName = segment.Name, NominalDiametersMm = Sizes(segment.GetSizes()) };
+  });
+  var round = Autodesk.Revit.DB.Mechanical.DuctShape.Round;
+  var settings = ducts ? Autodesk.Revit.DB.Mechanical.DuctSizeSettings.GetDuctSizeSettings(document) : null;
+  var roundSizes = settings == null || settings.GetSizeCount(round) == 0 ? Enumerable.Empty<MEPSize>()
+      : settings[round].Cast<MEPSize>();
+  return new { Status = "Ok", PipeTypes = Types<Autodesk.Revit.DB.Plumbing.PipeType>(),
+      PipeSystemTypes = Types<Autodesk.Revit.DB.Plumbing.PipingSystemType>(),
+      DuctTypes = Types<Autodesk.Revit.DB.Mechanical.DuctType>(),
+      DuctSystemTypes = Types<Autodesk.Revit.DB.Mechanical.MechanicalSystemType>(),
+      PipeDiametersBySegment = Page(segments), RoundDuctDiametersMm = Sizes(roundSizes) };
+parameters:
+  - name: limit
+    type: integer
+    description: "Maximum rows per type group, segment list and size list (1 to 200). Each list reports truncation."
+    source: default
+    required: false
+    default: 50
+preconditions:
+  - text: "Supported Revit years are 2021, 2023, 2024, 2025, 2026 and 2027."
+applies_when:
+  - "list mep types"
+not_for:
+  - "changing routing preferences or adding types"
+validator: null
+fixtures:
+  - name: inventory
+    params: {}
+    expect: {Status: Ok}
+  - name: short_lists
+    params: {"limit":2}
+    expect: {Status: Ok}
