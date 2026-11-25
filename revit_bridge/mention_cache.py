@@ -6,7 +6,7 @@ from typing import NamedTuple
 from weakref import ref
 
 from revit_bridge.revit.client import RevitClient
-from revit_bridge.snapshot.query import CATEGORY_RE, RevitQueryError, _type_name, int_or_none
+from revit_bridge.snapshot.query import RevitQueryError, _type_name, type_category_items
 
 # Document.GetHashCode() identifies an opening of a document, including an
 # unsaved one. A new save or dirty-state transition also invalidates the rows.
@@ -142,27 +142,46 @@ async def read_type_inventory(executor, matched, stamp):
 async def _native_subset(executor, probe, matched):
     # One request remains. A single alias can name a category beyond the
     # probe's page. Otherwise read the most populated eligible category.
+    categories, warnings = native_categories(probe)
     if matched and len(matched) == 1:
         key = next(iter(matched))
         incomplete = False
     else:
-        eligible = [row for row in probe.rows if isinstance(row.get("Category"), str)
-                    and CATEGORY_RE.fullmatch(row["Category"]) and (matched is None or row["Category"] in matched)]
-        eligible.sort(key=lambda row: (-(int_or_none(row.get("Count")) or 0), row["Category"]))
-        key = eligible[0]["Category"] if eligible else None
-        incomplete = probe.truncated is not False or len(eligible) > 1
+        eligible = [row for row in categories if matched is None or row["category"] in matched]
+        eligible.sort(key=lambda row: (-(row["count"] or 0), row["category"]))
+        key = eligible[0]["category"] if eligible else None
+        incomplete = bool(warnings) or len(eligible) > 1
     rows = []
-    warnings = list(probe.warnings)
     if key:
         page = await executor.list_model_items("types", category=key, limit=200)
-        rows = [dict(id=t.get("FamilyTypeId"), name=_type_name(t), family=t.get("FamilyName"),
-                     shown=t.get("Category"), category=key) for t in page.rows]
-        warnings.extend(page.warnings)
-        incomplete = incomplete or page.truncated is not False
+        data = native_types(page, key)
+        rows = data["rows"]
+        warnings.extend(data["warnings"])
+        incomplete = incomplete or data["truncated"]
     if incomplete:
         scope = f" Only the first {len(rows)} types of {key} were read." if key else ""
         warnings.append(f"Cross-category query unavailable.{scope} Choose a category for a full search.")
     return {"rows": rows, "warnings": warnings, "truncated": bool(incomplete or warnings)}
+
+
+def _coverage_warnings(data):
+    if data.truncated or (data.total is not None and data.total != len(data.rows)):
+        return ["The add-in returned an incomplete list."]
+    if data.truncated is None and data.total is None:
+        return ["The add-in did not confirm that its list was complete."]
+    return []
+
+
+def native_types(data, category):
+    rows = [dict(id=t.get("FamilyTypeId"), name=_type_name(t), family=t.get("FamilyName"),
+                 shown=t.get("Category"), category=t.get("BuiltInCategory") or category) for t in data.rows]
+    warnings = data.warnings + _coverage_warnings(data)
+    return {"rows": rows, "warnings": warnings, "truncated": bool(warnings)}
+
+
+def native_categories(data):
+    rows, warnings = type_category_items(data)
+    return rows, warnings + _coverage_warnings(data)
 
 
 def _prune(now):

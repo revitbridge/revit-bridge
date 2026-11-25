@@ -29,7 +29,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 - A cold cross-category type search uses one fixed, bounded inventory query. Each type
   search makes at most five bridge calls, including capability and document checks.
   The same connection and unmodified document can reuse a complete inventory for up to
-  30 seconds. Incomplete reads are retried. If an add-in disables fixed queries, the
+  30 seconds. Unreadable rows, native warnings and mismatched totals prevent cache
+  reuse, so the next search retries the incomplete list. If an add-in disables fixed queries, the
   picker reports the scope of the native category results it can still read.
 - If selection scanning reaches its time budget, `total` gives the full selection count.
   Unfiltered pages keep their selection order. Filtered pages rank the available rows.

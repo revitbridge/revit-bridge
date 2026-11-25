@@ -101,7 +101,7 @@ def _type_item(type_id, family, name, shown, category: str | None) -> dict | Non
     """A type as a candidate: ``label`` is ``family: type``, ``detail`` the category as Revit shows it,
     ``category`` the OST_* name when it is known (the category asked for, or the row's
     ``BuiltInCategory``; never guessed from the display name)."""
-    type_id = int_or_none(type_id)
+    type_id = element_id_or_none(type_id)
     if type_id is None:
         return None
     family, shown = str(family or ""), str(shown or "")
@@ -299,15 +299,9 @@ def _category_inventories(items, matched):
 async def _type_category(executor, category):
     if category:
         data = await executor.get_type_rows(category)
-        items = [item for row in data.rows if (item := _type_item(
-            row.get("FamilyTypeId"), row.get("FamilyName"), _type_name(row), row.get("Category"), category))]
-        return {"items": items, "warnings": data.warnings, "truncated": data.truncated}
-    reply = await run_query(executor, "type_categories")
-    if "error" in reply:
-        return dict(reply, kind="type")
-    rows = reply["items"]
-    return {"items": [_category_item(row) for row in rows], "warnings": reply.get("warnings", []),
-            "truncated": reply.get("truncated", False),
+        return _inventory_items(mention_cache.native_types(data, category), {category})
+    rows, warnings = mention_cache.native_categories(await executor.get_type_category_rows())
+    return {"items": [_category_item(row) for row in rows], "warnings": warnings, "truncated": bool(warnings),
             "facets": [{"category": r["category"], "label": r["display_name"] or r["category"],
                         "count": r["count"]} for r in rows]}
 

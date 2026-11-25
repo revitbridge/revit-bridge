@@ -639,6 +639,98 @@ def test_incomplete_or_failed_cold_inventory_is_retried_without_poisoning_the_ca
     run(handler, pick)
 
 
+@pytest.mark.parametrize("failure", ["missing-id", "zero-id", "wrong-category", "bad-object", "total", "flag",
+                                     "warning", "unknown-coverage", "legacy-bad-object", "legacy-null"])
+def test_explicit_category_preserves_good_rows_and_does_not_publish_uncertain_rows_to_aliases(failure):
+    from revit_bridge.mention_cache import DOCUMENT_STAMP, TYPE_INVENTORY
+
+    legacy = failure.startswith("legacy-")
+    model = FakeModel(list_model_items=not legacy)
+    failing = True
+    seen = []
+    def handler(request):
+        params = request.get("params", {})
+        seen.append(params.get("code") or request["method"])
+        reply = model(request)
+        if not failing:
+            return reply
+        value = reply.get("result")
+        if request["method"] == "get_available_family_types":
+            if failure == "legacy-null":
+                reply["result"] = None
+            else:
+                value[1] = "broken row"
+        if request["method"] == "list_model_items" and params.get("category") == "OST_Walls":
+            if failure == "missing-id":
+                del value["Items"][1]["FamilyTypeId"]
+            elif failure == "zero-id":
+                value["Items"][1]["FamilyTypeId"] = 0
+            elif failure == "wrong-category":
+                value["Items"][1]["BuiltInCategory"] = "OST_Doors"
+            elif failure == "bad-object":
+                value["Items"][1] = None
+            elif failure == "total":
+                value.update(Total=8, Truncated=False)
+            elif failure == "flag":
+                value["Truncated"] = True
+            elif failure == "warning":
+                value["Warnings"] = ["Native read failed for one row."]
+            elif failure == "unknown-coverage":
+                del value["Total"], value["Truncated"]
+        return reply
+
+    async def pick(executor):
+        nonlocal failing
+        first = await mention_candidates(executor, "type", category="OST_Walls")
+        if failure == "legacy-null":
+            assert first["error"] == "revit_error"
+        else:
+            assert first["truncated"] and first["warnings"] and first["items"][0]["id"] == 401
+        assert len(seen) <= 5
+        failing = False
+        seen.clear()
+        retried = await mention_candidates(executor, "type", q="wall")
+        assert [r["id"] for r in retried["items"]] == [401, 402] and not retried["truncated"]
+        assert TYPE_INVENTORY in seen and len(seen) <= 5
+        seen.clear()
+        warm = await mention_candidates(executor, "type", category="OST_Walls")
+        assert warm["total"] == 2 and seen == [DOCUMENT_STAMP]
+    run(handler, pick)
+
+
+@pytest.mark.parametrize("fault", ["bad-category", "total", "warning", "flag"])
+def test_partial_native_category_navigation_is_retried(fault):
+    model = FakeModel()
+    failing = True
+    nav_reads = []
+    def handler(request):
+        reply = model(request)
+        if request.get("params", {}).get("kind") == "type_categories":
+            nav_reads.append(request)
+            if failing:
+                data = reply["result"]
+                if fault == "bad-category":
+                    data["Items"][0]["Category"] = 0
+                elif fault == "total":
+                    data["Total"] += 1
+                    del data["Truncated"]
+                elif fault == "warning":
+                    data["Warnings"] = ["category read failed"]
+                else:
+                    data["Truncated"] = True
+        return reply
+    async def pick(executor):
+        nonlocal failing
+        partial = await mention_candidates(executor, "type")
+        assert partial["items"] and partial["truncated"] and partial["warnings"]
+        failing = False
+        recovered = await mention_candidates(executor, "type")
+        assert recovered["total"] == 4 and not recovered["truncated"] and "warnings" not in recovered
+        assert await mention_candidates(executor, "type") == recovered
+        assert len(nav_reads) == 2
+    run(handler, pick)
+
+
 @pytest.mark.parametrize("alias,category", [
     ("墙", "OST_Walls"), ("结构柱", "OST_StructuralColumns"), ("梁", "OST_StructuralFraming"),
     ("framing", "OST_StructuralFraming"), ("板", "OST_Floors"), ("楼板", "OST_Floors"), ("slab", "OST_Floors"),
