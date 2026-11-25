@@ -1,16 +1,22 @@
 schema_version: 1
 name: get_element_parameters
+read_only: true
 display_name: Get Element Parameters
-description: "Read instance parameters on one element. Type parameters are not included. Delimit requested names with semicolons. Value holds numeric or raw text data; ValueString holds formatted display text."
+description: "Read only. Read instance parameters on one element. Type parameters are not included. Delimit requested names with semicolons. Value holds numeric or raw text data; ValueString holds formatted display text."
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
+  long idOf(ElementId id) => long.Parse(id.ToString(), System.Globalization.CultureInfo.InvariantCulture);
   Func<string, Element> elementById = text =>
   {
       long id;
       if (!long.TryParse(text, out id) || id <= 0)
           throw new InvalidOperationException("REFUSED: Expected a positive element id: " + text);
-      Element result = document.GetElement(new ElementId(id));
+      var nativeId = (BuiltInCategory)id - (BuiltInCategory)0;
+      if ((long)nativeId != id) throw new InvalidOperationException("REFUSED: Element id exceeds this Revit version's range.");
+      #pragma warning disable 618
+      Element result = document.GetElement(new ElementId(nativeId));
+      #pragma warning restore 618
       if (result == null)
           throw new InvalidOperationException("REFUSED: Element no longer exists: " + text);
       return result;
@@ -29,7 +35,7 @@ code_template: |
       try
       {
           string name = p.Definition.Name;
-          string builtIn = p.Id.Value < 0 ? Enum.GetName(typeof(BuiltInParameter), (BuiltInParameter)p.Id.Value) : null;
+          string builtIn = idOf(p.Id) < 0 ? Enum.GetName(typeof(BuiltInParameter), (BuiltInParameter)idOf(p.Id)) : null;
           if (requested.Count != 0 && !requested.Contains(name) && (builtIn == null || !requested.Contains(builtIn))) continue;
           found.Add(name);
           if (builtIn != null) found.Add(builtIn);
@@ -40,7 +46,7 @@ code_template: |
               switch (p.StorageType)
               {
                   case StorageType.Integer: value = p.AsInteger(); break;
-                  case StorageType.ElementId: value = p.AsElementId().Value; break;
+                  case StorageType.ElementId: value = idOf(p.AsElementId()); break;
                   case StorageType.String: value = p.AsString(); break;
                   case StorageType.Double:
                       var spec = p.Definition.GetDataType();
@@ -51,12 +57,12 @@ code_template: |
               }
           }
           string display = !p.HasValue ? null : p.StorageType == StorageType.String ? p.AsString() : p.AsValueString();
-          items.Add(new { ParameterId = p.Id.Value, Name = name, BuiltIn = builtIn, Storage = p.StorageType.ToString(),
+          items.Add(new { ParameterId = idOf(p.Id), Name = name, BuiltIn = builtIn, Storage = p.StorageType.ToString(),
               Value = value, Unit = unit, ValueString = display, Display = display });
       }
-      catch (Exception ex) { skipped.Add(new { ParameterId = p.Id.Value, Reason = ex.Message }); }
+      catch (Exception ex) { skipped.Add(new { ParameterId = idOf(p.Id), Reason = ex.Message }); }
   }
-  return new { Status = "Ok", ElementId = element.Id.Value, Items = items, Missing = requested.Except(found, StringComparer.OrdinalIgnoreCase).ToList(), Skipped = skipped };
+  return new { Status = "Ok", ElementId = idOf(element.Id), Items = items, Missing = requested.Except(found, StringComparer.OrdinalIgnoreCase).ToList(), Skipped = skipped };
 parameters:
   - name: element_id
     type: integer

@@ -407,7 +407,7 @@ def _render_planner(code: bool) -> str:
 def _render_supervisor(code: bool) -> str:
     report = " ".join(_HOST_STEPS["8"].split()[1:])            # step 8 without its number, on one line
     report = _swap(report, "The execution comes back to you as a message from the host. ", "")
-    location = "in this host's interface" if code else 'by clicking "确认并执行" on the card in the chat reply'
+    location = "in this host's interface" if code else 'by clicking "确认并执行" on the card in this chat'
     ask_form = "" if code else " The host shows your question as a form in this reply."
     return f"""\
 You are the supervisor of a Revit host built on revit-bridge 0.9. The designer
@@ -442,14 +442,15 @@ Your reply is exactly one JSON object and nothing else, no text before or after 
 _ROLE_RENDERERS = {"analyst": _render_analyst, "planner": _render_planner, "supervisor": _render_supervisor}
 
 
-def host_instructions(role: str | None = None, code: bool = True, mentions: bool = False) -> str:
+def host_instructions(role: str | None = None, code: bool = True, mentions: bool = False, *,
+                      confirm_button_label: str = "确认并执行") -> str:
     """The instructions for a host whose interface does the confirmation and execution.
 
     With no arguments: the whole text, as in 0.8.2 but for the version in its
     first line. ``code=False`` leaves out writing code (execute_code, the
     snippet contract, blocked_code) and describes a card embedded in the proposing
     reply. The planner offers choices with ``ask_designer``, and the designer
-    clicks "确认并执行" on the card to confirm and run it.
+    clicks the host's ``confirm_button_label`` on the card to confirm and run it.
     ``mentions=True`` adds the rule for a "Designer's selections" block. Any
     variant other than the default also names the query kinds added later
     (links, type_categories, link_id).
@@ -471,7 +472,9 @@ def host_instructions(role: str | None = None, code: bool = True, mentions: bool
     if role is None:
         if code and not mentions:
             return _render("host")
-        return _render_host(bool(code), bool(mentions))
-    if role not in _ROLE_RENDERERS:
-        raise ValueError(f"unknown role {role!r}: expected one of {', '.join(ROLES)}")
-    return _ROLE_RENDERERS[role](bool(code))
+        text = _render_host(bool(code), bool(mentions))
+    else:
+        if role not in _ROLE_RENDERERS:
+            raise ValueError(f"unknown role {role!r}: expected one of {', '.join(ROLES)}")
+        text = _ROLE_RENDERERS[role](bool(code))
+    return text if code else text.replace("确认并执行", confirm_button_label)

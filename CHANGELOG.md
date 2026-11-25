@@ -6,6 +6,21 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Capability packs can declare `read_only: true`. The catalogue and pack details expose
+  this boolean, which defaults to false. Eight built-in tools declare it. Hosts can check
+  the pack's origin separately when deciding how to handle user overrides.
+- Selected and rechecked element items include `document_id`, an opaque identifier for
+  the open document on the current device. Hosts can compare it before accepting a pick.
+- Hosts can pass `confirm_button_label` to `host_instructions` for no-code chat prompts.
+
+### Compatibility
+
+- All eight declared read tools compile against Revit 2023 through 2027. Seven compile
+  against 2021. The 2021 API requires a different parameter specification getter for
+  `get_element_parameters`. This tool keeps its existing units on supported versions.
+
 ## [0.10.0] - 2026-11-25
 
 Mention search that ranks and understands category words, a mention kind for

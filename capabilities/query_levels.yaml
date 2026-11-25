@@ -1,5 +1,6 @@
 schema_version: 1
 name: query_levels
+read_only: true
 display_name: Query Levels
 description: List all levels in the model with their elevations (read-only).
 version: "1.0.0"
@@ -10,7 +11,7 @@ code_template: |
       .Cast<Level>()
       .OrderBy(l => l.Elevation)
       .Select(l => new {
-          Id = l.Id.Value,
+          Id = long.Parse(l.Id.ToString(), System.Globalization.CultureInfo.InvariantCulture),
           Name = l.Name,
           ElevationMm = Math.Round(l.Elevation * 304.8, 1)
       })

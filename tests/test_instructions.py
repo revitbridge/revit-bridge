@@ -666,7 +666,7 @@ def test_web_chat_role_directs_the_designer_to_the_embedded_card(role):
         assert obsolete.casefold() not in flat.casefold()
     assert not re.search(r"\b(?:confirm|click|approve|open)\b[^.!?]{0,80}\bin Revit\b", flat, re.I)
     if role == "supervisor":
-        assert "on the card in the chat reply" in flat and "question as a form" in flat
+        assert "on the card in this chat" in flat and "question as a form" in flat
     else:
         assert '卡片在我上一条提交它的回复里' in flat and "Do not submit it again" in flat
         if role == "analyst":
@@ -682,6 +682,15 @@ def test_web_chat_role_directs_the_designer_to_the_embedded_card(role):
 def test_an_unknown_role_is_refused():
     with pytest.raises(ValueError, match="unknown role 'executor'"):
         host_instructions(role="executor")
+
+
+@pytest.mark.parametrize("role", [None, "analyst", "planner", "supervisor"])
+@pytest.mark.parametrize("mentions", [False, True])
+def test_custom_button_label_only_changes_no_code_prompt(role, mentions):
+    for code in (False, True):
+        default = host_instructions(role, code, mentions)
+        text = host_instructions(role, code, mentions, confirm_button_label="Run approved task")
+        assert text == (default if code else default.replace("确认并执行", "Run approved task"))
 
 
 def test_load_contract_reports_what_is_wrong(tmp_path):

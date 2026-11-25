@@ -68,7 +68,7 @@ _BOOLEAN_TYPES = frozenset({"bool", "boolean"})
 # values are "designer", "tool:<kind>", "answer" or "default".
 PACK_FIELDS = (
     "schema_version", "name", "display_name", "description", "version",
-    "revit_versions", "code_template", "parameters", "preconditions",
+    "revit_versions", "read_only", "code_template", "parameters", "preconditions",
     "not_for", "applies_when", "validator", "fixtures",
     "approved_by", "approved_at", "created_at", "source_query",
 )
@@ -190,6 +190,7 @@ class SolidifiedTool:
     execution_count: int = 0            # from usage.json
     last_used: str = ""                 # from usage.json
     failure_count: int = 0              # consecutive failures, from usage.json
+    read_only: bool = False             # pack declaration; user overrides are still user packs
 
 
 KNOWN_FIELDS = {f.name for f in fields(SolidifiedTool)}
@@ -221,6 +222,7 @@ def normalize_pack(data: dict, fallback_name: str = "") -> dict:
     out.setdefault("code_template", "")
     out["version"] = "0.0.0" if is_v0 else str(out.get("version") or "0.0.0")
     out["revit_versions"] = [str(v) for v in (out.get("revit_versions") or [])]
+    out["read_only"] = out.get("read_only") is True
     out["parameters"] = [
         _normalize_param(p) for p in (out.get("parameters") or []) if isinstance(p, dict)
     ]

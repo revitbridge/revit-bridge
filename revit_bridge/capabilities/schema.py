@@ -24,7 +24,7 @@ PARAM_REF_RE = re.compile(r"^\{([A-Za-z_]\w*)\}$")
 
 TOP_LEVEL_FIELDS = frozenset({
     "schema_version", "name", "display_name", "description", "version",
-    "revit_versions", "code_template", "parameters", "preconditions",
+    "revit_versions", "read_only", "code_template", "parameters", "preconditions",
     "not_for", "applies_when", "validator", "fixtures",
     "approved_by", "approved_at", "created_at", "source_query",
     "tags",   # 0.1 leftover: read, never written
@@ -48,6 +48,8 @@ def validate_pack(data: Any) -> list[str]:
         errors.append(f"schema_version: expected {PACK_SCHEMA_VERSION}, got {data.get('schema_version')!r}")
     for key in sorted(set(data) - TOP_LEVEL_FIELDS):
         errors.append(f"unknown field {key!r}")
+    if "read_only" in data and not isinstance(data["read_only"], bool):
+        errors.append("read_only: must be a boolean")
 
     if not isinstance(data.get("name"), str) or not data["name"].strip():
         errors.append("name: required, non-empty string")

@@ -1,23 +1,29 @@
 schema_version: 1
 name: get_element_geometry
+read_only: true
 display_name: Get Element Geometry
-description: "Read linear location geometry by element id or from the current selection. Positions and lengths are in mm, direction vectors are unitless."
+description: "Read only. Read linear location geometry by element id or from the current selection. Positions and lengths are in mm, direction vectors are unitless."
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
+  long idOf(ElementId id) => long.Parse(id.ToString(), System.Globalization.CultureInfo.InvariantCulture);
   Func<string, Element> elementById = text =>
   {
       long id;
       if (!long.TryParse(text, out id) || id <= 0)
           throw new InvalidOperationException("REFUSED: Expected a positive element id: " + text);
-      Element result = document.GetElement(new ElementId(id));
+      var nativeId = (BuiltInCategory)id - (BuiltInCategory)0;
+      if ((long)nativeId != id) throw new InvalidOperationException("REFUSED: Element id exceeds this Revit version's range.");
+      #pragma warning disable 618
+      Element result = document.GetElement(new ElementId(nativeId));
+      #pragma warning restore 618
       if (result == null)
           throw new InvalidOperationException("REFUSED: Element no longer exists: " + text);
       return result;
   };
 
   string idText = "{element_id}";
-  var ids = idText == "" ? new UIDocument(document).Selection.GetElementIds().ToList() : new List<ElementId> { elementById(idText).Id };
+  var ids = idText == "" ? new UIDocument(document).Selection.GetElementIds() : new List<ElementId> { elementById(idText).Id };
   if (ids.Count == 0 || ids.Count > 50)
       throw new InvalidOperationException("REFUSED: Supply an element id or select 1 to 50 elements.");
   Func<XYZ, double[]> vector = p => new double[] { p.X, p.Y, p.Z };
@@ -33,18 +39,18 @@ code_template: |
           Curve curve = (element?.Location as LocationCurve)?.Curve;
           if (curve == null || !curve.IsBound)
           {
-              skipped.Add(new { Id = id.Value, Reason = "No bounded location curve." });
+              skipped.Add(new { Id = idOf(id), Reason = "No bounded location curve." });
               continue;
           }
           XYZ direction = curve.ComputeDerivatives(0.5, true).BasisX.Normalize();
           XYZ horizontalNormal = XYZ.BasisZ.CrossProduct(direction);
           const double MinHorizontalComponent = 1e-9; // dimensionless on a unit tangent
-          items.Add(new { Id = id.Value, Start = point(curve.GetEndPoint(0)), End = point(curve.GetEndPoint(1)),
+          items.Add(new { Id = idOf(id), Start = point(curve.GetEndPoint(0)), End = point(curve.GetEndPoint(1)),
               Mid = point(curve.Evaluate(0.5, true)), Direction = vector(direction),
               NormalLeft = horizontalNormal.GetLength() <= MinHorizontalComponent ? null : vector(horizontalNormal.Normalize()),
               LengthMm = mm(curve.Length), Level = (document.GetElement(element.LevelId) as Level)?.Name });
       }
-      catch (Exception ex) { skipped.Add(new { Id = id.Value, Reason = ex.Message }); }
+      catch (Exception ex) { skipped.Add(new { Id = idOf(id), Reason = ex.Message }); }
   }
   if (items.Count == 0)
       throw new InvalidOperationException("REFUSED: No readable linear geometry: " + string.Join(", ", skipped));

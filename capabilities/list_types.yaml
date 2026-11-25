@@ -1,5 +1,6 @@
 schema_version: 1
 name: list_types
+read_only: true
 display_name: List Types
 description: >-
   Read only. List the types of one category (an OST_* name), loadable and system types alike:

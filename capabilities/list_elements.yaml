@@ -1,10 +1,12 @@
 schema_version: 1
 name: list_elements
+read_only: true
 display_name: List Elements
-description: "List element instances by category with optional exact level and type filters."
+description: "Read only. List element instances by category with optional exact level and type filters."
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
+  long idOf(ElementId id) => long.Parse(id.ToString(), System.Globalization.CultureInfo.InvariantCulture);
   Func<string, Level> levelByName = name =>
   {
       Level result = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
@@ -54,9 +56,9 @@ code_template: |
               if (e == null)
                   throw new InvalidOperationException("Element no longer exists.");
               var t = document.GetElement(e.GetTypeId()) as ElementType;
-              items.Add(new { Id = id.Value, Type = t?.Name, Family = t?.FamilyName, Level = (document.GetElement(e.LevelId) as Level)?.Name });
+              items.Add(new { Id = idOf(id), Type = t?.Name, Family = t?.FamilyName, Level = (document.GetElement(e.LevelId) as Level)?.Name });
           }
-          catch (Exception ex) { skipped.Add(new { Id = id.Value, Reason = ex.Message }); }
+          catch (Exception ex) { skipped.Add(new { Id = idOf(id), Reason = ex.Message }); }
       }
       // Read at most one extra id. Its presence decides truncation without expanding it.
       truncated = items.Count + skipped.Count == limit && ids.MoveNext();

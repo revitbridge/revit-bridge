@@ -1,5 +1,6 @@
 schema_version: 1
 name: elements_in_link
+read_only: true
 display_name: Elements In Link
 description: >-
   Read only. In one loaded Revit link, count the elements of one category (an OST_* name) and

@@ -780,7 +780,7 @@ def test_five_ranks_and_name_order_within_a_rank():
 
 
 def selection_model(selected, *, deleted=(), unreadable=(), changed=False, year=2026, names=None,
-                    metadata_limit=None, member_limit=None, recheck_limit=None):
+                    metadata_limit=None, member_limit=None, recheck_limit=None, document_id="example-opening"):
     import re
 
     batches = []
@@ -821,6 +821,8 @@ def selection_model(selected, *, deleted=(), unreadable=(), changed=False, year=
         else:
             ids = [int(n) for n in re.findall(r"new ElementId\((\d+)\)", code)]
             assert 0 < len(ids) <= 50
+            assert "document_id = document.GetHashCode().ToString()" in code
+            snapshot["document_id"] = document_id
             batches.append(ids)
         if not index and positions:
             assert positions == ["example"] and "if (view !=" in code
@@ -932,6 +934,18 @@ def test_selection_q_reads_full_details_only_after_ranking_and_paging():
     result, methods = run(handler, mention_candidates, "element", source="selection", q="999")
     assert result["items"] == [] and result["warnings"] == ["2 type: unreadable"]
     assert handler.batches == [] and len(methods) == 2
+
+
+def test_element_recheck_distinguishes_matching_elements_in_different_open_documents():
+    first = selection_model([701], document_id="opening-a")
+    pick = candidates(first, "element", source="selection")["items"][0]
+    assert pick["document_id"] == "opening-a"
+    refs = [{"kind": "element", "id": pick["id"]}]
+    assert run(selection_model([], document_id="opening-a"), resolve_mentions, refs)[0]["resolved"] == [pick]
+    other = run(selection_model([], document_id="opening-b"), resolve_mentions, refs)[0]["resolved"]
+    assert other == [dict(pick, document_id="opening-b")]
+    with pytest.raises(RevitQueryError, match="document identity"):
+        run(selection_model([], document_id=None), resolve_mentions, refs)
 
 
 def test_element_recheck_targets_document_not_selection_and_reports_deleted_id():

@@ -49,6 +49,7 @@ import os
 import sys
 from collections.abc import Mapping
 
+import yaml
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import ValidationError
@@ -442,6 +443,7 @@ def list_tools() -> str:
         {
             "name": t.name,
             "description": t.description,
+            "read_only": t.read_only,
             "version": t.version,
             "parameters": [
                 {k: p[k] for k in ("name", "type", "source", "required", "unit", "choices_from", "default") if k in p}
@@ -674,7 +676,17 @@ def tool_resource(name: str) -> str:
     tool_path = _tool_store.path_of(name)
     if tool_path is None:
         return json.dumps({"error": f"Tool '{name}' not found."})
-    return tool_path.read_text(encoding="utf-8")
+    text = tool_path.read_text(encoding="utf-8")
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return text
+    if not isinstance(data, dict) or isinstance(data.get("read_only"), bool):
+        return text
+    if "read_only" not in data and text.startswith(("schema_version:", "name:")):
+        return "read_only: false\n" + text
+    data["read_only"] = False
+    return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
 
 
 @mcp.resource("revit://evidence/recent")
