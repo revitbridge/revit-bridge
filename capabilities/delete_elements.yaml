@@ -3,12 +3,12 @@ name: delete_elements
 display_name: Delete Elements
 description: >-
   Delete the supplied ids (at most 100). Every supplied element is checked
-  first. Pinned elements, element types, views and levels stop the run. Nested family
-  components, curtain panels and mullions, stacked wall members and model group members
-  may be removed with their owner. Other dependent model elements and unclassified
-  dependencies stop the deletion. AlsoDeleted lists the first 100 additional ids and
-  AlsoDeletedCount reports the total. If classification exceeds the time budget, the
-  operation rolls back. The tool checks that every supplied id is gone.
+  first. Pinned elements, element types, views and levels stop the run. An independently
+  placeable component among the dependencies must also be supplied. Parts of a supplied
+  assembly, such as curtain panels, nested family components and stair railings, may be
+  removed with it. AlsoDeleted lists up to 100 additional ids. AlsoDeletedCount and
+  AlsoDeletedByClass count all additional removals. Unexpected removals or dependency
+  checks over the time budget roll back. The tool checks that every supplied id is gone.
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
@@ -57,71 +57,134 @@ code_template: |
       if (clock.ElapsedMilliseconds >= 250)
           throw new InvalidOperationException("REFUSED: The dependency check exceeded its time budget.");
   }
-  // Only these ownership relationships authorize removing model components with an input.
-  var owned = new HashSet<ElementId>(requested);
-  var pending = new Queue<ElementId>(inputIds);
-  void AddParts(IEnumerable<ElementId> parts)
-  {
-      foreach (var id in parts)
-      {
-          CheckBudget();
-          if (owned.Add(id)) pending.Enqueue(id);
-      }
-  }
-  while (pending.Count > 0)
+  bool IsModelGroup(Element e) =>
+      e is Group && e.Category?.Id.Value == (long)BuiltInCategory.OST_IOSModelGroups;
+
+  // Only the input elements may supply candidates. Ownership can excuse a candidate,
+  // but it cannot authorize an id absent from the input dependency reports.
+  var candidates = new Dictionary<ElementId, Element>();
+  var reports = new Dictionary<ElementId, HashSet<ElementId>>();
+  foreach (ElementId rootId in inputIds)
   {
       CheckBudget();
-      Element owner = document.GetElement(pending.Dequeue());
-      if (owner is FamilyInstance family) AddParts(family.GetSubComponentIds());
-      if (owner is Wall wall)
+      Element root = document.GetElement(rootId);
+      var reported = new HashSet<ElementId>();
+      foreach (ElementId id in root.GetDependentElements(null))
       {
-          if (wall.IsStackedWall) AddParts(wall.GetStackedWallMemberIds());
-          CurtainGrid grid = wall.CurtainGrid;
-          if (grid != null)
-          {
-              AddParts(grid.GetPanelIds());
-              AddParts(grid.GetMullionIds());
-          }
+          CheckBudget();
+          reported.Add(id);
+          if (!candidates.ContainsKey(id)) candidates.Add(id, document.GetElement(id));
       }
-      if (owner is Group group && group.Category?.Id.Value == (long)BuiltInCategory.OST_IOSModelGroups)
-          AddParts(group.GetMemberIds());
+      reports.Add(rootId, reported);
   }
 
-  // Revit's actual cascade can include more than a parent's logical children.
-  // Classify reachable dependencies while they still exist. An unexpected id stays unknown.
-  var modelDependents = new HashSet<ElementId>();
-  var allowedExtras = new HashSet<ElementId>(owned);
-  var visited = new HashSet<ElementId>(owned);
-  pending = new Queue<ElementId>(owned);
-  while (pending.Count > 0)
+  var owned = new HashSet<ElementId>(requested);
+  foreach (var report in reports)
   {
       CheckBudget();
-      Element parent = document.GetElement(pending.Dequeue());
-      if (parent == null) continue;
-      foreach (ElementId id in parent.GetDependentElements(null))
+      // Keep evidence of ownership local to the input that reported these candidates.
+      var members = new HashSet<ElementId> { report.Key };
+      var pending = new Queue<ElementId>();
+      pending.Enqueue(report.Key);
+      var stairHosts = new HashSet<ElementId>();
+      var railOwners = new HashSet<ElementId>();
+      void AddParts(IEnumerable<ElementId> ids)
+      {
+          foreach (var id in ids)
+          {
+              CheckBudget();
+              if (report.Value.Contains(id) && members.Add(id))
+              {
+                  owned.Add(id);
+                  pending.Enqueue(id);
+              }
+          }
+      }
+      while (pending.Count > 0)
       {
           CheckBudget();
-          if (!visited.Add(id)) continue;
-          Element dependent = document.GetElement(id);
-          if (dependent == null) continue;
-          pending.Enqueue(id);
-          // A Revit Sketch identifies its own role even when its category is unavailable.
-          if (dependent is Sketch)
+          ElementId ownerId = pending.Dequeue();
+          if (!candidates.TryGetValue(ownerId, out Element owner)) continue;
+          if (owner is FamilyInstance family) AddParts(family.GetSubComponentIds());
+          if (owner is Wall wall)
           {
-              allowedExtras.Add(id);
-              continue;
+              if (wall.IsStackedWall) AddParts(wall.GetStackedWallMemberIds());
+              CurtainGrid grid = wall.CurtainGrid;
+              if (grid != null)
+              {
+                  AddParts(grid.GetPanelIds());
+                  AddParts(grid.GetMullionIds());
+              }
           }
-          CategoryType categoryType;
-          try
+          if (IsModelGroup(owner)) AddParts(((Group)owner).GetMemberIds());
+          if (owner is Autodesk.Revit.DB.Architecture.Railing) railOwners.Add(ownerId);
+          if (owner is Autodesk.Revit.DB.Architecture.Stairs stairs)
           {
-              categoryType = dependent.Category?.CategoryType ?? CategoryType.Invalid;
+              railOwners.Add(ownerId);
+              stairHosts.Add(ownerId);
+              foreach (var components in new[] { stairs.GetStairsRuns(), stairs.GetStairsLandings() })
+                  foreach (var id in components)
+                  {
+                      CheckBudget();
+                      stairHosts.Add(id);
+                  }
+              AddParts(stairs.GetStairsSupports());
           }
-          catch (Autodesk.Revit.Exceptions.InvalidOperationException) { continue; }
-          if (categoryType == CategoryType.Model) modelDependents.Add(id);
-          else if (categoryType == CategoryType.Annotation || categoryType == CategoryType.AnalyticalModel
-              || categoryType == CategoryType.Internal)
-              allowedExtras.Add(id);
       }
+      if (railOwners.Count == 0) continue;
+      foreach (var id in report.Value)
+      {
+          CheckBudget();
+          if (candidates[id] is Autodesk.Revit.DB.Architecture.Railing railing && stairHosts.Contains(railing.HostId))
+          {
+              owned.Add(id);
+              railOwners.Add(id);
+          }
+      }
+      foreach (var id in report.Value)
+      {
+          CheckBudget();
+          if (owned.Contains(id) || !(candidates[id] is FamilyInstance part)) continue;
+          // Revit represents these assembly parts as ordinary FamilyInstances. When the
+          // API exposes no parent, the evidence is the dedicated category in this
+          // input's own report and a stair or railing proved to belong to this input.
+          long? categoryId = part.Category?.Id.Value;
+          bool stairSupport = categoryId == (long)BuiltInCategory.OST_StairsSupports && stairHosts.Count > 0;
+          if (!stairSupport && categoryId != (long)BuiltInCategory.OST_StairsRailingBaluster &&
+              categoryId != (long)BuiltInCategory.OST_RailingSystemBaluster &&
+              categoryId != (long)BuiltInCategory.OST_RailingSupport) continue;
+          Element parent = part.SuperComponent ?? part.Host;
+          if (parent == null || railOwners.Contains(parent.Id) || stairHosts.Contains(parent.Id) ||
+              (parent is Autodesk.Revit.DB.Architecture.ContinuousRail rail && railOwners.Contains(rail.HostRailingId)))
+              owned.Add(id);
+      }
+  }
+
+  var classes = new Dictionary<ElementId, string>();
+  foreach (var entry in candidates)
+  {
+      CheckBudget();
+      ElementId id = entry.Key;
+      Element e = entry.Value;
+      if (e == null)
+      {
+          classes.Add(id, "Unknown");
+          continue;
+      }
+      classes.Add(id, e.GetType().Name);
+      if (owned.Contains(id) || e is Panel || e is Mullion || e is CurtainGridLine) continue;
+      if (e is FamilyInstance nested && nested.SuperComponent is Element parent && owned.Contains(parent.Id))
+          continue;
+      bool independent = e is Wall || e is Floor || e is RoofBase || e is Ceiling ||
+          e is FamilyInstance || IsModelGroup(e) || e is Opening ||
+          e is Autodesk.Revit.DB.Architecture.Stairs || e is Autodesk.Revit.DB.Architecture.MultistoryStairs ||
+          e is Autodesk.Revit.DB.Structure.Rebar || e is Autodesk.Revit.DB.Structure.RebarInSystem ||
+          e is Autodesk.Revit.DB.Structure.RebarContainer || e is Autodesk.Revit.DB.Structure.AreaReinforcement ||
+          e is Autodesk.Revit.DB.Structure.PathReinforcement || e is Autodesk.Revit.DB.Structure.FabricSheet ||
+          e is Autodesk.Revit.DB.Structure.FabricArea;
+      if (e is Autodesk.Revit.DB.Architecture.Railing) independent = true;
+      if (independent)
+          throw new InvalidOperationException("REFUSED: Deletion also removes " + classes[id] + " " + id + "; include its id explicitly.");
   }
   CheckBudget();
   ICollection<ElementId> deleted;
@@ -133,15 +196,16 @@ code_template: |
   clock.Restart();
   int extraCount = 0;
   var also = new List<long>();
+  var byClass = new Dictionary<string, int>();
   var missing = new HashSet<ElementId>(requested);
   foreach (ElementId id in deleted)
   {
       CheckBudget();
+      if (!classes.TryGetValue(id, out string className))
+          throw new InvalidOperationException("REFUSED: Deletion returned an id outside the classified dependency set: " + id + "; rolling back.");
       if (missing.Remove(id)) continue;
-      if (modelDependents.Contains(id))
-          throw new InvalidOperationException("REFUSED: Deletion also removes model element " + id + "; include its id explicitly.");
-      if (!allowedExtras.Contains(id))
-          throw new InvalidOperationException("REFUSED: Could not classify dependent element " + id + "; rolling back.");
+      byClass.TryGetValue(className, out int count);
+      byClass[className] = count + 1;
       extraCount++;
       if (also.Count < 100) also.Add(idOf(id));
   }
@@ -159,7 +223,8 @@ code_template: |
       ElementIds = inputIds.Select(id => idOf(id)).ToList(),
       Count = inputIds.Count,
       AlsoDeleted = also,
-      AlsoDeletedCount = extraCount
+      AlsoDeletedCount = extraCount,
+      AlsoDeletedByClass = byClass
   };
 parameters:
   - name: element_ids

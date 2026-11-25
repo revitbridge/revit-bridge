@@ -6,7 +6,7 @@ using System.Threading;
 
 namespace Autodesk.Revit.Exceptions
 {
-    class ArgumentException : Exception { }
+    class ArgumentException(string message = "") : Exception(message) { }
     class ArgumentNullException : ArgumentException { }
     class InvalidOperationException : Exception { }
 }
@@ -16,7 +16,7 @@ record ElementId(long Value)
     public override string ToString() => Value.ToString();
 }
 
-enum BuiltInCategory { OST_IOSModelGroups = -2000095 }
+enum BuiltInCategory { OST_IOSModelGroups = -2000095, OST_StairsRailingBaluster, OST_RailingSystemBaluster, OST_RailingSupport, OST_StairsSupports }
 enum CategoryType { Model, Annotation, Internal, AnalyticalModel, Invalid }
 record Category(CategoryType CategoryType, ElementId Id);
 
@@ -58,10 +58,54 @@ class View(long id, Category c) : Element(id, c) { }
 class Level(long id, Category c) : Element(id, c) { }
 class Sketch(long id, Category c) : Element(id, c) { }
 class HostObject(long id, Category c) : Element(id, c) { }
+class Floor(long id, Category c) : HostObject(id, c) { }
+class RoofBase(long id, Category c) : HostObject(id, c) { }
+class Ceiling(long id, Category c) : HostObject(id, c) { }
+class Opening(long id, Category c) : Element(id, c) { }
+class Panel(long id, Category c) : FamilyInstance(id, c) { }
+class Mullion(long id, Category c) : FamilyInstance(id, c) { }
+class CurtainGridLine(long id, Category c) : Element(id, c) { }
+class IndependentTag(long id, Category c) : Element(id, c) { }
+class LinearDimension(long id, Category c) : Element(id, c) { }
+class ModelLine(long id, Category c) : Element(id, c) { }
 class FamilyInstance(long id, Category c) : Element(id, c)
 {
+    public Element SuperComponent, Host;
     public List<ElementId> Subcomponents = new();
     public ICollection<ElementId> GetSubComponentIds() { Document.RecordRead(); return Subcomponents; }
+}
+
+namespace Autodesk.Revit.DB.Architecture
+{
+    class Stairs(long id, Category c) : Element(id, c)
+    {
+        public List<ElementId> Runs = new(), Landings = new(), Supports = new();
+        public ICollection<ElementId> GetStairsRuns() => Runs;
+        public ICollection<ElementId> GetStairsLandings() => Landings;
+        public ICollection<ElementId> GetStairsSupports() => Supports;
+    }
+    class StairsRun(long id, Category c) : Element(id, c) { }
+    class StairsLanding(long id, Category c) : Element(id, c) { }
+    class MultistoryStairs(long id, Category c) : Element(id, c) { }
+    class Railing(long id, Category c, long host) : Element(id, c)
+    {
+        public ElementId HostId => new ElementId(host);
+    }
+    class ContinuousRail(long id, Category c, long owner) : Element(id, c)
+    {
+        public ElementId HostRailingId => new ElementId(owner);
+    }
+}
+
+namespace Autodesk.Revit.DB.Structure
+{
+    class Rebar(long id, Category c) : Element(id, c) { }
+    class RebarInSystem(long id, Category c) : Element(id, c) { }
+    class RebarContainer(long id, Category c) : Element(id, c) { }
+    class AreaReinforcement(long id, Category c) : Element(id, c) { }
+    class PathReinforcement(long id, Category c) : Element(id, c) { }
+    class FabricSheet(long id, Category c) : Element(id, c) { }
+    class FabricArea(long id, Category c) : Element(id, c) { }
 }
 class CurtainGrid
 {
@@ -102,8 +146,9 @@ class Document
     public Dictionary<ElementId, Element> Live;
     public Dictionary<long, long[]> ActualChildren = new();
     public readonly List<long> DependentQueries = new();
+    public readonly HashSet<ElementId> UnreadableIds = new();
     public int DeleteCalls;
-    public bool OmitRequested, LeaveSurvivor, SlowAfterDelete, SlowBeforeDelete;
+    public bool OmitRequested, LeaveSurvivor, SlowAfterDelete, SlowBeforeDelete, CannotDelete;
 
     public Document(IEnumerable<Element> elements)
     {
@@ -115,10 +160,11 @@ class Document
         if (DeleteCalls != 0) throw new Exception("classification must precede deletion");
         if (SlowBeforeDelete) Thread.Sleep(300);
     }
-    public Element GetElement(ElementId id) => Live.GetValueOrDefault(id);
+    public Element GetElement(ElementId id) => UnreadableIds.Contains(id) ? null : Live.GetValueOrDefault(id);
     public ICollection<ElementId> Delete(ICollection<ElementId> requested)
     {
         if (++DeleteCalls != 1) throw new Exception("second deletion attempt");
+        if (CannotDelete) throw new Autodesk.Revit.Exceptions.ArgumentException("Simulated refusal for this stair.");
         var effects = new List<ElementId>();
         var pending = new Queue<ElementId>(requested);
         while (pending.TryDequeue(out var id))

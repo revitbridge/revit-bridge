@@ -19,8 +19,9 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   wall with `create_door_on_wall` and `create_window_on_wall`.
 - Transform model instances with `copy_elements`, `rotate_elements` and
   `mirror_elements`. Use `change_type_by_name` to resolve a target type and verify
-  each instance. `delete_elements` checks the supplied IDs and reports auxiliary
-  elements removed by Revit.
+  each instance. `delete_elements` checks the dependencies of the supplied IDs
+  before deletion. It refuses unlisted independently placeable components and
+  reports the additional elements actually removed, with counts by Revit class.
 
 ### Changed
 
@@ -47,6 +48,9 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Fixed
 
+- `create_door` and `create_door_on_wall` refuse openings extending below the
+  host wall or above its top. Along-wall door and window placement reports the
+  actual instance location after regeneration, including on curved walls.
 - Parameter read-back compares element IDs as 64-bit integers. Adjacent IDs
   above the exact precision of a floating-point number are now distinguished.
 

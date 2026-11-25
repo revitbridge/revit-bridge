@@ -10,14 +10,18 @@ def test_classification_precedes_the_only_deletion_and_postchecks_precede_succes
     assert errors == [] and code.count("document.Delete(") == 1
     deletion = code.index("document.Delete(")
     for read in ("GetSubComponentIds(", "GetPanelIds(", "GetMullionIds(", "GetStackedWallMemberIds(",
-                 "GetMemberIds(", "GetDependentElements(", "dependent.Category"):
+                 "GetMemberIds(", "root.GetDependentElements(null)", "e.GetType().Name",
+                 "if (independent)", "stairs.GetStairsSupports()"):
         assert code.index(read) < deletion
-    for check in ("modelDependents.Contains(id)", "!allowedExtras.Contains(id)", "missing.Count > 0", "survivors.Count > 0"):
+    assert code.count("GetDependentElements(") == 1
+    for check in ("!classes.TryGetValue(id", "byClass[className]", "missing.Count > 0", "survivors.Count > 0"):
         assert deletion < code.index(check) < code.index('Status = "Deleted"')
-    assert "FilteredElementCollector" not in code and "Settings.Categories" not in code
+    assert all(term not in code for term in ("FilteredElementCollector", "Settings.Categories", "CategoryType"))
 
 
 def test_rendered_delete_and_transaction_rollback(tmp_path):
     cases = {name: {"element_ids": ids} for name, ids in (("One", "10"), ("Both", "10,11"), ("Empty", ""))}
     output = simulate(tmp_path, "delete_simulation", "delete_elements", cases)
-    assert len([line for line in output.splitlines() if line.startswith("PASS ")]) == 28, output
+    reports = [line for line in output.splitlines() if line.startswith("PASS ")]
+    assert len(reports) == 51, output
+    assert "PASS protect dependent FabricArea" in reports, output
