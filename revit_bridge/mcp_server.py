@@ -43,6 +43,7 @@ The server never calls a model: the host does. Connection settings come from
 """
 from __future__ import annotations
 
+import base64
 import argparse
 import asyncio
 import inspect
@@ -51,7 +52,7 @@ import os
 import sys
 from collections.abc import Mapping
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Image, MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
@@ -671,13 +672,19 @@ async def open_view(name: str) -> str:
 
 
 @_tool(annotations=_READ_ONLY, meta={"read_only": True})
-async def capture_view_image(width: int = 1600, view_id: int | None = None) -> str:
-    """Read only. Export a Revit view as a base64 PNG with pixel dimensions and view name.
+async def capture_view_image(width: int = 1600, view_id: int | None = None):
+    """Read only. Export a Revit view as a PNG image with pixel dimensions and view name.
     Omit view_id to capture the active view. Maximum width is 1600 pixels and maximum size is 1 MiB."""
     client, refused = await _pooled_or_refusal(addin_test.view_reply)
     if refused is not None:
         return _dumps(refused)
-    return _dumps(await view_commands.capture_view_image(client, width, view_id, ledger=_ledger))
+    result = await view_commands.capture_view_image(client, width, view_id, ledger=_ledger)
+    encoded = result.pop("png_base64", None) if isinstance(result, dict) else None
+    if not encoded:
+        return _dumps(result)
+    # The picture travels as MCP image content: base64 inside the JSON text would exceed
+    # host output limits and a model cannot see it as an image.
+    return [_dumps(result), Image(data=base64.b64decode(encoded), format="png")]
 
 
 # -- Resources ----------------------------------------------------------------

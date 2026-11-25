@@ -36,7 +36,14 @@ def invoke(monkeypatch, device, tool, params):
     monkeypatch.setattr(mcp_server.RevitClientPool, "get_client", AsyncMock(return_value=device))
     reply = asyncio.run(mcp_server.mcp.call_tool(tool, params))
     assert not reply.is_error, reply.content
-    return json.loads(reply.content[0].text)
+    result = json.loads(reply.content[0].text)
+    # A capture sends the PNG as MCP image content, never as base64 inside the JSON text.
+    assert "png_base64" not in result
+    images = [c for c in reply.content[1:] if c.type == "image"]
+    if images:
+        assert len(reply.content) == 2 and images[0].mime_type == "image/png"
+        result["png_base64"] = images[0].data
+    return result
 
 
 def test_host_descriptors_extend_mcp_listing_on_request():
