@@ -65,6 +65,8 @@ WITHOUT_VALIDATOR = {
     # The placement category varies, the route may partially succeed, and
     # connecting pipes is verified against the fitting's physical connectors.
     "place_family_instance", "create_pipes_by_points", "connect_pipes", "list_mep_types",
+    # Attached links can add several instances. The pack reads back the placed instance and its type.
+    "link_revit_model",
     # CAD links have drawing-specific categories. Loaded families span categories.
     "link_cad", "load_family",
 }
