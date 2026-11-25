@@ -48,10 +48,11 @@ so the instructions never lose the item.
 
 ``host_instructions(role=None, code=True, mentions=False)`` also renders,
 from the same pieces, the host text without code-writing (``code=False``:
-no execute_code, snippet contract or blocked_code, for a host whose model
-never writes code), with the rule for the designer's selections block
-(``mentions=True``), and one shorter text per role of a host that splits the
-work: ``analyst`` (route a message, one JSON object), ``planner`` (fill and
+no execute_code, snippet contract or blocked_code). That host embeds the card
+in the proposing reply, offers choices with ``ask_designer`` and labels the
+confirmation button "确认并执行". The ``mentions=True`` option adds the designer's
+selections block. A host that splits the work can request one shorter text per
+role: ``analyst`` (route a message, one JSON object), ``planner`` (fill and
 propose the spec) and ``supervisor`` (read and report the execution result).
 With no arguments it returns the 0.8.2 host text, only the version in its
 first line changed.
@@ -287,9 +288,8 @@ def _questions_step(code: bool) -> str:
     step = _HEAD_STEPS["3"]
     if code:
         return step
-    return _swap(step, "Ask the designer all of them in one round.",
-                 "Call ask_designer when you can offer choices.\n"
-                 "   Use options grounded in the facts you read. Present them on the form and end the turn.")
+    return (step + "   Call ask_designer when you can offer choices.\n"
+            "   Use options grounded in the facts you read. Present them on the form and end the turn.\n")
 
 
 def _host_confirms_step(code: bool, number: str = "7") -> str:
@@ -355,7 +355,8 @@ def _render_host(code: bool, mentions: bool) -> str:
 def _render_analyst(code: bool) -> str:
     none_rule = "" if code else " Never offer to write code."
     card_rule = "" if code else (
-        " With a pending card, route assent or a question about its location to chat.\n"
+        " With a pending card, route plain assent without changes or a question about its location to chat.\n"
+        "  If the reply asks for a change, route the requested task.\n"
         f"  {_CARD_ACTION} {_CARD_LOCATION}")
     return f"""\
 You are the analyst of a Revit host built on revit-bridge 0.9. You read one message
@@ -446,7 +447,9 @@ def host_instructions(role: str | None = None, code: bool = True, mentions: bool
 
     With no arguments: the whole text, as in 0.8.2 but for the version in its
     first line. ``code=False`` leaves out writing code (execute_code, the
-    snippet contract, blocked_code) for a host whose model never writes any;
+    snippet contract, blocked_code) and describes a card embedded in the proposing
+    reply. The planner offers choices with ``ask_designer``, and the designer
+    clicks "确认并执行" on the card to confirm and run it.
     ``mentions=True`` adds the rule for a "Designer's selections" block. Any
     variant other than the default also names the query kinds added later
     (links, type_categories, link_id).

@@ -520,10 +520,9 @@ def test_the_variants_share_the_default_steps_verbatim():
     step4 = default[default.index("4. reconcile("):default.index("5. Show the spec card")]
     for args, text in _variants():
         if args.get("role") in (None, "planner"):
+            assert step3 in text, args
             if args.get("code") is False:
                 assert "Call ask_designer when you can offer choices." in text, args
-            else:
-                assert step3 in text, args
             assert step4 in text, args
             extended = LINK_STEP in " ".join(text.split())
             assert extended is (text != HOST_DEFAULT), args          # every variant but the default
@@ -670,7 +669,8 @@ def test_web_chat_role_directs_the_designer_to_the_embedded_card(role):
     else:
         assert '卡片在我上一条提交它的回复里' in flat and "Do not submit it again" in flat
         if role == "analyst":
-            assert "route assent or a question about its location to chat" in flat
+            assert "route plain assent without changes or a question about its location to chat" in flat
+            assert "If the reply asks for a change, route the requested task." in flat
         else:
             assert "Only that click authorizes execution" in flat
             assert "ask_designer" in flat and "options grounded in the facts you read" in flat
