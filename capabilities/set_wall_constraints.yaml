@@ -1,0 +1,141 @@
+schema_version: 1
+name: set_wall_constraints
+display_name: Set Wall Constraints
+description: "Change a wall's base or top level, offsets or unconnected height."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, double> number = text =>
+  {
+      double value;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out value)
+          || double.IsNaN(value) || double.IsInfinity(value))
+          throw new InvalidOperationException("REFUSED: Expected a finite number: " + text);
+      return value;
+  };
+  Func<string, double> feet = text => UnitUtils.ConvertToInternalUnits(number(text), UnitTypeId.Millimeters);
+
+  Func<string, Level> levelByName = name =>
+  {
+      Level result = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+          .FirstOrDefault(l => l.Name == name);
+      if (result == null)
+          throw new InvalidOperationException("REFUSED: No level named " + name);
+      return result;
+  };
+
+  Func<string, Element> elementById = text =>
+  {
+      long id;
+      if (!long.TryParse(text, out id) || id <= 0)
+          throw new InvalidOperationException("REFUSED: Expected a positive element id: " + text);
+      Element result = document.GetElement(new ElementId(id));
+      if (result == null)
+          throw new InvalidOperationException("REFUSED: Element no longer exists: " + text);
+      return result;
+  };
+
+  Action<Element, BuiltInParameter, ElementId> setId = (element, key, value) =>
+  {
+      Parameter p = element.get_Parameter(key);
+      if (p == null || p.IsReadOnly || (!p.Set(value) && p.AsElementId() != value))
+          throw new InvalidOperationException("REFUSED: Cannot set " + key + " on " + element.Id);
+  };
+  Action<Element, BuiltInParameter, double> setLength = (element, key, value) =>
+  {
+      Parameter p = element.get_Parameter(key);
+      if (p == null || p.IsReadOnly || (!p.Set(value) && (!p.HasValue || Math.Abs(p.AsDouble() - value) > 1e-9)))
+          throw new InvalidOperationException("REFUSED: Cannot set " + key + " on " + element.Id);
+  };
+
+  Wall wall = elementById("{element_id}") as Wall;
+  if (wall == null) throw new InvalidOperationException("REFUSED: Element is not a wall.");
+  string baseName = "{base_level_name}", topName = "{top_level_name}", heightText = "{height}";
+  string baseText = "{base_offset}", topText = "{top_offset}";
+  if (baseName == "" && topName == "" && heightText == "" && baseText == "" && topText == "")
+      throw new InvalidOperationException("REFUSED: Supply at least one wall constraint.");
+  if (heightText != "" && (topName != "" || topText != ""))
+      throw new InvalidOperationException("REFUSED: Choose a top constraint or an unconnected height.");
+  if (baseName != "") setId(wall, BuiltInParameter.WALL_BASE_CONSTRAINT, levelByName(baseName).Id);
+  if (baseText != "") setLength(wall, BuiltInParameter.WALL_BASE_OFFSET, feet(baseText));
+  if (topName != "") setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, levelByName(topName).Id);
+  if (topText != "") setLength(wall, BuiltInParameter.WALL_TOP_OFFSET, feet(topText));
+  if (heightText != "")
+  {
+      double value = feet(heightText);
+      if (value <= 0) throw new InvalidOperationException("REFUSED: Height must be positive.");
+      setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, ElementId.InvalidElementId);
+      setLength(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM, value);
+  }
+  document.Regenerate();
+  Func<BuiltInParameter, string, bool> matchesOffset = (key, text) =>
+  {
+      var p = wall.get_Parameter(key);
+      return text == "" || (p != null && p.HasValue && Math.Abs(p.AsDouble() - feet(text)) < 1e-8);
+  };
+  if ((baseName != "" && wall.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT).AsElementId() != levelByName(baseName).Id)
+      || (topName != "" && wall.get_Parameter(BuiltInParameter.WALL_HEIGHT_TYPE).AsElementId() != levelByName(topName).Id)
+      || !matchesOffset(BuiltInParameter.WALL_USER_HEIGHT_PARAM, heightText)
+      || !matchesOffset(BuiltInParameter.WALL_BASE_OFFSET, baseText)
+      || !matchesOffset(BuiltInParameter.WALL_TOP_OFFSET, topText))
+      throw new InvalidOperationException("Wall constraint read-back failed.");
+  return new { Status = "Changed", ElementId = wall.Id.Value };
+parameters:
+  - name: element_id
+    type: integer
+    description: Element id in the active document
+    source: designer
+    required: true
+  - name: base_level_name
+    type: string
+    description: New base level name
+    source: answer
+    choices_from: levels
+    required: false
+    default: ""
+  - name: base_offset
+    type: double
+    description: "New base offset (mm)"
+    source: default
+    required: false
+    default: ""
+    unit: mm
+  - name: top_level_name
+    type: string
+    description: "Top constraint level, by exact name"
+    source: answer
+    choices_from: levels
+    required: false
+    default: ""
+  - name: top_offset
+    type: double
+    description: "New top offset (mm)"
+    source: default
+    required: false
+    default: ""
+    unit: mm
+  - name: height
+    type: double
+    description: "New unconnected height (mm)"
+    source: default
+    required: false
+    default: ""
+    unit: mm
+preconditions:
+  - text: The wall must have editable constraints.
+not_for:
+  - "create a wall"
+applies_when:
+  - "set wall constraints"
+validator:
+  kind: created_ids
+  category: OST_Walls
+fixtures:
+  - name: height
+    params: {element_id: 101, height: 3600}
+    expect: {Status: Changed}
+approved_by: null
+approved_at: null
+created_at: "2026-11-25T00:00:00"
+source_query: set wall constraints

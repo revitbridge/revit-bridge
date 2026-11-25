@@ -2,7 +2,7 @@ schema_version: 1
 name: move_elements
 display_name: Move Elements
 description: >-
-  Move the elements selected in Revit (at most 100) together by one vector in mm. Every selected
+  Move the listed element ids or the elements selected in Revit (at most 100) together by one vector in mm. Every selected
   element is checked first; pinned elements, element types, views, levels (moving one moves
   everything on it) and elements without a position in the model stop the run and nothing is
   moved. Grids are not moved by this tool: a grid in the selection stops the run. After the
@@ -38,7 +38,34 @@ code_template: |
       throw new InvalidOperationException("REFUSED: The move is outside the model's limits.");
   if (vector.GetLength() < stillTolerance)
       throw new InvalidOperationException("REFUSED: The move is zero; give a distance in X, Y or Z.");
-  List<ElementId> selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  string idsText = "{element_ids}";
+  List<ElementId> selected;
+  if (idsText.Length == 0)
+      selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  else
+  {
+      selected = new List<ElementId>();
+      string[] parts = idsText.Split(',');
+      if (parts.Length > MaxSelected)
+          throw new InvalidOperationException("REFUSED: Give at most 100 element ids.");
+      foreach (string part in parts)
+      {
+          long number;
+          if (!long.TryParse(part.Trim(), System.Globalization.NumberStyles.None, invariant, out number) || number <= 0)
+              throw new InvalidOperationException("REFUSED: Invalid element id " + part + ".");
+          // BuiltInCategory and the numeric ElementId constructor both widened in Revit 2024.
+          // Enum subtraction returns its underlying integer type: int on 2021/2023, long thereafter.
+          var nativeNumber = (BuiltInCategory)number - (BuiltInCategory)0;
+          if ((long)nativeNumber != number)
+              throw new InvalidOperationException("REFUSED: The id exceeds this Revit version's range.");
+          #pragma warning disable 618
+          var id = new ElementId(nativeNumber);
+          #pragma warning restore 618
+          if (selected.Contains(id))
+              throw new InvalidOperationException("REFUSED: Duplicate element id " + part + ".");
+          selected.Add(id);
+      }
+  }
   if (selected.Count == 0)
       throw new InvalidOperationException("REFUSED: Nothing is selected in Revit. Select the elements first, then run the tool again.");
   if (selected.Count > MaxSelected)
@@ -146,8 +173,14 @@ parameters:
     unit: mm
     source: designer
     required: true
+  - name: element_ids
+    type: string
+    description: "Comma-separated element ids. Omit to use the current selection."
+    source: designer
+    required: false
+    default: ""
 preconditions:
-  - text: "select the elements in Revit first (at most 100); unpin pinned elements"
+  - text: "supply element_ids or select the elements in Revit first (at most 100); unpin pinned elements"
 not_for:
   - "copy"
   - "rotate"
@@ -167,6 +200,9 @@ fixtures:
   - name: up
     params: {x: 0, y: 0, z: 3000}
     expect: {Status: "Moved"}
+  - name: by_id
+    params: {"x":100,"y":0,"z":0,"element_ids":"101,102"}
+    expect: {"Status":"Moved"}
 approved_by: null
 approved_at: null
 created_at: "2026-11-23T00:00:00"

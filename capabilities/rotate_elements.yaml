@@ -1,0 +1,158 @@
+schema_version: 1
+name: rotate_elements
+display_name: "Rotate Elements"
+description: >-
+  Rotate located elements around a vertical axis by the given angle in degrees. If no centre is supplied,
+  use the centre of the bounding box of the location samples.
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  const int MaxSelected = 100;
+  double Feet(string mm)
+  {
+      return UnitUtils.ConvertToInternalUnits(double.Parse(mm, invariant), UnitTypeId.Millimeters);
+  }
+  string idsText = "{element_ids}";
+  List<ElementId> selected;
+  if (idsText.Length == 0)
+      selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  else
+  {
+      selected = new List<ElementId>();
+      string[] parts = idsText.Split(',');
+      if (parts.Length > MaxSelected)
+          throw new InvalidOperationException("REFUSED: Give at most 100 element ids.");
+      foreach (string part in parts)
+      {
+          long number;
+          if (!long.TryParse(part.Trim(), System.Globalization.NumberStyles.None, invariant, out number) || number <= 0)
+              throw new InvalidOperationException("REFUSED: Invalid element id " + part + ".");
+          #pragma warning disable 618
+          var id = new ElementId(number);
+          #pragma warning restore 618
+          if (selected.Contains(id))
+              throw new InvalidOperationException("REFUSED: Duplicate element id " + part + ".");
+          selected.Add(id);
+      }
+  }
+  if (selected.Count == 0 || selected.Count > MaxSelected)
+      throw new InvalidOperationException("REFUSED: Give or select 1 to 100 elements.");
+
+  // Sample an instance's local axes too, so an in-place rotation or reflection can be checked.
+  List<XYZ> Samples(Element element)
+  {
+      var sample = new List<XYZ>();
+      var point = element.Location as LocationPoint;
+      var curve = element.Location as LocationCurve;
+      if (point != null)
+      {
+          sample.Add(point.Point);
+          var family = element as FamilyInstance;
+          if (family != null)
+          {
+              var axes = family.GetTransform();
+              sample.Add(point.Point + axes.BasisX);
+              sample.Add(point.Point + axes.BasisY);
+          }
+      }
+      else if (curve != null && curve.Curve != null && curve.Curve.IsBound)
+      {
+          sample.Add(curve.Curve.GetEndPoint(0));
+          sample.Add(curve.Curve.Evaluate(0.5, true));
+          sample.Add(curve.Curve.GetEndPoint(1));
+      }
+      return sample;
+  }
+  var sources = new List<Element>();
+  var original = new List<List<XYZ>>();
+  foreach (ElementId id in selected)
+  {
+      Element element = document.GetElement(id);
+      if (element == null || element is ElementType || element is View || element is Level || element is Grid)
+          throw new InvalidOperationException("REFUSED: Missing or unsupported model instance " + id + ".");
+      var sample = Samples(element);
+      if (sample.Count == 0)
+          throw new InvalidOperationException("REFUSED: No verifiable point or curve on element " + id + ".");
+      sources.Add(element);
+      original.Add(sample);
+  }
+  string centerX = "{center_x}", centerY = "{center_y}";
+  if ((centerX.Length == 0) != (centerY.Length == 0))
+      throw new InvalidOperationException("REFUSED: Give both centre coordinates, or leave both empty.");
+  var anchors = sources.SelectMany(e => e.Location is LocationPoint
+      ? new[] { ((LocationPoint)e.Location).Point }
+      : new[] { ((LocationCurve)e.Location).Curve.GetEndPoint(0), ((LocationCurve)e.Location).Curve.GetEndPoint(1) }).ToList();
+  XYZ center = centerX.Length > 0 ? new XYZ(Feet(centerX), Feet(centerY), 0) :
+      new XYZ((anchors.Min(p => p.X) + anchors.Max(p => p.X)) / 2, (anchors.Min(p => p.Y) + anchors.Max(p => p.Y)) / 2, 0);
+  double radians = double.Parse("{angle}", invariant) * Math.PI / 180.0;
+  if (Math.Abs(Math.IEEERemainder(radians, 2 * Math.PI)) < 1e-10 || !XYZ.IsWithinLengthLimits(center))
+      throw new InvalidOperationException("REFUSED: Give a nonzero rotation within model limits.");
+  if (sources.Any(e => e.Pinned))
+      throw new InvalidOperationException("REFUSED: A selected element is pinned.");
+  Transform transform = Transform.CreateRotationAtPoint(XYZ.BasisZ, radians, center);
+  bool copies = false;
+  ElementTransformUtils.RotateElements(document, selected, Line.CreateBound(center, center + XYZ.BasisZ), radians);
+  var resultIds = selected;
+
+  document.Regenerate();
+  var checkedIds = new HashSet<ElementId>();
+  double tolerance = UnitUtils.ConvertToInternalUnits(0.5, UnitTypeId.Millimeters);
+  for (int i = 0; i < selected.Count; i++)
+  {
+      var expected = original[i].Select(transform.OfPoint).ToList();
+      ElementId match = null;
+      foreach (ElementId id in copies ? resultIds : new List<ElementId> { selected[i] })
+      {
+          if (checkedIds.Contains(id) || (copies && selected.Contains(id))) continue;
+          Element element = document.GetElement(id);
+          if (element == null || !element.GetTypeId().Equals(sources[i].GetTypeId())) continue;
+          var samples = Samples(element);
+          if (samples.Count != expected.Count) continue;
+          bool direct = expected.Select((p, j) => p.DistanceTo(samples[j]) <= tolerance).All(v => v);
+          bool reverse = element.Location is LocationCurve &&
+              expected.Select((p, j) => p.DistanceTo(samples[samples.Count - 1 - j]) <= tolerance).All(v => v);
+          if (direct || reverse) { match = id; break; }
+      }
+      if (match == null)
+          throw new InvalidOperationException("Element " + selected[i] + " did not produce the requested transformation; rolling back.");
+      checkedIds.Add(match);
+  }
+  return new { Status = "Rotated", ElementIds = resultIds.Select(id => id.Value).ToList(), Count = checkedIds.Count };
+parameters:
+  - name: angle
+    type: number
+    description: "Counterclockwise angle around the positive Z axis (degrees)."
+    source: designer
+    required: true
+  - name: center_x
+    type: double
+    description: "Rotation centre X (mm)."
+    unit: mm
+    source: designer
+    required: false
+    default: ""
+  - name: center_y
+    type: double
+    description: "Rotation centre Y (mm)."
+    unit: mm
+    source: designer
+    required: false
+    default: ""
+  - name: element_ids
+    type: string
+    description: "Comma-separated element ids. Omit to use the current selection."
+    source: designer
+    required: false
+    default: ""
+preconditions:
+  - text: "Give up to 100 distinct instance ids or select them in Revit. Each must have a point or curve location."
+not_for: ["views, levels and element types"]
+applies_when: ["rotate elements"]
+validator: null
+fixtures:
+  - name: basic
+    params: {"angle":90,"center_x":0,"center_y":0,"element_ids":"101"}
+    expect: {"Status":"Rotated"}
+approved_by: null
+approved_at: null

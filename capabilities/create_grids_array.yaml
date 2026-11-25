@@ -1,0 +1,95 @@
+schema_version: 1
+name: create_grids_array
+display_name: "Create Grids Array"
+description: >-
+  Create parallel X or Y grid lines, starting at the model origin. Each grid spans 10,000 mm in the
+  positive direction. The array advances along the other positive axis.
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  string axis = "{direction}".Trim().ToUpperInvariant();
+  int count = int.Parse("{count}", invariant);
+  double spacing = UnitUtils.ConvertToInternalUnits(double.Parse("{spacing}", invariant), UnitTypeId.Millimeters);
+  if (count < 1 || count > 100 || spacing <= document.Application.ShortCurveTolerance || (axis != "X" && axis != "Y"))
+      throw new InvalidOperationException("REFUSED: Give direction X or Y, count 1 through 100 and positive spacing.");
+  string first = "{start_name}";
+  if (string.IsNullOrWhiteSpace(first) || !NamingUtils.IsValidName(first))
+      throw new InvalidOperationException("REFUSED: Give a valid starting grid name.");
+  int numericAt = first.Length;
+  while (numericAt > 0 && first[numericAt - 1] >= '0' && first[numericAt - 1] <= '9') numericAt--;
+  string digits = first.Substring(numericAt);
+  long initial = 0;
+  if (digits.Length > 0 && (!long.TryParse(digits, out initial) || initial > long.MaxValue - count))
+      throw new InvalidOperationException("REFUSED: The starting grid number is too large.");
+  if (digits.Length == 0 && first.Any(ch => ch < 'A' || ch > 'Z'))
+      throw new InvalidOperationException("REFUSED: Give uppercase letters or a name ending in a number.");
+  string NextLetters(string name)
+  {
+      var chars = name.ToCharArray();
+      for (int i = chars.Length - 1; i >= 0; i--)
+      {
+          if (chars[i] != 'Z') { chars[i]++; return new string(chars); }
+          chars[i] = 'A';
+      }
+      return "A" + new string(chars);
+  }
+  var taken = new HashSet<string>(new FilteredElementCollector(document).OfClass(typeof(Grid)).Cast<Grid>()
+      .Select(g => g.Name), StringComparer.OrdinalIgnoreCase);
+  var names = new List<string>();
+  string next = first;
+  for (int i = 0; i < count; i++)
+  {
+      if (digits.Length > 0)
+          next = first.Substring(0, numericAt) + (initial + i).ToString(invariant).PadLeft(digits.Length, '0');
+      if (!taken.Add(next))
+          throw new InvalidOperationException("REFUSED: Grid " + next + " already exists.");
+      names.Add(next);
+      if (digits.Length == 0) next = NextLetters(next);
+  }
+  var ids = new List<long>();
+  double length = UnitUtils.ConvertToInternalUnits(10000, UnitTypeId.Millimeters);
+  for (int i = 0; i < count; i++)
+  {
+      XYZ start = (axis == "X" ? XYZ.BasisY : XYZ.BasisX) * (i * spacing);
+      XYZ end = start + (axis == "X" ? XYZ.BasisX : XYZ.BasisY) * length;
+      if (!XYZ.IsWithinLengthLimits(start) || !XYZ.IsWithinLengthLimits(end))
+          throw new InvalidOperationException("REFUSED: The grid array exceeds the model limits.");
+      Grid grid = Grid.Create(document, Line.CreateBound(start, end));
+      grid.Name = names[i];
+      ids.Add(grid.Id.Value);
+  }
+  return new { Status = "Created", ElementIds = ids, Names = names, Count = ids.Count };
+parameters:
+  - name: direction
+    type: string
+    description: "Axis of each grid line, X or Y."
+    source: designer
+    required: true
+  - name: count
+    type: integer
+    description: "Number of grid lines, 1 to 100."
+    source: designer
+    required: true
+  - name: spacing
+    type: double
+    description: "Perpendicular distance between consecutive lines (mm)."
+    unit: mm
+    source: designer
+    required: true
+  - name: start_name
+    type: string
+    description: "First name: letters (A, B...) or a numeric suffix (A01, A02...)."
+    source: designer
+    required: true
+preconditions:
+  - text: "The generated names must be unused."
+not_for: ["curved grids"]
+applies_when: ["parallel grids","grid array"]
+validator: {"kind":"count_delta","category":"OST_Grids","expected":"{count}"}
+fixtures:
+  - name: basic
+    params: {"direction":"Y","count":3,"spacing":4000,"start_name":"A01"}
+    expect: {"Status":"Created"}
+approved_by: null
+approved_at: null

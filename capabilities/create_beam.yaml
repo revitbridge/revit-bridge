@@ -7,13 +7,16 @@ version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
   // Step 1: Get beam family symbol by name
-  var symbol = new FilteredElementCollector(document)
+  var types = new FilteredElementCollector(document)
       .OfClass(typeof(FamilySymbol))
       .OfCategory(BuiltInCategory.OST_StructuralFraming)
       .Cast<FamilySymbol>()
-      .FirstOrDefault(s => s.Name == "{type_name}");
+      .Where(s => s.Name == "{type_name}" || s.FamilyName + ": " + s.Name == "{type_name}").Take(2).ToList();
+  if (types.Count > 1)
+      throw new InvalidOperationException("REFUSED: More than one beam type matches; give Family: Type.");
+  var symbol = types.SingleOrDefault();
   if (symbol == null)
-      return new { Status = "Error", Message = "Beam type '{type_name}' not found" };
+      throw new InvalidOperationException("REFUSED: The requested beam type is missing.");
   if (!symbol.IsActive) symbol.Activate();
 
   // Step 2: Get level by name
@@ -22,11 +25,11 @@ code_template: |
       .Cast<Level>()
       .FirstOrDefault(l => l.Name == "{level_name}");
   if (level == null)
-      return new { Status = "Error", Message = "Level '{level_name}' not found" };
+      throw new InvalidOperationException("REFUSED: The requested level is missing.");
 
   // Step 3: Create beam line (mm -> feet)
-  XYZ start = new XYZ({start_x} / 304.8, {start_y} / 304.8, {elevation} / 304.8);
-  XYZ end = new XYZ({end_x} / 304.8, {end_y} / 304.8, {elevation} / 304.8);
+  XYZ start = new XYZ({start_x} / 304.8, {start_y} / 304.8, ({elevation} + {start_offset}) / 304.8);
+  XYZ end = new XYZ({end_x} / 304.8, {end_y} / 304.8, ({elevation} + {end_offset}) / 304.8);
   Line beamLine = Line.CreateBound(start, end);
 
   // Step 4: Create beam instance
@@ -34,6 +37,16 @@ code_template: |
       beamLine, symbol, level,
       Autodesk.Revit.DB.Structure.StructuralType.Beam);
 
+  string usageText = "{structural_usage}";
+  if (usageText.Length > 0)
+  {
+      Autodesk.Revit.DB.Structure.StructuralInstanceUsage usage;
+      if (!Enum.TryParse(usageText, true, out usage) || !Enum.IsDefined(typeof(Autodesk.Revit.DB.Structure.StructuralInstanceUsage), usage))
+          throw new InvalidOperationException("REFUSED: Unknown structural usage " + usageText + ".");
+      beam.StructuralUsage = usage;
+      if (beam.StructuralUsage != usage)
+          throw new InvalidOperationException("REFUSED: The beam family did not accept this structural usage.");
+  }
   return new { ElementId = beam.Id.Value, Status = "Created",
                FamilyType = symbol.Name, Level = level.Name };
 parameters:
@@ -79,6 +92,26 @@ parameters:
     unit: mm
     source: designer
     required: true
+  - name: start_offset
+    type: double
+    description: "Vertical offset of the start from elevation (mm)."
+    unit: mm
+    source: designer
+    required: false
+    default: 0
+  - name: end_offset
+    type: double
+    description: "Vertical offset of the end from elevation (mm)."
+    unit: mm
+    source: designer
+    required: false
+    default: 0
+  - name: structural_usage
+    type: string
+    description: "Structural usage, for example Girder, Joist, or Purlin."
+    source: designer
+    required: false
+    default: ""
 preconditions:
   - kind: levels_min
     value: 1
@@ -98,6 +131,9 @@ fixtures:
   - name: basic
     params: {type_name: "W310X38.7", level_name: "L1", start_x: 0, start_y: 0, end_x: 5000, end_y: 0, elevation: 3000}
     expect: {Status: "Created"}
+  - name: sloping
+    params: {"type_name":"W310X38.7","level_name":"L1","start_x":0,"start_y":0,"end_x":5000,"end_y":0,"elevation":3000,"start_offset":100,"end_offset":200,"structural_usage":"Girder"}
+    expect: {"Status":"Created"}
 approved_by: null
 approved_at: null
 created_at: "2026-03-13T00:00:00"

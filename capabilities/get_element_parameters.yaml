@@ -1,0 +1,84 @@
+schema_version: 1
+name: get_element_parameters
+display_name: Get Element Parameters
+description: "Read the named element's parameters. Delimit requested names with semicolons. Returns the display value, parameter id and storage type."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  Func<string, Element> elementById = text =>
+  {
+      long id;
+      if (!long.TryParse(text, out id) || id <= 0)
+          throw new InvalidOperationException("REFUSED: Expected a positive element id: " + text);
+      Element result = document.GetElement(new ElementId(id));
+      if (result == null)
+          throw new InvalidOperationException("REFUSED: Element no longer exists: " + text);
+      return result;
+  };
+
+  Element element = elementById("{element_id}");
+  string namesText = "{names}";
+  var requested = new HashSet<string>(namesText.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+      .Select(n => n.Trim()).Where(n => n.Length > 0), StringComparer.OrdinalIgnoreCase);
+  var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+  var items = new List<object>();
+  var skipped = new List<object>();
+  foreach (Parameter p in element.Parameters)
+  {
+      try
+      {
+          string name = p.Definition.Name;
+          string builtIn = p.Id.Value < 0 ? Enum.GetName(typeof(BuiltInParameter), (BuiltInParameter)p.Id.Value) : null;
+          if (requested.Count != 0 && !requested.Contains(name) && (builtIn == null || !requested.Contains(builtIn))) continue;
+          found.Add(name);
+          if (builtIn != null) found.Add(builtIn);
+          object value = null;
+          string unit = null;
+          if (p.HasValue)
+          {
+              switch (p.StorageType)
+              {
+                  case StorageType.Integer: value = p.AsInteger(); break;
+                  case StorageType.ElementId: value = p.AsElementId().Value; break;
+                  case StorageType.String: value = p.AsString(); break;
+                  case StorageType.Double:
+                      var spec = p.Definition.GetDataType();
+                      if (spec == SpecTypeId.Length) { value = UnitUtils.ConvertFromInternalUnits(p.AsDouble(), UnitTypeId.Millimeters); unit = "mm"; }
+                      else if (spec == SpecTypeId.Angle) { value = UnitUtils.ConvertFromInternalUnits(p.AsDouble(), UnitTypeId.Degrees); unit = "degrees"; }
+                      else value = p.AsValueString();
+                      break;
+              }
+          }
+          items.Add(new { ParameterId = p.Id.Value, Name = name, BuiltIn = builtIn, Storage = p.StorageType.ToString(),
+              Value = value, Unit = unit, Display = p.HasValue ? p.AsValueString() : null });
+      }
+      catch (Exception ex) { skipped.Add(new { ParameterId = p.Id.Value, Reason = ex.Message }); }
+  }
+  return new { Status = "Ok", ElementId = element.Id.Value, Items = items, Missing = requested.Except(found, StringComparer.OrdinalIgnoreCase).ToList(), Skipped = skipped };
+parameters:
+  - name: element_id
+    type: integer
+    description: Element id in the active document
+    source: designer
+    required: true
+  - name: names
+    type: string
+    description: "Semicolon-separated parameter names or built-in identifiers, omit for all"
+    source: default
+    required: false
+    default: ""
+preconditions:
+  - text: The element must exist in the active document.
+not_for:
+  - "change a parameter"
+applies_when:
+  - "read element parameters"
+validator: null
+fixtures:
+  - name: by_names
+    params: {element_id: 101, names: "Comments;WALL_BASE_OFFSET"}
+    expect: {Status: Ok}
+approved_by: null
+approved_at: null
+created_at: "2026-11-25T00:00:00"
+source_query: read element parameters
