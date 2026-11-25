@@ -8,6 +8,19 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- `link_revit_model` links RVT files by origin or shared coordinates. `link_cad`
+  links DWG and DXF files in the active view or on a named level. Both check the
+  paths of existing link types and refuse a second link to the same file.
+- `load_family` loads a new RFA and refuses same-name families. All three packs
+  take a designer-supplied path on the computer running Revit and omit it from
+  evidence parameters. They report native failures with a next step and compile
+  for Revit 2021 and 2023–2027.
+- `place_family_instance` places and rotates non-hosted point families. `create_pipe`
+  and `create_duct` create sized rigid segments from model internal-origin coordinates
+  in millimetres. `list_mep_types` lists loaded types, systems and nominal sizes.
+- `create_pipes_by_points` fits elbows along a route and reports failed segments
+  and corners by zero-based index. `connect_pipes` joins free ends that coincide
+  or can be extended to meet. All six packs compile for Revit 2021 and 2023–2027.
 - Packs can declare `ui_only: true` for changes to selection or view display. The loader
   and `list_tools` expose the flag. It defaults to false and is mutually exclusive with
   `read_only`. Five packs declare it: `select_elements`, `select_in_box`,

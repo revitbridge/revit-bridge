@@ -1,0 +1,82 @@
+schema_version: 1
+name: load_family
+display_name: Load Family
+description: "Load a new RFA family from the computer running Revit. Loading a large family keeps Revit busy until the native operation finishes. Resolve existing families in Revit before loading."
+version: "1.0.0"
+revit_versions: ["2021","2023","2024","2025","2026","2027"]
+code_template: |
+  bool HasFileRoot(string text)
+  {
+      if (text.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) text = @"\\" + text.Substring(8);
+      else if (text.StartsWith(@"\\?\", StringComparison.Ordinal)) text = text.Substring(4);
+      if (text.StartsWith(@"\\", StringComparison.Ordinal))
+      {
+          var parts = text.Substring(2).Split('\\');
+          return parts.Length >= 3 && parts[0].Length > 0 && parts[1].Length > 0 &&
+                 parts[0] != "." && parts[0] != ".." && parts[0] != "?" && parts[1] != "." && parts[1] != "..";
+      }
+      return text.Length >= 3 && text[1] == ':' && text[2] == '\\' &&
+             ((text[0] >= 'A' && text[0] <= 'Z') || (text[0] >= 'a' && text[0] <= 'z'));
+  }
+  string path = "{path}".Replace('/', '\\');
+  if (!HasFileRoot(path) || !path.EndsWith(".rfa", StringComparison.OrdinalIgnoreCase))
+      throw new InvalidOperationException("REFUSED: Expected an absolute .rfa file path. Enter its drive or UNC path on the computer running Revit.");
+  string filename = path.Substring(path.LastIndexOf('\\') + 1);
+  string familyName = filename.Substring(0, filename.Length - 4);
+  const string duplicate = "REFUSED: A family with this name is already loaded. Resolve the existing family in Revit before loading.";
+  string failure = "Revit could not check the loaded families";
+  string next = "Review the project's families in Revit.";
+  try
+  {
+      var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+      var ids = new HashSet<ElementId>();
+      foreach (Family existing in new FilteredElementCollector(document).OfClass(typeof(Family)))
+      {
+          if (ids.Count >= 5000)
+              throw new InvalidOperationException("REFUSED: More than 5000 families to check. Review the existing families and load manually in Revit.");
+          if (string.Equals(existing.Name, familyName, StringComparison.OrdinalIgnoreCase))
+              throw new InvalidOperationException(duplicate);
+          ids.Add(existing.Id);
+          names.Add(existing.Name);
+      }
+      failure = "Revit could not load the family";
+      next = "Check that the RFA opens in this Revit version and resolve any family conflict in Revit.";
+      Family family;
+      if (!document.LoadFamily(path, out family) || family == null)
+          throw new InvalidOperationException("REFUSED: Revit did not load the family. Check that the RFA exists, opens in this version and has no unresolved family conflict in Revit.");
+      if (ids.Contains(family.Id) || names.Contains(family.Name))
+          throw new InvalidOperationException(duplicate);
+      return new { Status = "Loaded", ElementId = long.Parse(family.Id.ToString()), Family = family.Name };
+  }
+  catch (Autodesk.Revit.Exceptions.ApplicationException ex)
+  {
+      if (ex is Autodesk.Revit.Exceptions.FileArgumentNotFoundException || ex is Autodesk.Revit.Exceptions.FileNotFoundException)
+          throw new InvalidOperationException("REFUSED: Revit could not find the file. Check the path on the computer running Revit.");
+      if (ex is Autodesk.Revit.Exceptions.FileAccessException)
+          throw new InvalidOperationException("REFUSED: Revit could not access the file. Check read permissions and file locks.");
+      if (ex is Autodesk.Revit.Exceptions.CorruptModelException)
+          throw new InvalidOperationException("REFUSED: Revit reported a damaged model. Inspect a backup copy in Revit.");
+      if (ex is Autodesk.Revit.Exceptions.OperationCanceledException)
+          throw new InvalidOperationException("REFUSED: Revit cancelled the operation. Retry when ready.");
+      if (ex is Autodesk.Revit.Exceptions.ModificationForbiddenException || ex is Autodesk.Revit.Exceptions.ModificationOutsideTransactionException || ex is Autodesk.Revit.Exceptions.RegenerationFailedException)
+          throw new InvalidOperationException("REFUSED: Revit could not complete the model change (" + ex.GetType().Name + "). Resolve pending failures and retry in a writable project.");
+      throw new InvalidOperationException("REFUSED: " + failure + " (" + ex.GetType().Name + "). " + next);
+  }
+parameters:
+  - name: path
+    type: string
+    description: "Absolute path supplied by the designer on the computer running Revit."
+    source: designer
+    required: true
+preconditions:
+  - text: "Supported Revit years are 2021, 2023, 2024, 2025, 2026 and 2027."
+applies_when: ["load family from RFA"]
+not_for: ["overwrite an existing family", "place a family instance"]
+validator: null
+fixtures:
+  - name: furniture
+    params: {path: 'X:\Synthetic\Sample Desk.rfa'}
+    expect: {Status: Loaded, Family: Sample Desk}
+  - name: equipment
+    params: {path: '\\example.invalid\synthetic\Sample Pump.RFA'}
+    expect: {Status: Loaded, Family: Sample Pump}

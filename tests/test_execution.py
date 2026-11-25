@@ -4,13 +4,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from revit_bridge.capabilities.store import ToolStore
 from revit_bridge.evidence.ledger import RECORD_FIELDS, Ledger
 from revit_bridge.execution import REFUSAL_MARKER, ExecutionResult, refusal_message, revalidate, run_code, run_pack
-from revit_bridge.revit.client import RevitClient
+from revit_bridge.revit.client import RevitClient, RevitResponse
 from revit_bridge.snapshot.project import take_snapshot
 from revit_bridge.snapshot.query import LEVELS_CODE
 from revit_bridge.spec.gate import Gate
@@ -108,6 +110,39 @@ def test_capture_pack_returns_image_but_records_only_digest_and_dimensions(host)
     assert record["result_summary"] == {"sha256": hashlib.sha256(base64.b64decode(png)).hexdigest(),
                                         "width": 1, "height": 1}
     assert png not in str(record) and "Sample view" not in str(record)
+
+
+@pytest.mark.parametrize("name", ["link_revit_model", "link_cad", "load_family"])
+@pytest.mark.parametrize("outcome", ["success", "refused", "error", "exception"])
+def test_file_pack_confirms_and_executes_the_path_but_omits_it_from_evidence(host, name, outcome):
+    store = host["store"]
+    params = store.load(name).fixtures[1]["params"]
+    spec = TaskSpec(task=name, action=Action(kind="run_tool", tool=name),
+                    parameters=[ParamBinding(name=k, value=v, source=Source.answer, evidence="form")
+                                for k, v in params.items()])
+    confirmation = host["gate"].issue(spec)
+    code, errors = store.render(name, params)
+    assert code and not errors
+    replies = [RevitResponse(True, {})]  # document probe
+    path = params["path"]
+    replies.append({
+        "success": RevitResponse(True, {"ElementId": 101}),
+        "refused": RevitResponse(False, error=f"System.InvalidOperationException: REFUSED: Could not open '{path}'. Check the file."),
+        "error": RevitResponse(False, error="Source unavailable: " + path.upper().replace("\\", "/")),
+        "exception": OSError("Load failed for " + path.replace("\\", "\\\\")),
+    }[outcome])
+    client = SimpleNamespace(send_code=AsyncMock(side_effect=replies))
+    result = asyncio.run(run_pack(client=client, name=name, params=params, token=confirmation.token,
+                                  host="test", **host))
+    assert result.success == (outcome == "success")
+    assert bool(result.refused) == (outcome == "refused")
+    client.send_code.assert_any_await(code)
+    record = host["ledger"].get(result.evidence_id)
+    assert record["projection_hash"] == confirmation.projection_hash
+    assert record["params"] == {k: v for k, v in params.items() if k != "path"}
+    assert record["error"] == result.error
+    assert "example.invalid" not in (result.error or "").lower()
+    assert "example.invalid" not in str(record).lower()
 
 
 def test_run_pack_refuses_without_a_token_and_never_touches_revit(host):

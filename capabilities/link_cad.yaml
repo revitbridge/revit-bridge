@@ -1,0 +1,206 @@
+schema_version: 1
+name: link_cad
+display_name: Link CAD
+description: "Link a DWG or DXF from the computer running Revit in the active view or on a specified level. Linking a large file keeps Revit busy until the native operation finishes."
+version: "1.0.0"
+revit_versions: ["2021","2023","2024","2025","2026","2027"]
+code_template: |
+  // Resolve the spelling of a drive or UNC path without opening it.
+  string PathKey(string value)
+  {
+      if (string.IsNullOrEmpty(value)) return null;
+      string text = value.Replace('/', '\\');
+      if (text.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) text = @"\\" + text.Substring(8);
+      else if (text.StartsWith(@"\\?\", StringComparison.Ordinal)) text = text.Substring(4);
+      bool drive = text.Length >= 3 && text[1] == ':' && text[2] == '\\' &&
+          ((text[0] >= 'A' && text[0] <= 'Z') || (text[0] >= 'a' && text[0] <= 'z'));
+      bool unc = text.StartsWith(@"\\", StringComparison.Ordinal);
+      if ((!drive && !unc) || text.EndsWith(@"\", StringComparison.Ordinal)) return null;
+      var parts = text.Substring(drive ? 3 : 2).Split('\\');
+      if (parts[parts.Length - 1] == "." || parts[parts.Length - 1] == "..") return null;
+      if (unc && (parts.Length < 3 || parts[0].Length == 0 || parts[1].Length == 0 ||
+                  parts[0] == "." || parts[0] == ".." || parts[0] == "?" ||
+                  parts[1] == "." || parts[1] == "..")) return null;
+      string root = drive ? text.Substring(0, 3) : @"\\" + parts[0] + @"\" + parts[1] + @"\";
+      var names = new List<string>();
+      foreach (var part in parts.Skip(drive ? 0 : 2))
+      {
+          if (part.Length == 0 || part == ".") continue;
+          if (part == "..")
+          {
+              if (names.Count > 0) names.RemoveAt(names.Count - 1);
+          }
+          else names.Add(part);
+      }
+      return root + string.Join(@"\", names);
+  }
+  string path = "{path}".Replace('/', '\\');
+  string key = PathKey(path);
+  if (key == null || !(path.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".dxf", StringComparison.OrdinalIgnoreCase)))
+      throw new InvalidOperationException("REFUSED: Expected an absolute .dwg or .dxf file path. Enter its drive or UNC path on the computer running Revit.");
+  ImportPlacement placement;
+  switch ("{positioning}".Trim().ToLowerInvariant())
+  {
+      case "origin": placement = ImportPlacement.Origin; break;
+      case "shared": placement = ImportPlacement.Shared; break;
+      default: throw new InvalidOperationException("REFUSED: Unknown positioning. Choose origin or shared.");
+  }
+  ImportUnit unit;
+  switch ("{units}".Trim().ToLowerInvariant())
+  {
+      case "auto": unit = ImportUnit.Default; break;
+      case "mm": unit = ImportUnit.Millimeter; break;
+      case "cm": unit = ImportUnit.Centimeter; break;
+      case "dm": unit = ImportUnit.Decimeter; break;
+      case "m": unit = ImportUnit.Meter; break;
+      case "in": unit = ImportUnit.Inch; break;
+      case "ft": unit = ImportUnit.Foot; break;
+      default: throw new InvalidOperationException("REFUSED: Unknown drawing units. Choose auto, mm, cm, dm, m, in or ft.");
+  }
+  bool viewOnly = bool.Parse("{current_view_only}");
+  string levelName = "{level_name}";
+  const string duplicate = "REFUSED: The same file is already linked. Use its existing link type in Manage Links.";
+  int inspected = 0;
+  string failure = "Revit could not check the target view";
+  string next = "Open a printable plan on the requested level.";
+  try
+  {
+      if (document.IsFamilyDocument)
+          throw new InvalidOperationException("REFUSED: CAD links require a project. Open a project document.");
+      var view = document.ActiveView;
+      bool onLevel = string.Equals(view?.GenLevel?.Name, levelName, StringComparison.OrdinalIgnoreCase);
+      if (viewOnly && levelName.Length > 0 && !onLevel)
+          throw new InvalidOperationException("REFUSED: The active view is not on the requested level. Open its plan or clear level_name.");
+      if (!viewOnly && levelName.Length > 0 && (!onLevel || view.IsTemplate || !view.CanBePrinted))
+      {
+          view = null;
+          int plans = 0;
+          foreach (ViewPlan plan in new FilteredElementCollector(document).OfClass(typeof(ViewPlan)))
+          {
+              if (++plans > 5000)
+                  throw new InvalidOperationException("REFUSED: More than 5000 plans to check. Open a plan on the requested level and retry.");
+              if (!plan.IsTemplate && plan.CanBePrinted && string.Equals(plan.GenLevel?.Name, levelName, StringComparison.OrdinalIgnoreCase))
+              {
+                  view = plan;
+                  break;
+              }
+          }
+          if (view == null)
+              throw new InvalidOperationException("REFUSED: No printable plan for the requested level. Select an existing level with a plan or create its plan in Revit.");
+      }
+      if (view == null || view.IsTemplate || !view.CanBePrinted || (viewOnly && view is View3D))
+          throw new InvalidOperationException("REFUSED: The target view cannot host this drawing. Open a printable 2D view or choose a level for a model-wide link.");
+      failure = "Revit could not check existing CAD links";
+      next = "Review their saved paths in Manage Links.";
+      foreach (var type in new FilteredElementCollector(document).OfClass(typeof(CADLinkType)))
+      {
+          if (++inspected > 5000)
+              throw new InvalidOperationException("REFUSED: More than 5000 link types to check. Review existing links and link manually in Revit.");
+          if (!type.IsExternalFileReference()) continue;
+          using (var reference = type.GetExternalFileReference())
+          using (var stored = reference?.GetAbsolutePath())
+          {
+              if (stored == null || stored.Empty)
+                  throw new InvalidOperationException("REFUSED: An existing link has no resolved path. Repair its reference in Manage Links and retry.");
+              if (stored.CloudPath || stored.ServerPath) continue;
+              var saved = PathKey(ModelPathUtils.ConvertModelPathToUserVisiblePath(stored));
+              if (saved == null)
+                  throw new InvalidOperationException("REFUSED: An existing link has no absolute file path. Check its reference in Manage Links and retry.");
+              if (string.Equals(key, saved, StringComparison.OrdinalIgnoreCase))
+                  throw new InvalidOperationException(duplicate);
+          }
+      }
+      failure = "Revit could not link the drawing";
+      next = placement == ImportPlacement.Shared
+          ? "Check the DWG/DXF version and shared coordinate systems, or choose origin."
+          : "Check the DWG/DXF version, units and target view.";
+      using (var options = new DWGImportOptions { Unit = unit, Placement = placement, ThisViewOnly = viewOnly, OrientToView = false })
+      {
+          LinkLoadResult result;
+          var instance = ImportInstance.Create(document, view, path, options, out result);
+          using (result)
+          {
+              if (result == null) throw new InvalidOperationException("REFUSED: Revit returned no link result. Check the file and Manage Links in Revit.");
+              var status = result.LoadResult;
+              if (status == LinkLoadResultType.UsedExisting || status == LinkLoadResultType.LinkExists)
+                  throw new InvalidOperationException(duplicate);
+              if (status == LinkLoadResultType.LinkNotFound)
+                  throw new InvalidOperationException("REFUSED: Revit could not find the linked file (LinkNotFound). Check the path on the computer running Revit.");
+              if (status == LinkLoadResultType.LinkNotOpenable)
+                  throw new InvalidOperationException("REFUSED: Revit could not open the linked file (LinkNotOpenable). Check the file version and open a copy in Revit.");
+              if (status != LinkLoadResultType.LinkLoaded)
+                  throw new InvalidOperationException("REFUSED: Revit reported " + status + ". Check the source path, file version and link status in Manage Links.");
+              if (result.ElementId == null || result.ElementId == ElementId.InvalidElementId)
+                  throw new InvalidOperationException("REFUSED: Revit returned no valid link type ID. Check the link in Manage Links.");
+              if (instance == null || !instance.IsLinked || instance.GetTypeId() != result.ElementId ||
+                  instance.ViewSpecific != viewOnly || (viewOnly && instance.OwnerViewId != view.Id))
+                  throw new InvalidOperationException("REFUSED: Revit did not create the requested CAD link or view scope. Check the drawing and target view.");
+              if (!viewOnly && levelName.Length > 0)
+              {
+                  var baseLevel = instance.get_Parameter(BuiltInParameter.IMPORT_BASE_LEVEL)?.AsElementId() ?? instance.LevelId;
+                  if (baseLevel != view.GenLevel.Id)
+                      throw new InvalidOperationException("REFUSED: The drawing did not land on the requested level. Check its base level and positioning in Revit.");
+              }
+              return new { Status = "Linked", ElementId = long.Parse(instance.Id.ToString()), TypeId = long.Parse(result.ElementId.ToString()) };
+          }
+      }
+  }
+  catch (Autodesk.Revit.Exceptions.ApplicationException ex)
+  {
+      if (ex is Autodesk.Revit.Exceptions.FileArgumentNotFoundException || ex is Autodesk.Revit.Exceptions.FileNotFoundException)
+          throw new InvalidOperationException("REFUSED: Revit could not find the file. Check the path on the computer running Revit.");
+      if (ex is Autodesk.Revit.Exceptions.FileAccessException)
+          throw new InvalidOperationException("REFUSED: Revit could not access the file. Check read permissions and file locks.");
+      if (ex is Autodesk.Revit.Exceptions.CorruptModelException)
+          throw new InvalidOperationException("REFUSED: Revit reported a damaged model. Inspect a backup copy in Revit.");
+      if (ex is Autodesk.Revit.Exceptions.OperationCanceledException)
+          throw new InvalidOperationException("REFUSED: Revit cancelled the operation. Retry when ready.");
+      if (ex is Autodesk.Revit.Exceptions.ModificationForbiddenException || ex is Autodesk.Revit.Exceptions.ModificationOutsideTransactionException || ex is Autodesk.Revit.Exceptions.RegenerationFailedException)
+          throw new InvalidOperationException("REFUSED: Revit could not complete the model change (" + ex.GetType().Name + "). Resolve pending failures and retry in a writable project.");
+      if (ex is Autodesk.Revit.Exceptions.OptionalFunctionalityNotAvailableException)
+          throw new InvalidOperationException("REFUSED: Revit's CAD link module is unavailable. Install or enable DWG/DXF linking in Revit.");
+      throw new InvalidOperationException("REFUSED: " + failure + " (" + ex.GetType().Name + "). " + next);
+  }
+parameters:
+  - name: path
+    type: string
+    description: "Absolute path supplied by the designer on the computer running Revit."
+    source: designer
+    required: true
+  - name: positioning
+    type: string
+    description: "origin aligns the internal origins. shared uses shared coordinates."
+    source: default
+    required: false
+    default: origin
+  - name: units
+    type: string
+    description: "Drawing units. Choose mm, cm, dm, m, in, ft or auto to use Revit's file-unit detection."
+    source: default
+    required: false
+    default: mm
+  - name: current_view_only
+    type: bool
+    description: "Limit the link to the active printable 2D view."
+    source: default
+    required: false
+    default: false
+  - name: level_name
+    type: string
+    description: "Optional level for model-wide placement via a printable plan. For a view-only link it must match the active view."
+    source: answer
+    choices_from: levels
+    required: false
+    default: ""
+preconditions:
+  - text: "Supported Revit years are 2021, 2023, 2024, 2025, 2026 and 2027."
+applies_when: ["link CAD", "link drawing"]
+not_for: ["embed a drawing", "reload an existing link"]
+validator: null
+fixtures:
+  - name: active_view
+    params: {path: 'X:\Synthetic\Detail.dwg', current_view_only: true}
+    expect: {Status: Linked}
+  - name: named_level
+    params: {path: '\\example.invalid\synthetic\Survey.DXF', units: m, positioning: shared, level_name: L2}
+    expect: {Status: Linked}
