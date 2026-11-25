@@ -28,9 +28,9 @@ code_template: |
       throw new InvalidOperationException("REFUSED: Unknown scope. Choose view or model.");
   if (scope == "view" && !FilteredElementCollector.IsViewValidForElementIteration(document, document.ActiveView.Id))
       throw new InvalidOperationException("REFUSED: This view cannot list instances. Open a model view or use model scope.");
-  var elements = scope == "model" ? new FilteredElementCollector(document)
+  var elements = scope == "model" ? new FilteredElementCollector(document).WhereElementIsViewIndependent()
       : new FilteredElementCollector(document, document.ActiveView.Id);
-  elements.WhereElementIsNotElementType();
+  elements.WhereElementIsNotElementType().WherePasses(new ElementClassFilter(typeof(View), true));
   BuiltInCategory? category = null;
   if (categoryText != "")
   {

@@ -13,7 +13,8 @@ static class Scenarios
     static void Selected(params long[] expected)
     {
         var actual = Doc.Selection.GetElementIds().Select(i => i.Value).OrderBy(n => n);
-        Check(actual.SequenceEqual(expected.OrderBy(n => n)), "selection " + string.Join(",", expected));
+        Check(actual.SequenceEqual(expected.OrderBy(n => n)),
+              $"expected selection [{string.Join(",", expected)}], got [{string.Join(",", actual)}]");
     }
     static void Refused(Func<Document, object> run, string reason)
     {
@@ -31,6 +32,12 @@ static class Scenarios
     {
         var walls = BuiltInCategory.OST_Walls;
         Add(new Level(20, "L1"));
+        Add(new View { Id = Id(210), LevelId = 20 });
+        Add(new Element(211, "Other view tag") {
+            LevelId = 20, ViewSpecific = true, Visible = false,
+            Box = new BoundingBoxXYZ { Min = new XYZ(0, 0, 0), Max = new XYZ(1, 1, 1) }
+        });
+        Add(new Element(212, "Current view tag") { LevelId = 20, ViewSpecific = true });
         Add(new ElementType(30, "Typical", "Basic") { Category = walls });
         for (int i = 0; i < 4; i++)
         {
@@ -42,7 +49,12 @@ static class Scenarios
             });
         }
     }
-    static void Main()
+    static int Main()
+    {
+        try { Run(); return 0; }
+        catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+    }
+    static void Run()
     {
         Seed();
         Rendered.Replace(Doc); Selected(101, 102);
@@ -57,6 +69,8 @@ static class Scenarios
         Refused(Rendered.MixedBox, "either");
         Rendered.Visible(Doc); Selected(101, 102);
         Rendered.Model(Doc); Selected(101, 102, 104);
+        Rendered.ModelLevel(Doc); Selected(101, 102, 103, 104);
+        Rendered.ViewLevel(Doc); Selected(101, 102, 103, 212);
         Refused(Rendered.MissingType, "Missing");
 
         Rendered.Section(Doc);

@@ -95,7 +95,7 @@ def test_run_pack_runs_the_built_in_pack_when_the_user_copy_is_broken_and_says_s
 
 
 def test_capture_pack_returns_image_but_records_only_digest_and_dimensions(host):
-    # The fake endpoint supplies the native export still required by this pack.
+    # A user pack named capture_view shares the native capture's ledger rule.
     png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRyoAAAAASUVORK5CYII="
     capture = {"png_base64": png, "width": 1, "height": 1, "view": "Sample view"}
     host["store"].solidify("capture_view", "return 1;")

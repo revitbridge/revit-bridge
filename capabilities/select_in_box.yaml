@@ -102,7 +102,7 @@ code_template: |
   var outline = new Outline(lo, hi);
   ElementFilter filter = mode == "inside" ? (ElementFilter)new BoundingBoxIsInsideFilter(outline)
       : new BoundingBoxIntersectsFilter(outline);
-  var elements = new FilteredElementCollector(document).WhereElementIsNotElementType();
+  var elements = new FilteredElementCollector(document).WhereElementIsNotElementType().WhereElementIsViewIndependent();
   if (categoryText != "") elements.OfCategory(ParseCategory(categoryText));
   elements.WherePasses(filter);
   int count = elements.GetElementCount();
@@ -116,13 +116,13 @@ code_template: |
 parameters:
   - name: corner1_mm
     type: string
-    description: "First model-space corner as X,Y,Z in millimetres. Supply both corners or element_ids."
+    description: "First corner as X,Y,Z in millimetres relative to the model's internal origin. Supply both corners or element_ids."
     source: designer
     required: false
     default: ""
   - name: corner2_mm
     type: string
-    description: "Opposite model-space corner as X,Y,Z in millimetres"
+    description: "Opposite corner as X,Y,Z in millimetres relative to the model's internal origin"
     source: designer
     required: false
     default: ""

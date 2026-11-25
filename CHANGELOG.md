@@ -10,21 +10,27 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 - Packs can declare `ui_only: true` for changes to selection or view display. The loader
   and `list_tools` expose the flag. It defaults to false and is mutually exclusive with
-  `read_only`. Six built-ins declare it: `select_elements`, `select_in_box`,
-  `select_by_filter`, `clear_selection`, `zoom_to_elements` and `set_view_orientation`.
+  `read_only`. Five packs declare it: `select_elements`, `select_in_box`,
+  `select_by_filter`, `clear_selection` and `zoom_to_elements`.
   Selection tools refuse results over 5,000 elements before applying them.
-- `set_section_box` sets or disables the active 3D view's section box. It uses the
-  normal model-change confirmation path. All seven new packs compile against the
+- `set_view_orientation` changes the saved 3D view orientation. `set_section_box`
+  sets or disables its section box. Both use the normal model-change confirmation path.
+  All seven new packs compile against the
   Revit 2021 and 2023–2027 APIs.
-- `RevitQueryExecutor.trigger_selection` accepts single, multiple and box picks,
-  an optional category, a status-bar prompt and a timeout (120 seconds by default).
-  It requires the native `trigger_selection_in_revit` command. Older add-ins report
-  that dependency. A completed pick carries the originating document identity.
-  Acknowledged cancellation and timeout have distinct results.
-- For a `capture_view` pack result, the evidence ledger retains only the PNG digest and
-  pixel dimensions. A capture pack still needs an add-in command that exports the
-  current view without taking desktop input. Opening a named view also needs a
-  native call outside the snippet runner's transaction.
+- `RevitQueryExecutor.trigger_selection()` keeps the 0.10.1 element list. With the
+  native command, passing a mode (single, multiple or box), category, prompt or
+  timeout (default 120 seconds) requests mention items with `document_id` and
+  distinct `cancelled` and `timed_out` replies. A no-argument call returns an
+  empty list for either terminal reply. On older add-ins an unfiltered single pick
+  runs the original `PickObject` snippet and falls back to `get_selected_elements`
+  if the snippet fails. That path returns the original element rows. Other picks
+  on older add-ins give an upgrade hint.
+- The native host functions `revit_bridge.view_commands.open_view` (UI only) and
+  `capture_view` (read only) activate a named view and export a PNG respectively.
+  MCP exposes them as `open_view` and `capture_view_image`. The existing MCP
+  `capture_view` returns a file path. The PNG export returns the view name and
+  pixel dimensions. Its ledger entry records only the image digest and dimensions
+  from the result.
 
 ## [0.10.1] - 2026-11-25
 

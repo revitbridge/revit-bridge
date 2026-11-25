@@ -42,7 +42,7 @@ class Element(long id, string name)
     public string Name = name;
     public BuiltInCategory? Category;
     public long LevelId, TypeId;
-    public bool Visible = true;
+    public bool Visible = true, ViewSpecific;
     public BoundingBoxXYZ Box;
     public BoundingBoxXYZ get_BoundingBox(View view) => Box;
 }
@@ -110,6 +110,10 @@ class ElementLevelFilter(ElementId level) : ElementFilter
 {
     public override bool Matches(Element e) => e.LevelId == level.Value;
 }
+class ElementClassFilter(Type type, bool inverted) : ElementFilter
+{
+    public override bool Matches(Element e) => type.IsInstanceOfType(e) != inverted;
+}
 static class ParameterFilterRuleFactory
 {
     public static ElementId CreateEqualsRule(ElementId parameter, ElementId type) => type;
@@ -133,6 +137,7 @@ class FilteredElementCollector : IEnumerable<Element>
     public FilteredElementCollector OfCategory(BuiltInCategory cat) => Apply(e => e.Category == cat);
     public FilteredElementCollector WhereElementIsElementType() => Apply(e => e is ElementType);
     public FilteredElementCollector WhereElementIsNotElementType() => Apply(e => e is not ElementType);
+    public FilteredElementCollector WhereElementIsViewIndependent() => Apply(e => !e.ViewSpecific);
     public FilteredElementCollector WherePasses(ElementFilter filter) => Apply(filter.Matches);
     public int GetElementCount() => items.Count();
     public ICollection<ElementId> ToElementIds() => items.Select(e => e.Id).ToList();

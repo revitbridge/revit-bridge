@@ -32,11 +32,15 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
-from revit_bridge.revit.capabilities import METHOD_NOT_FOUND, UNKNOWN, Capabilities, discover, forget
+from revit_bridge.revit.capabilities import (
+    METHOD_NOT_FOUND, UNKNOWN, Capabilities, MethodUnavailable, discover, forget, send_listed_command,
+)
 from revit_bridge.revit.client import RevitClient
 
 _log = logging.getLogger("revit_bridge.snapshot.query")
+_OMITTED: Any = object()
 
 # Category values interpolated into C# must match this exact shape (P0-4), always with
 # ``fullmatch`` (``^...$`` with ``match`` would let a trailing newline through). Letters,
@@ -411,16 +415,21 @@ class RevitQueryExecutor:
         resp = await self.client.send_code(LEVELS_CODE)
         return _list_result(resp, strict)
 
-    async def trigger_selection(self, mode: str = "single", category: str | None = None,
-                                prompt: str = "Select in Revit", timeout_s: int = 120) -> list[dict] | dict:
-        """Return picked mention items, or the device's {cancelled: true} / {timed_out: true}.
+    async def trigger_selection(self, mode: str = _OMITTED, category: str | None = _OMITTED,
+                                prompt: str = _OMITTED, timeout_s: int = _OMITTED) -> list[dict] | dict:
+        """With no arguments return the 0.10.1 element list. An explicit option requests mentions.
 
-        The native command owns the pick and deadline. On completion it snapshots
-        {document_id, items} in the picked document. Each row has id, name (type),
-        family, category (OST_*), shown (localized category), level and length (mm).
+        Defaults are single pick, no category, "Select in Revit" and 120 seconds.
+        A native pick can acknowledge cancellation or timeout. Older add-ins use
+        the original single-pick/current-selection path and its original rows.
         """
         from revit_bridge.mention_elements import picked_items
 
+        legacy = all(value is _OMITTED for value in (mode, category, prompt, timeout_s))
+        mode = "single" if mode is _OMITTED else mode
+        category = None if category is _OMITTED else category
+        prompt = "Select in Revit" if prompt is _OMITTED else prompt
+        timeout_s = 120 if timeout_s is _OMITTED else timeout_s
         if mode not in ("single", "multiple", "box"):
             raise ValueError("mode must be single, multiple or box")
         if category is not None and (not isinstance(category, str) or not CATEGORY_RE.fullmatch(category)):
@@ -432,18 +441,38 @@ class RevitQueryExecutor:
         params = {"mode": mode, "prompt": prompt, "timeout_s": timeout_s}
         if category is not None:
             params["category"] = category
-        # Allow the native deadline to end the session and acknowledge cleanup.
-        resp = await self.client.send_command("trigger_selection_in_revit", params, timeout=timeout_s + 10)
-        if not resp.success:
-            if resp.error_code == METHOD_NOT_FOUND:
-                raise RevitQueryError("Interactive selection requires an add-in with trigger_selection_in_revit.")
-            raise RevitQueryError(resp.error or "Interactive selection failed")
-        data = resp.result
+        try:
+            data = await send_listed_command(self.client, "trigger_selection_in_revit", params, timeout=timeout_s + 10)
+        except MethodUnavailable as exc:
+            if mode == "single" and category is None:
+                return await self._legacy_pick()
+            raise RevitQueryError(str(exc)) from exc
+        except RuntimeError as exc:
+            raise RevitQueryError(str(exc)) from exc
         if isinstance(data, dict):
             for flag in ("cancelled", "timed_out"):
                 if set(data) == {flag} and data[flag] is True:
-                    return {flag: True}
-        return picked_items(data, mode, category)
+                    return [] if legacy else {flag: True}
+        return picked_items(data, mode, category, legacy=legacy)
+
+    async def _legacy_pick(self) -> list[dict]:
+        pick_code = (
+            'var uidoc = new UIDocument(document);\n'
+            'var reference = uidoc.Selection.PickObject(\n'
+            '    Autodesk.Revit.UI.Selection.ObjectType.Element,\n'
+            '    "Please select a host element (wall/floor)");\n'
+            'var element = document.GetElement(reference);\n'
+            'return new {\n'
+            '    Id = element.Id.Value,\n'
+            '    Name = element.Name,\n'
+            '    Category = element.Category != null ? element.Category.Name : ""\n'
+            '};\n'
+        )
+        resp = await self.client.send_code(pick_code)
+        if resp.success and resp.result:
+            return _list_result(resp, strict=False)
+        _log.warning("[trigger_selection] PickObject failed: %s, trying get_selected_elements", resp.error)
+        return await self.get_selected_elements()
 
     async def get_selected_elements(self, strict: bool = False) -> list[dict]:
         """Get currently selected elements without triggering selection mode."""

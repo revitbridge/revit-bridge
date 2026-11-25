@@ -1,8 +1,7 @@
 schema_version: 1
 name: set_view_orientation
-ui_only: true
 display_name: Set View Orientation
-description: "View only. Temporarily reorient the active 3D view to a standard direction or from an eye point toward a target."
+description: "Change the saved orientation of the active 3D view to a standard direction or from an eye point toward a target."
 version: "1.0.0"
 revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
