@@ -25,6 +25,9 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Changed
 
+- `create_door` now refuses placements previously accepted when the wall bottom is
+  above the placement level or the door head exceeds the wall top. On a raised
+  wall, `create_door_on_wall` accepts an explicit `sill_height`.
 - Existing modelling tools retain their 0.9.1 required parameters and defaults.
   The following inputs are optional:
   - `create_wall` accepts `type_name`, `top_level_name`, `top_offset`, `base_offset`,

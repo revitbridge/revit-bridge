@@ -3,7 +3,7 @@ name: delete_elements
 display_name: Delete Elements
 description: >-
   Delete the supplied ids (at most 100). Every supplied element is checked
-  first. Pinned elements, element types, views and levels stop the run. An independently
+  first. Pinned elements, families, element types, views and levels stop the run. An independently
   placeable component among the dependencies must also be supplied. Parts of a supplied
   assembly, such as curtain panels, nested family components and stair railings, may be
   removed with it. AlsoDeleted lists up to 100 additional ids. AlsoDeletedCount and
@@ -43,6 +43,7 @@ code_template: |
       Element element = document.GetElement(id);
       if (element == null) { problems.Add(idOf(id) + " no longer exists"); continue; }
       if (element is ElementType) { problems.Add(idOf(id) + " is a type; deleting it would delete every element of that type"); continue; }
+      if (element is Family) { problems.Add(idOf(id) + " is a family; deleting it would delete its types and instances"); continue; }
       if (element is View) { problems.Add(idOf(id) + " is a view"); continue; }
       if (element is Level) { problems.Add(idOf(id) + " is a level; deleting it would delete everything on it"); continue; }
       if (element.Pinned) { problems.Add(idOf(id) + " is pinned; unpin it in Revit first"); continue; }
@@ -106,6 +107,9 @@ code_template: |
           ElementId ownerId = pending.Dequeue();
           if (!candidates.TryGetValue(ownerId, out Element owner)) continue;
           if (owner is FamilyInstance family) AddParts(family.GetSubComponentIds());
+          if (owner is Autodesk.Revit.DB.Structure.AreaReinforcement area) AddParts(area.GetRebarInSystemIds());
+          if (owner is Autodesk.Revit.DB.Structure.PathReinforcement path) AddParts(path.GetRebarInSystemIds());
+          if (owner is Autodesk.Revit.DB.Structure.FabricArea fabric) AddParts(fabric.GetFabricSheetElementIds());
           if (owner is Wall wall)
           {
               if (wall.IsStackedWall) AddParts(wall.GetStackedWallMemberIds());
@@ -176,6 +180,9 @@ code_template: |
       if (e is FamilyInstance nested && nested.SuperComponent is Element parent && owned.Contains(parent.Id))
           continue;
       bool independent = e is Wall || e is Floor || e is RoofBase || e is Ceiling ||
+          e is CurtainSystem || e is WallSweep || e is SlabEdge || e is Autodesk.Revit.DB.Architecture.Fascia ||
+          e is Autodesk.Revit.DB.Architecture.Gutter || e is WallFoundation || e is MEPCurve || e is BeamSystem ||
+          e is Toposolid || e is Autodesk.Revit.DB.Architecture.TopographySurface || e is Autodesk.Revit.DB.Architecture.BuildingPad ||
           e is FamilyInstance || IsModelGroup(e) || e is Opening ||
           e is Autodesk.Revit.DB.Architecture.Stairs || e is Autodesk.Revit.DB.Architecture.MultistoryStairs ||
           e is Autodesk.Revit.DB.Structure.Rebar || e is Autodesk.Revit.DB.Structure.RebarInSystem ||

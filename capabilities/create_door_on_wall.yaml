@@ -98,8 +98,12 @@ code_template: |
   BoundingBoxXYZ wallBox = wall.get_BoundingBox(null);
   if (wallBox == null)
       throw new InvalidOperationException("REFUSED: Cannot verify the requested door elevation on the host wall.");
-  if (bottom < wallBox.Min.Z - tolerance || bottom >= wallBox.Max.Z - tolerance)
-      throw new InvalidOperationException("REFUSED: The requested door elevation is outside the height of the host wall.");
+  if (bottom < wallBox.Min.Z - tolerance)
+      throw new InvalidOperationException("REFUSED: The wall bottom is " + toMm(wallBox.Min.Z - level.ProjectElevation)
+          + " mm above the placement level. Set sill_height at least this high.");
+  if (bottom >= wallBox.Max.Z - tolerance)
+      throw new InvalidOperationException("REFUSED: The requested door elevation is at or above the wall top. Wall bottom minus placement level: "
+          + toMm(wallBox.Min.Z - level.ProjectElevation) + " mm.");
   double DoorHeight(Element element)
   {
       foreach (var key in new[] { BuiltInParameter.DOOR_HEIGHT, BuiltInParameter.FAMILY_HEIGHT_PARAM })

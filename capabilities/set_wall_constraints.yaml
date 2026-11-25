@@ -73,7 +73,9 @@ code_template: |
   double baseZ = baseLevel.ProjectElevation + (baseText == "" ? current(BuiltInParameter.WALL_BASE_OFFSET).AsDouble() : feet(baseText));
   ElementId topId = topName != "" ? levelByName(topName).Id
       : heightText != "" ? ElementId.InvalidElementId : oldTopId;
-  if (topName != "" && topText == "") topText = "0";
+  double? targetTopOffset = topText == "" ? (double?)null : feet(topText);
+  if (topName != "" && !targetTopOffset.HasValue)
+      targetTopOffset = oldTopId == ElementId.InvalidElementId ? 0 : current(BuiltInParameter.WALL_TOP_OFFSET).AsDouble();
   double topZ;
   if (topId == ElementId.InvalidElementId)
   {
@@ -84,13 +86,13 @@ code_template: |
   {
       Level topLevel = document.GetElement(topId) as Level;
       if (topLevel == null) throw new InvalidOperationException("REFUSED: Cannot resolve the wall top level.");
-      topZ = topLevel.ProjectElevation + (topText == "" ? current(BuiltInParameter.WALL_TOP_OFFSET).AsDouble() : feet(topText));
+      topZ = topLevel.ProjectElevation + (targetTopOffset ?? current(BuiltInParameter.WALL_TOP_OFFSET).AsDouble());
   }
   if (topZ <= baseZ) throw new InvalidOperationException("REFUSED: Effective wall top must be above its base.");
   if (baseName != "") setId(wall, BuiltInParameter.WALL_BASE_CONSTRAINT, baseLevel.Id);
   if (baseText != "") setLength(wall, BuiltInParameter.WALL_BASE_OFFSET, feet(baseText));
   if (topName != "" || heightText != "") setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, topId);
-  if (topText != "") setLength(wall, BuiltInParameter.WALL_TOP_OFFSET, feet(topText));
+  if (targetTopOffset.HasValue) setLength(wall, BuiltInParameter.WALL_TOP_OFFSET, targetTopOffset.Value);
   if (heightText != "") setLength(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM, feet(heightText));
   document.Regenerate();
   Func<BuiltInParameter, string, bool> matchesOffset = (key, text) =>
@@ -103,7 +105,7 @@ code_template: |
   if (actualBaseId != baseLevel.Id || actualTopId != topId
       || !matchesOffset(BuiltInParameter.WALL_USER_HEIGHT_PARAM, heightText)
       || !matchesOffset(BuiltInParameter.WALL_BASE_OFFSET, baseText)
-      || !matchesOffset(BuiltInParameter.WALL_TOP_OFFSET, topText))
+      || (targetTopOffset.HasValue && Math.Abs(current(BuiltInParameter.WALL_TOP_OFFSET).AsDouble() - targetTopOffset.Value) >= 1e-8))
       throw new InvalidOperationException("Wall constraint read-back failed.");
   double actualBaseZ = baseLevel.ProjectElevation + current(BuiltInParameter.WALL_BASE_OFFSET).AsDouble();
   double actualTopZ;
@@ -153,7 +155,7 @@ parameters:
     default: ""
   - name: top_offset
     type: double
-    description: "New top offset (mm)"
+    description: "New top offset (mm). Omitting it preserves the constrained wall's offset, or uses zero when changing an unconnected wall to a top level."
     source: default
     required: false
     default: ""

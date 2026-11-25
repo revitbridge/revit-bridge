@@ -1,7 +1,8 @@
 schema_version: 1
 name: create_structural_column
 display_name: Create Structural Column
-description: "Create a named structural column on a base level. When no top level is specified, Revit uses the next level above the base."
+description: Create a structural column of a named family type at X/Y on a level.
+  Specify a top level or let Revit use the next level above the base.
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
