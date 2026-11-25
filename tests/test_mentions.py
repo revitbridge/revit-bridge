@@ -46,6 +46,8 @@ def clean_type_cache(monkeypatch):
     from revit_bridge import mention_cache
 
     monkeypatch.setattr(mention_cache, "_sessions", OrderedDict())
+    monkeypatch.setattr(mention_cache, "_host_readers", {})
+    monkeypatch.setattr(mention_cache, "_next_host_check", 0)
 
 
 # -- candidates ----------------------------------------------------------------------------------
@@ -639,6 +641,138 @@ def test_incomplete_or_failed_cold_inventory_is_retried_without_poisoning_the_ca
     run(handler, pick)
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("repeat", ["complete", "timed-out", "switched", "error"])
+def test_first_fixed_inventory_repeats_only_after_its_time_budget(legacy, repeat, monkeypatch):
+    from revit_bridge import mention_cache as cache
+
+    now = [100]
+    monkeypatch.setattr(cache, "monotonic", lambda: now[0])
+    model = FakeModel(list_model_items=not legacy)
+    model.model["types"]["OST_Walls"][1]["TypeName"] = "Second hit"
+    calls = []
+    time_out = True
+    def handle(request):
+        code = request.get("params", {}).get("code")
+        calls.append(code or request["method"])
+        if code not in (cache.TYPE_INVENTORY, cache._RETRY_INVENTORY):
+            return model(request)
+        if code == cache._RETRY_INVENTORY and repeat == "error":
+            return FakeRevit.code_result(request["id"], None, success=False, error="read failed")
+        data = json.loads(model(request)["result"]["result"])
+        if code == cache._RETRY_INVENTORY and repeat == "switched":
+            data["source"] = data["document"] = "another document"
+        if time_out and (code == cache.TYPE_INVENTORY or repeat == "timed-out"):
+            data.update(rows=data["rows"][:1], warnings=["time budget"], truncated=True, timedOut=True)
+        return FakeRevit.code_result(request["id"], data)
+
+    async def scenario(ex):
+        nonlocal time_out
+        # Explicit-category navigation uses its own API and leaves the first fixed read available.
+        await mention_candidates(ex, "type", category="OST_Doors")
+        calls.clear()
+        answer = await mention_candidates(ex, "type", q="wall")
+        assert len(calls) <= 5 and calls.count(cache.TYPE_INVENTORY) == calls.count(cache._RETRY_INVENTORY) == 1
+        if repeat == "complete":
+            assert answer["total"] == 2 and not answer["truncated"] and "warnings" not in answer
+            calls.clear()
+            hot = await mention_candidates(ex, "type", q="wall")
+            assert hot == answer and calls == [cache.DOCUMENT_STAMP]
+        elif repeat == "timed-out":
+            assert answer["total"] == 1 and answer["truncated"] and answer["warnings"] == ["time budget"]
+        else:
+            assert answer["error"] == "revit_error"
+        now[0] += 31
+        calls.clear()
+        partial = await mention_candidates(ex, "type", q="wall")
+        assert partial["truncated"] and calls.count(cache.TYPE_INVENTORY) == 1 and cache._RETRY_INVENTORY not in calls
+        time_out = False
+        calls.clear()
+        recovered = await mention_candidates(ex, "type", q="wall")
+        assert recovered["total"] == 2 and not recovered["truncated"] and cache.TYPE_INVENTORY in calls
+        await ex.client.disconnect()
+        calls.clear()
+        time_out = True
+        await mention_candidates(ex, "type", q="wall")
+        assert calls.count(cache._RETRY_INVENTORY) == 1 and len(calls) <= 5
+    run(handle, scenario)
+    assert "timer.ElapsedMilliseconds >= 1500" in cache.TYPE_INVENTORY
+    assert review(cache._RETRY_INVENTORY) == (True, [])
+
+
+@pytest.mark.parametrize("initial_failure", ["error", "malformed"])
+def test_failed_inventory_leaves_the_first_budget_retry_available(initial_failure):
+    from revit_bridge import mention_cache as cache
+
+    model = FakeModel()
+    reads = []
+    def handle(request):
+        code = request.get("params", {}).get("code")
+        if code not in (cache.TYPE_INVENTORY, cache._RETRY_INVENTORY):
+            return model(request)
+        reads.append(code)
+        if len(reads) == 1:
+            if initial_failure == "error":
+                return FakeRevit.code_result(request["id"], None, success=False, error="read failed")
+            return FakeRevit.code_result(request["id"], {"rows": []})
+        if code == cache.TYPE_INVENTORY:
+            data = json.loads(model(request)["result"]["result"])
+            data.update(rows=[], warnings=["time budget"], truncated=True, timedOut=True)
+            return FakeRevit.code_result(request["id"], data)
+        return model(request)
+
+    async def scenario(ex):
+        failed = await mention_candidates(ex, "type", q="wall")
+        assert failed["error"] == "revit_error" and reads == [cache.TYPE_INVENTORY]
+        recovered = await mention_candidates(ex, "type", q="wall")
+        assert recovered["items"] and not recovered["truncated"] and "warnings" not in recovered
+        assert reads == [cache.TYPE_INVENTORY, cache.TYPE_INVENTORY, cache._RETRY_INVENTORY]
+    run(handle, scenario)
+
+
+def test_host_first_inventory_claim_uses_live_connection_across_adapters(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from revit_bridge import mention_cache as cache
+
+    class Adapter:
+        def __init__(self, state):
+            self.state = state
+
+        @property
+        def mention_cache_scope(self):
+            if self.state[0] is None:
+                raise RuntimeError("expired third-party adapter")
+            return self.state[0]
+
+        @property
+        def connected(self):
+            return self.state[0] != "offline"
+
+    tokens = [[n] for n in range(75)]
+    now = [100]
+    monkeypatch.setattr(cache, "monotonic", lambda: now[0])
+    def claim(state):
+        client = Adapter(state)
+        return cache._first_inventory(client, cache.device_scope(client))
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert sum(pool.map(claim, [tokens[0]] * 8)) == 1
+    assert all(claim(token) for token in tokens[1:])
+    assert not any(claim(token) for token in tokens)
+    assert len(cache._host_readers) == 75
+    tokens[0][0] = None
+    for state in tokens[1:]:
+        state[0] = "offline"
+    now[0] += 31
+    assert claim(["new device"])
+    assert len(cache._host_readers) == 2 and cache._host_readers[("host", 0)] is None
+    class OtherHost(Adapter):
+        pass
+    same = OtherHost(["new device"])
+    assert not cache._first_inventory(same, cache.device_scope(same))
+    tokens[1][0] = "new generation"
+    assert claim(tokens[1]) and not claim(tokens[1])
+
+
 @pytest.mark.parametrize("failure", ["missing-id", "zero-id", "wrong-category", "bad-object", "total", "flag",
                                      "warning", "unknown-coverage", "legacy-bad-object", "legacy-null"])
 def test_explicit_category_preserves_good_rows_and_does_not_publish_uncertain_rows_to_aliases(failure):
@@ -780,7 +914,7 @@ def test_five_ranks_and_name_order_within_a_rank():
 
 
 def selection_model(selected, *, deleted=(), unreadable=(), changed=False, year=2026, names=None,
-                    metadata_limit=None, member_limit=None, recheck_limit=None):
+                    metadata_limit=None, member_limit=None, recheck_limit=None, document_id="example-opening"):
     import re
 
     batches = []
@@ -821,6 +955,8 @@ def selection_model(selected, *, deleted=(), unreadable=(), changed=False, year=
         else:
             ids = [int(n) for n in re.findall(r"new ElementId\((\d+)\)", code)]
             assert 0 < len(ids) <= 50
+            assert "document_id = document.GetHashCode().ToString()" in code
+            snapshot["document_id"] = document_id
             batches.append(ids)
         if not index and positions:
             assert positions == ["example"] and "if (view !=" in code
@@ -932,6 +1068,22 @@ def test_selection_q_reads_full_details_only_after_ranking_and_paging():
     result, methods = run(handler, mention_candidates, "element", source="selection", q="999")
     assert result["items"] == [] and result["warnings"] == ["2 type: unreadable"]
     assert handler.batches == [] and len(methods) == 2
+
+
+def test_element_recheck_distinguishes_matching_elements_in_different_open_documents():
+    active = selection_model([701], document_id="opening-a")
+    async def scenario(ex):
+        nonlocal active
+        pick = (await mention_candidates(ex, "element", source="selection"))["items"][0]
+        assert pick["document_id"] == "opening-a"
+        refs = [{"kind": "element", "id": pick["id"]}]
+        assert (await resolve_mentions(ex, refs))["resolved"] == [pick]
+        active = selection_model([], document_id="opening-b")
+        assert (await resolve_mentions(ex, refs))["resolved"] == [dict(pick, document_id="opening-b")]
+        active = selection_model([], document_id=None)
+        with pytest.raises(RevitQueryError, match="document identity"):
+            await resolve_mentions(ex, refs)
+    run(lambda request: active(request), scenario)
 
 
 def test_element_recheck_targets_document_not_selection_and_reports_deleted_id():

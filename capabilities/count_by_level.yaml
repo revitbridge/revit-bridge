@@ -1,5 +1,6 @@
 schema_version: 1
 name: count_by_level
+read_only: true
 display_name: Count By Level
 description: >-
   Read only. Count the elements of one category (an OST_* name) on each level of the model,

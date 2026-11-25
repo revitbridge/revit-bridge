@@ -252,8 +252,11 @@ class FakeModel:
                         for key, types in self.model["types"].items()
                         if (not categories or key in categories) and (modern or key in self.model["old_command_categories"])
                         for t in types]
-                return FakeRevit.code_result(rid, {"source": self.document_stamp, "rows": rows,
-                                                   "warnings": self.warnings, "truncated": bool(self.warnings)})
+                data = {"source": self.document_stamp, "rows": rows, "warnings": self.warnings,
+                        "truncated": bool(self.warnings), "timedOut": False}
+                if "document = source" in params["code"]:
+                    data.update(document=self.document_stamp, version=self.document_version, modified=self.document_modified)
+                return FakeRevit.code_result(rid, data)
             return self._send_code(rid, params.get("code", ""))
         if method == "get_available_family_types":
             # the released command: no BuiltInCategory, and not every category

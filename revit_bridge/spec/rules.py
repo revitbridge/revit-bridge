@@ -33,6 +33,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from revit_bridge.capabilities.schema import optional_element_pick
 from revit_bridge.capabilities.store import SolidifiedTool
 from revit_bridge.revit import sandbox
 from revit_bridge.snapshot.project import ProjectSnapshot
@@ -139,7 +140,7 @@ def _pack_params(pack: SolidifiedTool | None) -> dict[str, dict]:
 
 
 def _is_tool_sourced(pdef: dict) -> bool:
-    return bool(pdef.get("choices_from")) or str(pdef.get("source", "")).startswith("tool:")
+    return (bool(pdef.get("choices_from")) or str(pdef.get("source", "")).startswith("tool:")) and not optional_element_pick(pdef)
 
 
 def _is_numeric(pdef: dict) -> bool:
@@ -196,13 +197,16 @@ def validate_spec(spec: TaskSpec, pack: SolidifiedTool | None) -> list[SpecError
                                     message=f"{b.name}: evidence is empty (source {b.source.value})"))
         pdef = params.get(b.name)
         if pdef is not None:
+            # Picking an instance supplies tool evidence. A pack that also
+            # accepts a designer id or selection default keeps its original sources.
+            optional_pick = optional_element_pick(pdef)
             if _is_tool_sourced(pdef) and b.source not in (Source.tool, Source.answer):
                 errors.append(SpecError(code="unsourced_choice", param=b.name,
                                         message=f"{b.name} must come from a Revit query or the designer's answer "
                                                 f"(pack: {pdef.get('choices_from') or pdef.get('source')}), "
                                                 f"not {b.source.value}"))
-            elif str(pdef.get("source", "")) == "designer" and b.source not in (
-                    Source.designer, Source.answer, Source.preference):
+            elif (pdef.get("source") == "designer" and not (optional_pick and b.source == Source.tool)
+                  and b.source not in (Source.designer, Source.answer, Source.preference)):
                 # A preference is shown on the card and still confirmed (spec 5.1, 2026-09-20 amendment)
                 errors.append(SpecError(code="guessed_value", param=b.name,
                                         message=f"{b.name} must be the designer's words, answer or a "
@@ -273,7 +277,8 @@ def missing_params(pack: SolidifiedTool, known: dict[str, Any],
         if name in known and not _unanswered(known[name]):
             continue
         options = _options_for(pdef, snapshot)
-        source = str(pdef.get("choices_from") and f"tool:{pdef['choices_from']}" or pdef.get("source", "designer"))
+        source = (f"tool:{pdef['choices_from']}" if pdef.get("choices_from") and _is_tool_sourced(pdef)
+                  else str(pdef.get("source", "designer")))
         questions.append(Question(
             id=f"q_{name}",
             param=name,

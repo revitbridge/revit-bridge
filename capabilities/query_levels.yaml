@@ -1,16 +1,17 @@
 schema_version: 1
 name: query_levels
+read_only: true
 display_name: Query Levels
 description: List all levels in the model with their elevations (read-only).
 version: "1.0.0"
-revit_versions: ["2026"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
   var levels = new FilteredElementCollector(document)
       .OfClass(typeof(Level))
       .Cast<Level>()
       .OrderBy(l => l.Elevation)
       .Select(l => new {
-          Id = l.Id.Value,
+          Id = long.Parse(l.Id.ToString(), System.Globalization.CultureInfo.InvariantCulture),
           Name = l.Name,
           ElevationMm = Math.Round(l.Elevation * 304.8, 1)
       })

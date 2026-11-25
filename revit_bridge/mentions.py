@@ -35,8 +35,9 @@ Levels, links and types use the query executor's supported add-in or legacy
 path. Fixed read-only queries identify the active document, collect types on
 a cross-category cache miss and read the selection. A type search makes at
 most five bridge calls. Complete type lists can be reused for up to 30 seconds
-on the same connection and unmodified document. Incomplete reads return the
-available types with warnings and truncation and are retried on the next search.
+on the same connection and unmodified document. The first fixed inventory on
+a connection can repeat once after its time budget expires. Incomplete reads
+return available types with warnings and truncation and remain uncached.
 All kinds accept up to eight distinct search terms; more return invalid_args.
 """
 from __future__ import annotations
@@ -232,8 +233,9 @@ async def _type_candidates(executor, scope, category, matched, searching):
             hit = mention_cache.cached(inventory, category)
         if hit is not None:
             return hit
+        closing_stamp = None
         if cross_category:
-            data = await mention_cache.read_type_inventory(executor, matched, stamp)
+            data, closing_stamp = await mention_cache.read_type_inventory(executor, matched, stamp)
             reply = _inventory_items(data, matched)
         else:
             reply = await _type_category(executor, category)
@@ -242,7 +244,7 @@ async def _type_candidates(executor, scope, category, matched, searching):
             if not reply.get("truncated") and not reply.get("warnings"):
                 additions = (_category_inventories(reply["items"], matched) if cross_category
                              else {category: mention_cache.pending(reply)})
-            current = await mention_cache.document_stamp(executor.client, scope)
+            current = closing_stamp or await mention_cache.document_stamp(executor.client, scope)
             if current and current.document != stamp.document:
                 mention_cache.discard(scope)
                 raise RevitQueryError("The active document changed; pick the type again.")

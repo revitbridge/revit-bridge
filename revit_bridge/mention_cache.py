@@ -3,7 +3,7 @@ from collections import OrderedDict
 from threading import Lock
 from time import monotonic
 from typing import NamedTuple
-from weakref import ref
+from weakref import WeakKeyDictionary, ref
 
 from revit_bridge.revit.client import RevitClient
 from revit_bridge.snapshot.query import RevitQueryError, _type_name, type_category_items
@@ -20,11 +20,11 @@ using (var version = Document.GetDocumentVersion(document)) {
 # The normal category command takes one category at a time. Read a cold
 # cross-category inventory in one callback with the same classes and names as the
 # add-in's FamilyTypeCollector. The legacy query covers six type classes.
-TYPE_INVENTORY = """
+_INVENTORY_BODY = """
 var timer = System.Diagnostics.Stopwatch.StartNew();
 var rows = new List<object>();
 var warnings = new List<string>();
-bool modern = (bool)parameters[0], truncated = false;
+bool modern = (bool)parameters[0], truncated = false, timedOut = false;
 long copiedChars = 0;
 string source = document.GetHashCode().ToString();
 var categories = new List<BuiltInCategory>();
@@ -36,8 +36,13 @@ using (var collector = new FilteredElementCollector(document)) {
     collector.WhereElementIsElementType();
     if (filter != null) collector.WherePasses(filter);
     foreach (Element element in collector) {
-        if (timer.ElapsedMilliseconds >= 200 || rows.Count >= 8192) {
+        if (timer.ElapsedMilliseconds >= 1500) {
             warnings.Add("Type search reached its read budget. Choose a category to narrow the search.");
+            truncated = timedOut = true;
+            break;
+        }
+        if (rows.Count >= 8192) {
+            warnings.Add("Type search reached its row limit. Choose a category to narrow the search.");
             truncated = true;
             break;
         }
@@ -68,11 +73,22 @@ using (var collector = new FilteredElementCollector(document)) {
         }
     }
 }
-return new { source, rows, warnings, truncated };
+"""
+TYPE_INVENTORY = _INVENTORY_BODY + "return new { source, rows, warnings, truncated, timedOut };"
+# The repeat is an independent API callback. Read its closing document stamp
+# there so a cold search including the repeat still uses at most five RPCs.
+_RETRY_INVENTORY = _INVENTORY_BODY + """
+using (var version = Document.GetDocumentVersion(document)) {
+    return new { source, rows, warnings, truncated, timedOut, document = source,
+                 version = version.VersionGUID + ":" + version.NumberOfSaves, modified = document.IsModified };
+}
 """
 
 _TTL = 30
 _sessions = OrderedDict()
+_tcp_reads = WeakKeyDictionary()
+_host_readers = {}
+_next_host_check = 0.0
 _lock = Lock()
 
 
@@ -102,32 +118,99 @@ async def request_scope(client):
     return device_scope(client)
 
 
+def _first_inventory(client, scope):
+    """Mark the first valid inventory response on a connection, independently of cached rows."""
+    if scope is None:
+        return False
+    if scope[0] == "tcp":
+        with _lock:
+            generation = scope[2]
+            if _tcp_reads.get(client, -1) >= generation:
+                return False
+            _tcp_reads[client] = generation
+            return True
+    # A request-local relay adapter can still observe its underlying device
+    # after this request ends. A third-party adapter with a static key cannot.
+    observes_connection = (isinstance(getattr(type(client), "mention_cache_scope", None), property)
+                           and isinstance(getattr(type(client), "connected", None), property))
+    global _next_host_check
+    with _lock:
+        first = scope not in _host_readers
+        if first or (observes_connection and _host_readers[scope] is None):
+            _host_readers[scope] = client if observes_connection else None
+        now = monotonic()
+        if now < _next_host_check:
+            return first
+        _next_host_check = now + _TTL
+        candidates = [(key, adapter) for key, adapter in _host_readers.items() if adapter is not None]
+    for other, adapter in candidates:
+        try:
+            retired = not adapter.connected or device_scope(adapter) != other
+        except Exception:
+            # Keep the consumed marker if its lifetime cannot be checked, but
+            # release the faulty adapter. Foreign properties run outside the lock.
+            with _lock:
+                if _host_readers.get(other) is adapter:
+                    _host_readers[other] = None
+        else:
+            if retired:
+                with _lock:
+                    if _host_readers.get(other) is adapter:
+                        del _host_readers[other]
+    return first
+
+
+def _stamp(data, scope):
+    if (not isinstance(data, dict) or not isinstance(data.get("document"), str) or not data["document"]
+            or not isinstance(data.get("version"), str) or not isinstance(data.get("modified"), bool)):
+        return None
+    return DocumentStamp(scope, data["document"], data["version"], data["modified"])
+
+
 async def document_stamp(client, scope):
     if scope is None:
         return None
     response = await client.send_code(DOCUMENT_STAMP)
     if device_scope(client) != scope:
         raise RevitQueryError("The device connection changed; pick the type again.")
-    data = response.result
-    if (not response.success or not isinstance(data, dict) or not isinstance(data.get("document"), str)
-            or not data["document"] or not isinstance(data.get("version"), str) or not isinstance(data.get("modified"), bool)):
-        # Some hosts permit list_model_items but disable fixed code queries.
-        return None
-    return DocumentStamp(scope, data["document"], data["version"], data["modified"])
+    # Some hosts permit list_model_items but disable fixed code queries.
+    return _stamp(response.result, scope) if response.success else None
 
 
 async def read_type_inventory(executor, matched, stamp):
     # An empty id list verifies the advertised method without reading types.
     # If a host denied the identity query, ask for categories instead: they
     # provide a bounded native fallback if it also denies the inventory.
+    client = executor.client
+    scope = device_scope(client)
     if stamp is None:
         probe = await executor._offered("type_categories", definite=True, limit=200)
     else:
         probe = await executor._offered("types", definite=True, ids=[], limit=1)
-    response = await executor.client.send_code(TYPE_INVENTORY, parameters=[probe is not None, *sorted(matched or ())])
-    data = response.result
+    if device_scope(client) != scope or (stamp and scope != stamp.scope):
+        raise RevitQueryError("The device connection changed; pick the type again.")
+    parameters = [probe is not None, *sorted(matched or ())]
+    response = await client.send_code(TYPE_INVENTORY, parameters=parameters)
+    if device_scope(client) != scope:
+        raise RevitQueryError("The device connection changed; pick the type again.")
     if not response.success and stamp is None and probe is not None:
-        return await _native_subset(executor, probe, matched)
+        return await _native_subset(executor, probe, matched), None
+    data = _inventory_result(response, stamp)
+    first = _first_inventory(client, scope)
+    if not (first and data["truncated"] and data.get("timedOut") is True):
+        return data, None
+    response = await client.send_code(_RETRY_INVENTORY if stamp else TYPE_INVENTORY, parameters=parameters)
+    repeated = _inventory_result(response, stamp)
+    if device_scope(client) != scope or data["source"] != repeated["source"]:
+        raise RevitQueryError("The document or connection changed; pick the type again.")
+    current = _stamp(repeated, scope) if stamp else None
+    if stamp and (not current or current.document != repeated["source"]):
+        raise RevitQueryError("Invalid document identity on repeated type search")
+    return repeated, current
+
+
+def _inventory_result(response, stamp):
+    data = response.result
     if (not response.success or not isinstance(data, dict) or not isinstance(data.get("rows"), list)
             or not isinstance(data.get("source"), str)):
         raise RevitQueryError(response.error or "Invalid type search result")

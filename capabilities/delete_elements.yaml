@@ -250,6 +250,7 @@ parameters:
     type: string
     description: "Comma-separated element ids."
     source: designer
+    choices_from: elements
     required: true
 preconditions:
   - text: "give up to 100 distinct element ids; unpin pinned elements"

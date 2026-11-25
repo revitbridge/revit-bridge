@@ -442,6 +442,7 @@ def list_tools() -> str:
         {
             "name": t.name,
             "description": t.description,
+            "read_only": t.read_only,
             "version": t.version,
             "parameters": [
                 {k: p[k] for k in ("name", "type", "source", "required", "unit", "choices_from", "default") if k in p}
@@ -674,7 +675,7 @@ def tool_resource(name: str) -> str:
     tool_path = _tool_store.path_of(name)
     if tool_path is None:
         return json.dumps({"error": f"Tool '{name}' not found."})
-    return tool_path.read_text(encoding="utf-8")
+    return tool_path.read_bytes().decode("utf-8")
 
 
 @mcp.resource("revit://evidence/recent")

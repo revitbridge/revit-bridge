@@ -100,7 +100,8 @@ _PARTIAL = ("The selection read or response-size budget was reached. Category fa
 
 
 async def _read(executor, prelude, parameters=(), *, selection=False):
-    result = "view, items, warnings" + (", members, total, page" if selection else "")
+    result = "view, items, warnings" + (", members, total, page" if selection
+                                        else ", document_id = document.GetHashCode().ToString()")
     response = await executor.client.send_code(prelude + _READ + "return new { " + result + " };",
                                                parameters=list(parameters))
     if not response.success or not isinstance(response.result, dict) or not isinstance(response.result.get("items"), list):
@@ -153,7 +154,10 @@ var ids = new ElementId[] {{ {constructors} }};
 bool names = true, details = true;
 int maxRows = 50;
 """, [view] if view is not None else [])
-    return _items(page["items"]), page.get("warnings") or []
+    document_id = page.get("document_id")
+    if not isinstance(document_id, str) or not document_id:
+        raise RevitQueryError("Missing document identity in element query")
+    return [dict(item, document_id=document_id) for item in _items(page["items"])], page.get("warnings") or []
 
 
 async def selected_items(executor, offset, limit, terms):

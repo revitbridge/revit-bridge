@@ -55,7 +55,7 @@ def test_list_elements_limits_attempted_rows_even_when_every_read_fails(tmp_path
     assert not errors and code
     scan = code.index("while (items.Count + skipped.Count < limit && ids.MoveNext())")
     read = code.index("document.GetElement(id)", scan)
-    skip = code.index("skipped.Add(new { Id = id.Value", read)
+    skip = code.index("skipped.Add(new { Id = idOf(id)", read)
     lookahead = code.index("truncated = items.Count + skipped.Count == limit && ids.MoveNext();", skip)
     assert code[scan:lookahead].count("ids.MoveNext()") == 1
     assert "document.GetElement" not in code[lookahead:]
