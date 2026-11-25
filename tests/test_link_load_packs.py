@@ -22,6 +22,9 @@ def test_link_load_contract(tmp_path, name):
     assert "computer running Revit" in pack.description
     if name.startswith("link_"):
         assert "large file keeps Revit busy" in pack.description
+    if name == "link_revit_model":
+        assert pack.validator is None
+        assert "60 seconds" in pack.description and "duplicate" in pack.description
     params = {p["name"]: p for p in pack.parameters}
     assert params.keys() == TOOLS[name]
     assert params["path"]["required"] and params["path"]["source"] == "designer"

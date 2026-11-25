@@ -1,7 +1,7 @@
 schema_version: 1
 name: list_mep_types
 display_name: List Mep Types
-description: "Read only. List pipe and duct types, their system types, pipe nominal diameters by segment and configured round duct diameters in millimetres."
+description: "Read only. List pipe and duct types and their system types. PipeDiametersBySegment lists configured nominal diameters per pipe segment in millimetres. A pipe type's routing preferences select the applicable segment. Round duct diameters are also in millimetres."
 version: "1.0.0"
 revit_versions: ["2021","2023","2024","2025","2026","2027"]
 read_only: true
@@ -39,7 +39,7 @@ code_template: |
   var segments = Elements<Autodesk.Revit.DB.Plumbing.PipeSegment>().Select(segment =>
   {
       CheckTime();
-      return new { Segment = segment.Name, DiametersMm = Sizes(segment.GetSizes()) };
+      return new { PipeSegmentName = segment.Name, NominalDiametersMm = Sizes(segment.GetSizes()) };
   });
   var round = Autodesk.Revit.DB.Mechanical.DuctShape.Round;
   var settings = ducts ? Autodesk.Revit.DB.Mechanical.DuctSizeSettings.GetDuctSizeSettings(document) : null;
@@ -49,7 +49,7 @@ code_template: |
       PipeSystemTypes = Types<Autodesk.Revit.DB.Plumbing.PipingSystemType>(),
       DuctTypes = Types<Autodesk.Revit.DB.Mechanical.DuctType>(),
       DuctSystemTypes = Types<Autodesk.Revit.DB.Mechanical.MechanicalSystemType>(),
-      PipeSegmentSizes = Page(segments), RoundDuctDiametersMm = Sizes(roundSizes) };
+      PipeDiametersBySegment = Page(segments), RoundDuctDiametersMm = Sizes(roundSizes) };
 parameters:
   - name: limit
     type: integer

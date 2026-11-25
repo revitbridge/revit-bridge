@@ -113,8 +113,8 @@ def test_capture_pack_returns_image_but_records_only_digest_and_dimensions(host)
 
 
 @pytest.mark.parametrize("name", ["link_revit_model", "link_cad", "load_family"])
-@pytest.mark.parametrize("refused", [False, True])
-def test_file_pack_confirms_and_executes_the_path_but_omits_it_from_evidence(host, name, refused):
+@pytest.mark.parametrize("outcome", ["success", "refused", "error", "exception"])
+def test_file_pack_confirms_and_executes_the_path_but_omits_it_from_evidence(host, name, outcome):
     store = host["store"]
     params = store.load(name).fixtures[1]["params"]
     spec = TaskSpec(task=name, action=Action(kind="run_tool", tool=name),
@@ -124,21 +124,25 @@ def test_file_pack_confirms_and_executes_the_path_but_omits_it_from_evidence(hos
     code, errors = store.render(name, params)
     assert code and not errors
     replies = [RevitResponse(True, {})]  # document probe
-    if name == "link_revit_model":
-        replies.append(RevitResponse(True, 0))  # count before link
-    replies.append(RevitResponse(False, error="REFUSED: Source unavailable. Check the file.") if refused
-                   else RevitResponse(True, {"ElementId": 101}))
-    if name == "link_revit_model" and not refused:
-        replies.append(RevitResponse(True, 1))
+    path = params["path"]
+    replies.append({
+        "success": RevitResponse(True, {"ElementId": 101}),
+        "refused": RevitResponse(False, error=f"System.InvalidOperationException: REFUSED: Could not open '{path}'. Check the file."),
+        "error": RevitResponse(False, error="Source unavailable: " + path.upper().replace("\\", "/")),
+        "exception": OSError("Load failed for " + path.replace("\\", "\\\\")),
+    }[outcome])
     client = SimpleNamespace(send_code=AsyncMock(side_effect=replies))
     result = asyncio.run(run_pack(client=client, name=name, params=params, token=confirmation.token,
                                   host="test", **host))
-    assert result.success == (not refused)
+    assert result.success == (outcome == "success")
+    assert bool(result.refused) == (outcome == "refused")
     client.send_code.assert_any_await(code)
     record = host["ledger"].get(result.evidence_id)
     assert record["projection_hash"] == confirmation.projection_hash
     assert record["params"] == {k: v for k, v in params.items() if k != "path"}
-    assert "example.invalid" not in str(record)
+    assert record["error"] == result.error
+    assert "example.invalid" not in (result.error or "").lower()
+    assert "example.invalid" not in str(record).lower()
 
 
 def test_run_pack_refuses_without_a_token_and_never_touches_revit(host):

@@ -1,7 +1,7 @@
 schema_version: 1
 name: create_pipes_by_points
 display_name: Create Pipes By Points
-description: "Create rigid pipe segments and elbow fittings along model internal-origin points in millimetres. Partial results identify each failed segment and corner by zero-based index."
+description: "Create rigid pipe runs and elbows along internal-origin points in millimetres. Invalid vertices and short segments refuse the route. Results identify merged straight-through vertices, measured pipe diameters and failed segments or corners by original zero-based index."
 version: "1.0.0"
 revit_versions: ["2021","2023","2024","2025","2026","2027"]
 code_template: |
@@ -55,21 +55,33 @@ code_template: |
       return match;
   }
 
-  void SetSize(Element curve, BuiltInParameter key, double size)
+  double? DiameterMm(Element pipe)
   {
-      // Revit stores lengths in feet. Allow only floating-point read-back error.
-      const double sizeTolerance = 1e-8;
-      var parameter = curve.get_Parameter(key);
-      bool Matches() => parameter != null && parameter.StorageType == StorageType.Double && parameter.HasValue
-          && Math.Abs(parameter.AsDouble() - size) <= sizeTolerance;
-      if (Matches()) return;
-      if (parameter == null || parameter.StorageType != StorageType.Double || parameter.IsReadOnly || !parameter.Set(size) || !Matches())
-          throw new InvalidOperationException("REFUSED: The type did not accept the requested size. Choose a compatible size in the model.");
+      var parameter = pipe.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM);
+      if (parameter == null || !parameter.HasValue || parameter.StorageType != StorageType.Double) return null;
+      return UnitUtils.ConvertFromInternalUnits(parameter.AsDouble(), UnitTypeId.Millimeters);
+  }
+  bool Matches(double? actualMm, double requestedMm) =>
+      actualMm.HasValue && Math.Abs(actualMm.Value - requestedMm) <= 0.000003048; // 1e-8 internal feet
+  string SizeIssue(double? actualMm) => "The type did not accept the requested diameter. " +
+      (actualMm.HasValue ? "Revit returned " + actualMm.Value.ToString("G", System.Globalization.CultureInfo.InvariantCulture) + " mm. "
+                         : "Revit returned no diameter. ") + "Choose a compatible size in the model.";
+  double SetSize(Element pipe, double requestedMm)
+  {
+      var parameter = pipe.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM);
+      bool accepted = Matches(DiameterMm(pipe), requestedMm);
+      if (!accepted && parameter != null && parameter.StorageType == StorageType.Double && !parameter.IsReadOnly)
+          accepted = parameter.Set(UnitUtils.ConvertToInternalUnits(requestedMm, UnitTypeId.Millimeters));
+      document.Regenerate();
+      var actualMm = DiameterMm(pipe);
+      if (!accepted || !Matches(actualMm, requestedMm))
+          throw new InvalidOperationException(SizeIssue(actualMm));
+      return actualMm.Value;
   }
 
   var pipeType = Named<Autodesk.Revit.DB.Plumbing.PipeType>("{pipe_type_name}", "pipe type");
   var systemType = Named<Autodesk.Revit.DB.Plumbing.PipingSystemType>("{system_type_name}", "piping system type");
-  double diameter = Feet("{diameter_mm}");
+  double diameter = Number("{diameter_mm}");
   if (diameter <= 0)
       throw new InvalidOperationException("REFUSED: Pipe diameter must be positive. Enter a nominal diameter in millimetres.");
 
@@ -90,120 +102,200 @@ code_template: |
   if (fields.Length < 2 || fields.Length > maxPoints)
       throw new InvalidOperationException("REFUSED: The path needs 2 to 16 points. Split longer paths at a vertex.");
   var points = new XYZ[fields.Length];
-  var pointErrors = new string[points.Length];
+  var inputErrors = new List<string>();
   for (int i = 0; i < points.Length; i++)
   {
       try { points[i] = Point(fields[i]); }
-      catch (InvalidOperationException ex) { pointErrors[i] = ex.Message; }
+      catch (InvalidOperationException ex) when (ex.Message.StartsWith("REFUSED: ", StringComparison.Ordinal))
+      {
+          inputErrors.Add("Vertex " + i + ": " + ex.Message.Substring("REFUSED: ".Length));
+      }
+      if (i > 0 && points[i - 1] != null && points[i] != null && points[i - 1].DistanceTo(points[i]) < minLength)
+          inputErrors.Add("Segment " + (i - 1) + " (vertices " + (i - 1) + " and " + i + ") is too short. " +
+              "Separate the points by at least 2.54 mm and the model short-curve tolerance.");
+  }
+  if (inputErrors.Count > 0) throw new InvalidOperationException("REFUSED: " + string.Join(" ", inputErrors));
+
+  // Original vertex indices identify both the merged runs and any failures.
+  var vertices = new List<int> { 0 };
+  for (int i = 1; i < points.Length - 1; i++)
+  {
+      var incoming = (points[i] - points[vertices[vertices.Count - 1]]).Normalize();
+      var outgoing = (points[i + 1] - points[i]).Normalize();
+      if (!incoming.IsAlmostEqualTo(outgoing)) vertices.Add(i);
+  }
+  vertices.Add(points.Length - 1);
+  var pipes = new Autodesk.Revit.DB.Plumbing.Pipe[vertices.Count - 1];
+  var segmentReasons = new string[pipes.Length];
+  var diametersMm = new double?[pipes.Length];
+  var elbows = new FamilyInstance[vertices.Count];
+  var cornerReasons = new string[vertices.Count];
+
+  void RemoveRejectedPipe(Autodesk.Revit.DB.Plumbing.Pipe pipe)
+  {
+      // Deleted elements can no longer be inspected. Classify this pipe's dependents first.
+      var allowed = new HashSet<ElementId> { pipe.Id };
+      if (pipe.MEPSystem is Autodesk.Revit.DB.Plumbing.PipingSystem pipeSystem) allowed.Add(pipeSystem.Id);
+      foreach (var id in pipe.GetDependentElements(null))
+      {
+          var dependent = document.GetElement(id);
+          if (dependent is Autodesk.Revit.DB.Plumbing.PipingSystem || dependent is ConnectorElement) allowed.Add(id);
+      }
+      foreach (Connector end in pipe.ConnectorManager.Connectors)
+          if (end.MEPSystem is Autodesk.Revit.DB.Plumbing.PipingSystem system) allowed.Add(system.Id);
+      var rejectedId = pipe.Id;
+      var removed = document.Delete(rejectedId);
+      if (!removed.Contains(rejectedId))
+          throw new InvalidOperationException("REFUSED: Revit did not confirm deletion of the rejected pipe. Check the pipe in Revit.");
+      if (removed.Any(id => !allowed.Contains(id)))
+          throw new InvalidOperationException("REFUSED: Removing the rejected pipe also removed an unrelated element. Check the pipe routing settings.");
   }
 
-  var pipes = new Autodesk.Revit.DB.Plumbing.Pipe[points.Length - 1];
-  var segmentIssues = new List<object>();
-  var elbows = new FamilyInstance[points.Length];
-  var cornerReasons = new string[points.Length];
-  string firstIssue = null;
-  const string timeLimit = "The API time budget expired. Continue with a shorter path.";
   timer.Restart();
   for (int i = 0; i < pipes.Length; i++)
   {
-      string reason = pointErrors[i] ?? pointErrors[i + 1];
-      if (reason == null && points[i].DistanceTo(points[i + 1]) < minLength)
-          reason = "Segment is too short. Separate the points by at least 2.54 mm and the model short-curve tolerance.";
-      if (reason == null && timer.ElapsedMilliseconds > 250) reason = timeLimit;
-      if (reason == null)
+      if (timer.ElapsedMilliseconds > 250)
       {
-          Autodesk.Revit.DB.Plumbing.Pipe created = null;
-          try
-          {
-              created = Autodesk.Revit.DB.Plumbing.Pipe.Create(document, systemType.Id, pipeType.Id, level.Id, points[i], points[i + 1]);
-              if (created == null) throw new InvalidOperationException("Revit returned no pipe. Check the segment endpoints.");
-              SetSize(created, BuiltInParameter.RBS_PIPE_DIAMETER_PARAM, diameter);
-              pipes[i] = created;
-          }
-          // RegenerationFailedException derives from Revit's invalid-operation exception.
-          // Let fatal failures escape immediately so the wrapper aborts the transaction.
-          catch (Exception ex) when (ex is InvalidOperationException || ex is Autodesk.Revit.Exceptions.ArgumentException
-              || ex.GetType() == typeof(Autodesk.Revit.Exceptions.InvalidOperationException))
-          {
-              // These new pipes have no fittings yet. Discard a rejected size before attempting the next segment.
-              if (created != null)
-              {
-                  var rejectedId = created.Id;
-                  var removed = document.Delete(rejectedId);
-                  if (removed.Count != 1 || !removed.Contains(rejectedId))
-                      throw new InvalidOperationException("REFUSED: Removing an unsized pipe affected other elements. Check the pipe routing settings.");
-              }
-              reason = ex.Message;
-          }
+          segmentReasons[i] = "The API time budget expired. Continue with a shorter path.";
+          continue;
       }
-      if (reason != null)
+      Autodesk.Revit.DB.Plumbing.Pipe created = null;
+      try
       {
-          segmentIssues.Add(new { Index = i, Reason = reason });
-          if (firstIssue == null) firstIssue = reason;
+          created = Autodesk.Revit.DB.Plumbing.Pipe.Create(document, systemType.Id, pipeType.Id, level.Id,
+              points[vertices[i]], points[vertices[i + 1]]);
+          if (created == null) throw new InvalidOperationException("Revit returned no pipe.");
+          SetSize(created, diameter);
+          pipes[i] = created;
+      }
+      catch (Exception ex) when (ex is InvalidOperationException || ex is Autodesk.Revit.Exceptions.ArgumentException
+          || ex.GetType() == typeof(Autodesk.Revit.Exceptions.InvalidOperationException))
+      {
+          if (created == null)
+              throw new InvalidOperationException("REFUSED: Revit could not create segment " + vertices[i] + ". Check the type and endpoints. " + ex.Message);
+          diametersMm[i] = DiameterMm(created);
+          RemoveRejectedPipe(created);
+          segmentReasons[i] = ex.Message;
       }
   }
-  var ids = pipes.Where(pipe => pipe != null).Select(pipe => Id(pipe)).ToList();
-  if (ids.Count == 0)
-      throw new InvalidOperationException("REFUSED: No pipe could be created. Check the path, type and diameter. " + firstIssue);
 
   Connector FreeEnd(MEPCurve pipe, XYZ vertex) => pipe.ConnectorManager.Connectors.Cast<Connector>()
       .FirstOrDefault(c => c.ConnectorType == ConnectorType.End && !c.IsConnected && c.Origin.DistanceTo(vertex) <= document.Application.VertexTolerance);
-  document.Regenerate();
-  for (int i = 1; i < points.Length - 1; i++)
+  bool Joins(FamilyInstance elbow, Element pipe)
   {
-      string reason = null;
-      if (pipes[i - 1] == null || pipes[i] == null) reason = "An adjacent segment was not created. Check SegmentIssues.";
-      else if (timer.ElapsedMilliseconds > 250)
-          reason = "The API time budget expired. Use connect_pipes on the existing adjacent segments.";
-      else
+      var manager = elbow.MEPModel?.ConnectorManager;
+      return manager != null && manager.Connectors.Cast<Connector>()
+          .Any(c => c.ConnectorType == ConnectorType.End && c.IsConnected && c.AllRefs.Cast<Connector>()
+              .Any(r => r.ConnectorType == ConnectorType.End && r.Owner.Id == pipe.Id && c.IsConnectedTo(r)));
+  }
+  const string missing = "An adjacent segment was not created at the requested diameter. Check SegmentIssues.";
+  const string detached = "The elbow did not join both pipes. Inspect the pipe ends and routing preferences.";
+  for (int i = 1; i < pipes.Length; i++)
+  {
+      if (pipes[i - 1] == null || pipes[i] == null) { cornerReasons[i] = missing; continue; }
+      if (timer.ElapsedMilliseconds > 250)
       {
+          cornerReasons[i] = "The API time budget expired. Use connect_pipes on the existing adjacent segments.";
+          continue;
+      }
+      using (var attempt = new SubTransaction(document))
+      {
+          if (attempt.Start() != TransactionStatus.Started)
+              throw new InvalidOperationException("REFUSED: Could not start the elbow attempt. Retry in an editable project.");
+          FamilyInstance fitting = null;
           try
           {
-              var incoming = FreeEnd(pipes[i - 1], points[i]);
-              var outgoing = FreeEnd(pipes[i], points[i]);
-              if (incoming == null || outgoing == null) reason = "No free connector at the vertex. Inspect both pipe ends.";
+              var incoming = FreeEnd(pipes[i - 1], points[vertices[i]]);
+              var outgoing = FreeEnd(pipes[i], points[vertices[i]]);
+              if (incoming == null || outgoing == null) cornerReasons[i] = "No free connector at the vertex. Inspect both pipe ends.";
               else
               {
-                  var fitting = document.Create.NewElbowFitting(incoming, outgoing);
-                  if (fitting == null) reason = "Revit returned no elbow. Check the angle and routing preferences.";
-                  else elbows[i] = fitting;
+                  fitting = document.Create.NewElbowFitting(incoming, outgoing);
+                  if (fitting == null) cornerReasons[i] = "Revit returned no elbow. Check the angle and routing preferences.";
+                  else
+                  {
+                      document.Regenerate();
+                      if (!Joins(fitting, pipes[i - 1]) || !Joins(fitting, pipes[i])) cornerReasons[i] = detached;
+                  }
               }
           }
+          // A failed regeneration must abort the outer transaction, even on a partial route.
           catch (Exception ex) when (ex is Autodesk.Revit.Exceptions.ArgumentException || ex.GetType() == typeof(Autodesk.Revit.Exceptions.InvalidOperationException))
           {
-              reason = "Check elbow routing, segment length and bend angle. " + ex.Message;
+              cornerReasons[i] = "Check elbow routing, segment length and bend angle. " + ex.Message;
           }
-      }
-      cornerReasons[i] = reason;
-  }
-  // The returned family instance must physically join both intended pipe owners.
-  // Check after a single regeneration, including elbows affected by a subsequent bend.
-  var fittingIds = new List<long>();
-  var cornerIssues = new List<object>();
-  if (elbows.Any(f => f != null)) document.Regenerate();
-  for (int i = 1; i < points.Length - 1; i++)
-  {
-      var elbow = elbows[i];
-      if (elbow != null)
-      {
-          var manager = elbow.MEPModel?.ConnectorManager;
-          bool Joins(Element pipe) => manager != null && manager.Connectors.Cast<Connector>()
-              .Any(c => c.ConnectorType == ConnectorType.End && c.IsConnected && c.AllRefs.Cast<Connector>()
-                  .Any(r => r.ConnectorType == ConnectorType.End && r.Owner.Id == pipe.Id && c.IsConnectedTo(r)));
-          if (Joins(pipes[i - 1]) && Joins(pipes[i])) fittingIds.Add(Id(elbow));
+          if (cornerReasons[i] != null)
+          {
+              if (attempt.RollBack() != TransactionStatus.RolledBack)
+                  throw new InvalidOperationException("REFUSED: Could not roll back the elbow attempt. Check the routing preferences.");
+          }
           else
           {
-              var rejectedId = elbow.Id;
-              var removed = document.Delete(rejectedId);
-              if (removed.Count != 1 || !removed.Contains(rejectedId))
-                  throw new InvalidOperationException("REFUSED: An incomplete elbow could not be removed in isolation. Check the routing preferences.");
-              cornerReasons[i] = "The elbow did not join both pipes. Inspect the pipe ends and routing preferences.";
+              var status = attempt.Commit();
+              if (status == TransactionStatus.Committed) elbows[i] = fitting;
+              else if (status == TransactionStatus.RolledBack) cornerReasons[i] = "Revit rolled back the elbow. Check the routing preferences.";
+              else throw new InvalidOperationException("REFUSED: Could not finish the elbow attempt. Check the model's pending failures.");
           }
       }
-      if (cornerReasons[i] != null) cornerIssues.Add(new { Index = i, Reason = cornerReasons[i] });
   }
+
+  // Later bends can change earlier sizes or joints. Each cleanup pass removes at least one of
+  // the 15 pipes or 14 fittings allowed per request. Read every survivor after the last regeneration.
+  while (pipes.Any(p => p != null))
+  {
+      bool removedAny = false;
+      document.Regenerate();
+      for (int i = 0; i < pipes.Length; i++)
+      {
+          if (pipes[i] == null) continue;
+          diametersMm[i] = DiameterMm(pipes[i]);
+          if (!Matches(diametersMm[i], diameter)) segmentReasons[i] = SizeIssue(diametersMm[i]);
+      }
+      for (int i = 1; i < pipes.Length; i++)
+      {
+          var elbow = elbows[i];
+          if (elbow == null) continue;
+          if (segmentReasons[i - 1] != null || segmentReasons[i] != null) cornerReasons[i] = missing;
+          else if (!Joins(elbow, pipes[i - 1]) || !Joins(elbow, pipes[i])) cornerReasons[i] = detached;
+          else continue;
+          var id = elbow.Id;
+          var removed = document.Delete(id);
+          if (removed.Count != 1 || !removed.Contains(id))
+              throw new InvalidOperationException("REFUSED: An incomplete joint could not be removed in isolation. Check the routing preferences.");
+          elbows[i] = null;
+          removedAny = true;
+      }
+      for (int i = 0; i < pipes.Length; i++)
+      {
+          if (pipes[i] == null || segmentReasons[i] == null) continue;
+          RemoveRejectedPipe(pipes[i]);
+          pipes[i] = null;
+          removedAny = true;
+      }
+      if (!removedAny) break;
+  }
+
+  if (pipes.All(p => p == null))
+      throw new InvalidOperationException("REFUSED: No pipe could be created. " + string.Join(" ",
+          segmentReasons.Select((reason, i) => "Vertices " + vertices[i] + " to " + vertices[i + 1] + ": " + reason)));
+  var segments = new List<object>();
+  var merged = new List<int>();
+  var segmentIssues = new List<object>();
+  for (int i = 0; i < pipes.Length; i++)
+  {
+      if (pipes[i] == null)
+      {
+          for (int j = vertices[i]; j < vertices[i + 1]; j++)
+              segmentIssues.Add(new { Index = j, Reason = segmentReasons[i], ActualDiameterMm = diametersMm[i] });
+          continue;
+      }
+      segments.Add(new { StartIndex = vertices[i], EndIndex = vertices[i + 1], ElementId = Id(pipes[i]), DiameterMm = diametersMm[i] });
+      for (int j = vertices[i] + 1; j < vertices[i + 1]; j++) merged.Add(j);
+  }
+  var cornerIssues = vertices.Select((vertex, i) => new { Index = vertex, Reason = cornerReasons[i] }).Where(c => c.Reason != null).ToList();
   return new { Status = segmentIssues.Count == 0 && cornerIssues.Count == 0 ? "Created" : "Partial",
-      ElementIds = ids, ElbowIds = fittingIds, SegmentIssues = segmentIssues, CornerIssues = cornerIssues };
+      ElementIds = pipes.Where(p => p != null).Select(p => Id(p)).ToList(), Segments = segments, MergedVertexIndices = merged,
+      ElbowIds = elbows.Where(f => f != null).Select(f => Id(f)).ToList(), SegmentIssues = segmentIssues, CornerIssues = cornerIssues };
 parameters:
   - name: pipe_type_name
     type: string
@@ -245,4 +337,4 @@ fixtures:
     expect: {Status: Created}
   - name: missing_middle
     params: {"pipe_type_name":"Sample Pipe","system_type_name":"Sample Supply","diameter_mm":25,"level_name":"L1","points_mm":"0,0,0;1500,0,0;1500,0,0;1500,2000,0"}
-    expect: {Status: Partial}
+    expect: {refused: true}

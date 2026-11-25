@@ -29,6 +29,7 @@ static class Scenarios
             Check(ex.Message.StartsWith("REFUSED: ") && ex.Message.Contains(reason) && ex.Message.Contains(next),
                   "Unexpected refusal: " + ex.Message);
             Check(doc.FileCalls == before + fileCalls, "Unexpected native load during refusal: " + reason);
+            Check(doc.LastPath == null || !ex.ToString().Contains(doc.LastPath), "refusal exposed the source path");
             return;
         }
         throw new Exception("Expected refusal: " + reason);
@@ -82,6 +83,24 @@ static class Scenarios
         doc = Project();
         doc.Add(new RevitLinkType { Reference = new(null) });
         Refused(Rendered.Origin, doc, "no resolved path", "Repair");
+    }
+
+    static void AttachedLinks()
+    {
+        var doc = Project();
+        doc.Add(new RevitLinkInstance(doc.Add(new RevitLinkType()).Id));
+        doc.AttachedInstances = 2;
+        var result = JsonSerializer.SerializeToElement(Rendered.Origin(doc));
+        var parent = doc.GetElement(new(result.GetProperty("ElementId").GetInt64())) as RevitLinkInstance;
+        Check(parent?.GetTypeId().Value == result.GetProperty("TypeId").GetInt64(), "returned parent instance");
+        Check(result.GetProperty("NestedInstanceCount").GetInt32() == 2, "new attached instances only");
+        Refused(Rendered.Origin, doc, "already linked", "60 seconds");
+        doc = Project();
+        doc.MissingInstance = true;
+        Refused(Rendered.Origin, doc, "place", "Manage Links", 1);
+        doc = Project();
+        doc.WrongType = true;
+        Refused(Rendered.Origin, doc, "place", "Manage Links", 1);
     }
 
     static void Drawings()
@@ -154,12 +173,17 @@ static class Scenarios
     static void Main()
     {
         Models();
+        AttachedLinks();
         Drawings();
         Families();
         foreach (var method in typeof(Rendered).GetMethods().Where(m => m.Name.StartsWith("Invalid_")))
             Refused(method.CreateDelegate<Func<Document, object>>(), Project(), "absolute", "drive or UNC");
         foreach (var run in new Func<Document, object>[] { Rendered.Origin, Rendered.ViewDrawing, Rendered.Load })
         {
+            var source = Project();
+            source.LoadError = new Api.SourceException(run == Rendered.Origin ? @"X:\Synthetic\Campus.rvt" :
+                run == Rendered.ViewDrawing ? @"X:\Synthetic\Detail.dwg" : @"X:\Synthetic\Sample Desk.rfa");
+            Refused(run, source, "SourceException", "Check", 1);
             foreach (var (error, reason, next) in new (Exception, string, string)[] {
                 (new Api.FileArgumentNotFoundException(), "find the file", "Check the path"),
                 (new Api.FileNotFoundException(), "find the file", "Check the path"),

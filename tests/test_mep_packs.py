@@ -30,8 +30,18 @@ def test_mep_pack_contract_and_fixtures(tmp_path, name):
     for fixture in pack.fixtures:
         code, errors = store.render(name, fixture["params"])
         assert code and not errors and review(code) == (True, [])
-        assert not re.search(r"\{[a-z_]\w*\}|\b(?:SubTransaction|Transaction|TransactionGroup)\s*\(", code)
+        assert not re.search(r"\{[a-z_]\w*\}|\b(?:Transaction|TransactionGroup)\s*\(", code)
+        if name == "create_pipes_by_points":
+            assert code.count("new SubTransaction(") == 1
+            assert code.index("Pipe.Create(") < code.index("new SubTransaction(") < code.index("NewElbowFitting(")
+        else:
+            assert "new SubTransaction(" not in code
         assert fixture["expect"]
+    if name == "create_pipes_by_points":
+        gap = next(f for f in pack.fixtures if f["name"] == "missing_middle")
+        assert gap["expect"] == {"refused": True}
+    if name == "list_mep_types":
+        assert "per pipe segment" in pack.description
 
 
 def test_rendered_mep_and_placement_scenarios(tmp_path):
@@ -52,6 +62,8 @@ def test_rendered_mep_and_placement_scenarios(tmp_path):
             "Route": fixture("create_pipes_by_points"),
             "Gap": fixture("create_pipes_by_points", 1),
             "BadVertex": fixture("create_pipes_by_points", points_mm="0,0,0;0,1000,0;oops;0,0,300;1000,0,300"),
+            "MixedErrors": fixture("create_pipes_by_points", points_mm="bad;0,0,0;1,0,0;0,0,NaN"),
+            "Straight": fixture("create_pipes_by_points", points_mm="0,0,0;500,500,500;1000,1000,1000;1500,1500,1500;1500,0,1500"),
             "NoSegments": fixture("create_pipes_by_points", points_mm="0,0,0;0,0,1;0,0,2"),
         },
         "create_duct": {

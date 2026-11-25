@@ -15,6 +15,7 @@ enum BuiltInParameter { RBS_PIPE_DIAMETER_PARAM, RBS_CURVE_DIAMETER_PARAM, RBS_C
 enum ConnectorType { End }
 enum ConnectorProfileType { Round, Rectangular, Oval }
 enum StorageType { Double, ElementId }
+enum Snap { None, InsideSet, AtRegeneration, AfterElbowCommit }
 enum UnitTypeId { Millimeters }
 enum FamilyPlacementType { OneLevelBased, OneLevelBasedHosted, WorkPlaneBased, CurveBased, Adaptive, TwoLevelsBased, CurveDrivenStructural }
 static class UnitUtils
@@ -54,7 +55,15 @@ class Parameter
     public bool IsReadOnly;
     public ElementId AsElementId() => IdValue;
     public double AsDouble() => Value;
-    public bool Set(double value) { Value = value; return true; }
+    public Snap SnapMode;
+    public static readonly double SnappedSize = 32 / 304.8;
+    public const double ReadbackOffset = 1e-9;
+    public bool OffsetReadback;
+    public bool Set(double value)
+    {
+        Value = SnapMode == Snap.InsideSet ? SnappedSize : value + (OffsetReadback ? ReadbackOffset : 0);
+        return true;
+    }
 }
 class Category
 {
@@ -69,6 +78,8 @@ class Element
     public object Location;
     public Category Category;
     public bool Pinned { get; set; }
+    public List<ElementId> Dependents = new();
+    public List<ElementId> GetDependentElements(object filter) => Dependents.ToList();
     public readonly Dictionary<BuiltInParameter, Parameter> Parameters = new();
     public Parameter get_Parameter(BuiltInParameter key) => Parameters.GetValueOrDefault(key);
 }
@@ -89,10 +100,17 @@ static class AdaptiveComponentFamilyUtils
 class FamilyInstance : Element { public MEPModel MEPModel; }
 class MEPModel { public ConnectorManager ConnectorManager = new(); }
 class ConnectorManager { public List<Connector> Connectors = new(); }
-class MEPCurve : Element { public ConnectorManager ConnectorManager = new(); }
+class MEPSystem : Element { }
+class ConnectorElement : Element { }
+class MEPCurve : Element
+{
+    public ConnectorManager ConnectorManager = new();
+    public MEPSystem MEPSystem;
+}
 class Connector
 {
     public Element Owner;
+    public MEPSystem MEPSystem => (Owner as MEPCurve)?.MEPSystem;
     public int Index;
     public ConnectorType ConnectorType => ConnectorType.End;
     public XYZ Origin => ((LocationCurve)Owner.Location).Curve.GetEndPoint(Index);
@@ -115,13 +133,41 @@ class Application
     public double VertexTolerance => 1e-7;
     public double AngleTolerance => 1e-7;
 }
+enum TransactionStatus { Started, Committed, RolledBack }
+class SubTransaction(Document doc) : IDisposable
+{
+    List<Element> originalElements;
+    public TransactionStatus Start()
+    {
+        originalElements = doc.Elements.ToList();
+        return TransactionStatus.Started;
+    }
+    public TransactionStatus Commit()
+    {
+        if (doc.RejectElbowCommit) return RollBack();
+        originalElements = null;
+        doc.ElbowCommitted = true;
+        return TransactionStatus.Committed;
+    }
+    public TransactionStatus RollBack()
+    {
+        foreach (var element in doc.Elements.Except(originalElements).ToList()) doc.Delete(element.Id);
+        originalElements = null;
+        return TransactionStatus.RolledBack;
+    }
+    public void Dispose() { if (originalElements != null) RollBack(); }
+}
 class Document
 {
     public readonly List<Element> Elements = new();
     public Application Application = new();
     public Document Create => this;
     public string FittingKind;
-    public bool RejectElbow, RejectSize, DetachedElbow, FatalElbow;
+    public bool RejectElbow, RejectElbowCommit, RejectSize, DetachedElbow, FatalElbow;
+    public Snap FirstPipeSnap;
+    public bool OffsetReadback;
+    public bool WithDependents, WithUnrelatedDeletion, ElbowCommitted;
+    public int PipesCreated, ElbowAttempts;
     long nextId = 101;
     public T Add<T>(T element) where T : Element
     {
@@ -130,13 +176,43 @@ class Document
         return element;
     }
     public Element GetElement(ElementId id) => Elements.SingleOrDefault(e => e.Id == id);
-    public List<ElementId> Delete(ElementId id) { Elements.Remove(GetElement(id)); return new() { id }; }
-    public void Regenerate() { }
+    public List<ElementId> Delete(ElementId id)
+    {
+        var element = GetElement(id);
+        if (element is FamilyInstance fitting)
+            foreach (var c in fitting.MEPModel.ConnectorManager.Connectors)
+                foreach (var other in c.AllRefs) other.AllRefs.Remove(c);
+        var removed = element.Dependents.Append(id).ToList();
+        if (element is MEPCurve curve && curve.MEPSystem != null) removed.Add(curve.MEPSystem.Id);
+        if (WithUnrelatedDeletion && element is Autodesk.Revit.DB.Plumbing.Pipe)
+            removed.Add(Elements.OfType<Autodesk.Revit.DB.Plumbing.PipingSystem>().First().Id);
+        Elements.RemoveAll(e => removed.Contains(e.Id));
+        return removed;
+    }
+    public void Regenerate()
+    {
+        foreach (var pipe in Elements.OfType<Autodesk.Revit.DB.Plumbing.Pipe>())
+        {
+            var size = pipe.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM);
+            if (size.SnapMode == Snap.AtRegeneration || (size.SnapMode == Snap.AfterElbowCommit && ElbowCommitted))
+                size.Value = Parameter.SnappedSize;
+        }
+    }
     public T Curve<T>(ElementId system, ElementId level, XYZ start, XYZ end) where T : MEPCurve, new()
     {
         var curve = Add(new T { Location = new LocationCurve { Curve = new(start, end) }, LevelId = level });
         foreach (var key in Enum.GetValues<BuiltInParameter>())
             curve.Parameters[key] = new Parameter { IsReadOnly = RejectSize };
+        curve.Parameters[BuiltInParameter.RBS_PIPE_DIAMETER_PARAM].OffsetReadback = OffsetReadback;
+        if (curve is Autodesk.Revit.DB.Plumbing.Pipe && ++PipesCreated == 1)
+        {
+            curve.Parameters[BuiltInParameter.RBS_PIPE_DIAMETER_PARAM].SnapMode = FirstPipeSnap;
+            if (WithDependents)
+            {
+                curve.MEPSystem = Add(new Autodesk.Revit.DB.Plumbing.PipingSystem());
+                curve.Dependents.Add(Add(new ConnectorElement()).Id);
+            }
+        }
         curve.Parameters[BuiltInParameter.RBS_PIPING_SYSTEM_TYPE_PARAM] = new Parameter
             { StorageType = StorageType.ElementId, IdValue = system };
         for (int i = 0; i < 2; i++) curve.ConnectorManager.Connectors.Add(new Connector { Owner = curve, Index = i });
@@ -159,7 +235,12 @@ class Document
     }
     public FamilyInstance NewElbowFitting(Connector a, Connector b)
     {
-        if (RejectElbow) throw new Autodesk.Revit.Exceptions.InvalidOperationException("missing sample elbow");
+        ElbowAttempts++;
+        if (RejectElbow)
+        {
+            Fit(a, b, "elbow");
+            throw new Autodesk.Revit.Exceptions.InvalidOperationException("sample failure after modifying connectors");
+        }
         if (DetachedElbow) return Add(new FamilyInstance { MEPModel = new() });
         if (FatalElbow) throw new Autodesk.Revit.Exceptions.RegenerationFailedException();
         return Fit(a, b, "elbow");
@@ -184,6 +265,7 @@ namespace Autodesk.Revit.DB.Plumbing
 {
     class PipeType : ElementType { }
     class PipingSystemType : ElementType { }
+    class PipingSystem : MEPSystem { }
     class PipeSegment : Element { public List<MEPSize> Sizes = new(); public IEnumerable<MEPSize> GetSizes() => Sizes; }
     class Pipe : MEPCurve
     {

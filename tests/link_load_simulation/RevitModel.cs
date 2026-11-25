@@ -59,9 +59,10 @@ class DWGImportOptions : ApiObject
     public ImportPlacement Placement;
     public bool ThisViewOnly, OrientToView;
 }
-class FilteredElementCollector(Document doc)
+class FilteredElementCollector(Document doc) : List<Element>(doc.Elements)
 {
-    public IEnumerable<Element> OfClass(Type type) => doc.Elements.Where(type.IsInstanceOfType);
+    public FilteredElementCollector OfClass(Type type) { RemoveAll(e => !type.IsInstanceOfType(e)); return this; }
+    public int GetElementCount() => Count;
 }
 class Document
 {
@@ -79,6 +80,15 @@ class Document
     public bool LoadSucceeded = true;
     public Family FamilyResult;
     public int FileCalls, InstanceCalls;
+    public int AttachedInstances;
+    public readonly List<RevitLinkInstance> PendingInstances = new();
+    public bool MissingInstance, WrongType;
+    public Element GetElement(ElementId id) => Elements.SingleOrDefault(e => e.Id == id);
+    public void Regenerate()
+    {
+        foreach (var instance in PendingInstances) Add(instance);
+        PendingInstances.Clear();
+    }
 
     public T Add<T>(T element) where T : Element
     {
@@ -118,7 +128,11 @@ class RevitLinkInstance(ElementId type) : Element
         doc.InstanceCalls++;
         doc.ModelPlacement = placement;
         if (doc.PlacementError != null) throw doc.PlacementError;
-        return doc.Add(new RevitLinkInstance(type));
+        var parent = new RevitLinkInstance(doc.WrongType ? ElementId.InvalidElementId : type);
+        if (!doc.MissingInstance) doc.Add(parent);
+        for (int i = 0; i < doc.AttachedInstances; i++)
+            doc.PendingInstances.Add(new RevitLinkInstance(doc.Add(new RevitLinkType()).Id));
+        return parent;
     }
 }
 class CADLinkType : Element { }
@@ -146,7 +160,8 @@ class ImportInstance(ElementId type) : Element
 }
 namespace Autodesk.Revit.Exceptions
 {
-    class ApplicationException : Exception { }
+    class ApplicationException(string message = null) : Exception(message) { }
+    class SourceException(string path) : ApplicationException("Cannot read " + path) { }
     class ArgumentException : ApplicationException { }
     class FileArgumentNotFoundException : ArgumentException { }
     class FileNotFoundException : ApplicationException { }

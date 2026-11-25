@@ -55,21 +55,33 @@ code_template: |
       return match;
   }
 
-  void SetSize(Element curve, BuiltInParameter key, double size)
+  double? DiameterMm(Element pipe)
   {
-      // Revit stores lengths in feet. Allow only floating-point read-back error.
-      const double sizeTolerance = 1e-8;
-      var parameter = curve.get_Parameter(key);
-      bool Matches() => parameter != null && parameter.StorageType == StorageType.Double && parameter.HasValue
-          && Math.Abs(parameter.AsDouble() - size) <= sizeTolerance;
-      if (Matches()) return;
-      if (parameter == null || parameter.StorageType != StorageType.Double || parameter.IsReadOnly || !parameter.Set(size) || !Matches())
-          throw new InvalidOperationException("REFUSED: The type did not accept the requested size. Choose a compatible size in the model.");
+      var parameter = pipe.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM);
+      if (parameter == null || !parameter.HasValue || parameter.StorageType != StorageType.Double) return null;
+      return UnitUtils.ConvertFromInternalUnits(parameter.AsDouble(), UnitTypeId.Millimeters);
+  }
+  bool Matches(double? actualMm, double requestedMm) =>
+      actualMm.HasValue && Math.Abs(actualMm.Value - requestedMm) <= 0.000003048; // 1e-8 internal feet
+  string SizeIssue(double? actualMm) => "The type did not accept the requested diameter. " +
+      (actualMm.HasValue ? "Revit returned " + actualMm.Value.ToString("G", System.Globalization.CultureInfo.InvariantCulture) + " mm. "
+                         : "Revit returned no diameter. ") + "Choose a compatible size in the model.";
+  double SetSize(Element pipe, double requestedMm)
+  {
+      var parameter = pipe.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM);
+      bool accepted = Matches(DiameterMm(pipe), requestedMm);
+      if (!accepted && parameter != null && parameter.StorageType == StorageType.Double && !parameter.IsReadOnly)
+          accepted = parameter.Set(UnitUtils.ConvertToInternalUnits(requestedMm, UnitTypeId.Millimeters));
+      document.Regenerate();
+      var actualMm = DiameterMm(pipe);
+      if (!accepted || !Matches(actualMm, requestedMm))
+          throw new InvalidOperationException("REFUSED: " + SizeIssue(actualMm));
+      return actualMm.Value;
   }
 
   var pipeType = Named<Autodesk.Revit.DB.Plumbing.PipeType>("{pipe_type_name}", "pipe type");
   var systemType = Named<Autodesk.Revit.DB.Plumbing.PipingSystemType>("{system_type_name}", "piping system type");
-  double diameter = Feet("{diameter_mm}");
+  double diameter = Number("{diameter_mm}");
   if (diameter <= 0)
       throw new InvalidOperationException("REFUSED: Pipe diameter must be positive. Enter a nominal diameter in millimetres.");
 
@@ -91,8 +103,8 @@ code_template: |
       var pipe = Autodesk.Revit.DB.Plumbing.Pipe.Create(document, systemType.Id, pipeType.Id, level.Id, start, end);
       if (pipe == null)
           throw new InvalidOperationException("REFUSED: Revit returned no pipe. Check the selected type and endpoints.");
-      SetSize(pipe, BuiltInParameter.RBS_PIPE_DIAMETER_PARAM, diameter);
-      return new { Status = "Created", ElementId = long.Parse(pipe.Id.ToString()) };
+      double actualMm = SetSize(pipe, diameter);
+      return new { Status = "Created", ElementId = long.Parse(pipe.Id.ToString()), DiameterMm = actualMm };
   }
   catch (Exception ex) when (ex is Autodesk.Revit.Exceptions.ArgumentException || ex.GetType() == typeof(Autodesk.Revit.Exceptions.InvalidOperationException))
   {

@@ -1,7 +1,7 @@
 schema_version: 1
 name: link_revit_model
 display_name: Link Revit Model
-description: "Link an RVT file from the computer running Revit. Linking a large file keeps Revit busy until the native operation finishes."
+description: "Link an RVT file from the computer running Revit. Linking a large file keeps Revit busy until the native operation finishes. The add-in stops waiting after 60 seconds. Revit may still finish linking, in which case a retry is refused as a duplicate. Check Manage Links before retrying."
 version: "1.0.0"
 revit_versions: ["2021","2023","2024","2025","2026","2027"]
 code_template: |
@@ -45,7 +45,7 @@ code_template: |
       case "shared": placement = ImportPlacement.Shared; break;
       default: throw new InvalidOperationException("REFUSED: Unknown positioning. Choose origin or shared.");
   }
-  const string duplicate = "REFUSED: The same file is already linked. Use its existing link type in Manage Links.";
+  const string duplicate = "REFUSED: The same file is already linked. An earlier request may have completed after the add-in stopped waiting at 60 seconds. Use the existing link in Manage Links.";
   int inspected = 0;
   string failure = "Revit could not check existing RVT links";
   string next = "Review their saved paths in Manage Links.";
@@ -73,6 +73,8 @@ code_template: |
       }
       failure = "Revit could not load the RVT";
       next = "Check the path, file version and open models in Revit.";
+      int InstanceCount() => new FilteredElementCollector(document).OfClass(typeof(RevitLinkInstance)).GetElementCount();
+      int instancesBefore = InstanceCount();
       using (var modelPath = new FilePath(path))
       using (var options = new RevitLinkOptions(false))
       using (var result = RevitLinkType.Create(document, modelPath, options))
@@ -96,9 +98,11 @@ code_template: |
           failure = "Revit could not place the loaded link";
           next = placement == ImportPlacement.Shared ? "Check both models' shared coordinates or choose origin." : "Check the link type and the host project.";
           var instance = RevitLinkInstance.Create(document, result.ElementId, placement);
-          if (instance == null || instance.GetTypeId() != result.ElementId)
+          document.Regenerate();
+          if (instance == null || !(document.GetElement(instance.Id) is RevitLinkInstance placed) || placed.GetTypeId() != result.ElementId)
               throw new InvalidOperationException("REFUSED: Revit did not place the loaded link type. Check the link in Manage Links.");
-          return new { Status = "Linked", ElementId = long.Parse(instance.Id.ToString()), TypeId = long.Parse(result.ElementId.ToString()) };
+          return new { Status = "Linked", ElementId = long.Parse(placed.Id.ToString()), TypeId = long.Parse(result.ElementId.ToString()),
+              NestedInstanceCount = InstanceCount() - instancesBefore - 1 };
       }
   }
   catch (Autodesk.Revit.Exceptions.ApplicationException ex)
@@ -131,7 +135,7 @@ preconditions:
   - text: "Supported Revit years are 2021, 2023, 2024, 2025, 2026 and 2027."
 applies_when: ["link Revit model"]
 not_for: ["reload an existing link", "cloud or Revit Server resources"]
-validator: {kind: count_delta, category: OST_RvtLinks, expected: 1}
+validator: null
 fixtures:
   - name: origin
     params: {path: 'X:\Synthetic\Campus.rvt'}
