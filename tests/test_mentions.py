@@ -758,6 +758,18 @@ def test_plural_and_misspelled_category_aliases_keep_the_whole_category_set():
     assert category_terms(["250mm"]) == (None, ["250mm"])
 
 
+def test_category_spelling_only_fills_one_missing_letter():
+    from revit_bridge.mention_search import category_terms
+
+    for term, alias in [("widow", "window"), ("colum", "column"), ("celing", "ceiling"), ("windo", "window")]:
+        assert category_terms([term]) == category_terms([alias])
+    terms = ["flood", "flour", "star", "stain", "certain", "sailing"]
+    for word in ("fluorescent", "stainless"):
+        terms.extend(word[:end] for end in range(5, len(word) + 1))
+    for term in terms:
+        assert category_terms([term]) == (None, [term])
+
+
 def test_five_ranks_and_name_order_within_a_rank():
     model = FakeModel()
     names = ["Xbrk", "Brick", "bkr", "Brk z", "On Brk", "BRK", "Brk a", "bAK"]

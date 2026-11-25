@@ -31,8 +31,8 @@ def category_terms(terms):
             for suffix in ("s", "es"):
                 if term.endswith(suffix) and term[:-len(suffix)] in _ENGLISH:
                     stems.add(term[:-len(suffix)])
-            if len(term) >= 4 and term.isascii() and term.isalpha():
-                stems.update(a for a in _ENGLISH if len(a) >= 5 and _near(term, a))
+            if len(term) >= 5 and term.isascii() and term.isalpha():
+                stems.update(a for a in _ENGLISH if len(a) == len(term) + 1 and _near(term, a))
             prefixes = tuple(stems)
             categories = {key for key, aliases in ALIASES.items() if any(a.startswith(prefixes) for a in aliases)}
         if categories:

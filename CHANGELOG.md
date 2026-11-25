@@ -21,11 +21,12 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 - Mention search splits Chinese and non-Chinese text into distinct terms. It ranks exact,
   prefix, word-start, substring and fuzzy matches in that order. Fuzzy matching uses name
   and family words. Terms containing digits only use the first four ranks. Category aliases,
-  their plurals and a one-edit spelling of English aliases at least five letters long
+  their plurals and English inputs of at least five letters missing one letter from an alias
   can narrow the search before the remaining terms match names and families.
 - More than eight distinct search terms returns `invalid_args` for every kind, including
   existing level, link and category-specific type searches. A cross-category type search
-  returns partial results, warnings and `truncated` when one category fails.
+  returns partial results, warnings and `truncated` when the read budget is reached
+  or inventory rows cannot be read.
 - A cold cross-category type search uses one fixed, bounded inventory query. Each type
   search makes at most five bridge calls, including capability and document checks.
   The same connection and unmodified document can reuse a complete inventory for up to
