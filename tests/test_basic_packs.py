@@ -355,7 +355,7 @@ def test_parameters_that_pick_from_the_model_offer_real_choices():
         "create_room": {"level_name": "levels"},
         "create_roof_by_footprint": {"level_name": "levels", "type_name": "family_types:OST_Roofs"},
         "create_ceiling": {"level_name": "levels", "type_name": "family_types:OST_Ceilings"},
-        "elements_in_link": {"link_id": "links"},
+        "elements_in_link": {"link_id": "elements:OST_RvtLinks"},
         "set_parameter": {"element_ids": "elements"},
         "move_elements": {"element_ids": "elements"},
         "change_type": {"element_ids": "elements"},

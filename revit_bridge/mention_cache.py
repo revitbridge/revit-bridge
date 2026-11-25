@@ -119,13 +119,13 @@ async def request_scope(client):
 
 
 def _first_inventory(client, scope):
-    """Claim the first fixed read once per physical connection, independently of cached rows."""
+    """Mark the first valid inventory response on a connection, independently of cached rows."""
     if scope is None:
         return False
     if scope[0] == "tcp":
         with _lock:
-            generation = client.connection_generation
-            if _tcp_reads.get(client) == generation:
+            generation = scope[2]
+            if _tcp_reads.get(client, -1) >= generation:
                 return False
             _tcp_reads[client] = generation
             return True
@@ -189,16 +189,16 @@ async def read_type_inventory(executor, matched, stamp):
         probe = await executor._offered("types", definite=True, ids=[], limit=1)
     if device_scope(client) != scope or (stamp and scope != stamp.scope):
         raise RevitQueryError("The device connection changed; pick the type again.")
-    first = _first_inventory(client, scope)
     parameters = [probe is not None, *sorted(matched or ())]
     response = await client.send_code(TYPE_INVENTORY, parameters=parameters)
+    if device_scope(client) != scope:
+        raise RevitQueryError("The device connection changed; pick the type again.")
     if not response.success and stamp is None and probe is not None:
         return await _native_subset(executor, probe, matched), None
     data = _inventory_result(response, stamp)
+    first = _first_inventory(client, scope)
     if not (first and data["truncated"] and data.get("timedOut") is True):
         return data, None
-    if device_scope(client) != scope:
-        raise RevitQueryError("The device connection changed; pick the type again.")
     response = await client.send_code(_RETRY_INVENTORY if stamp else TYPE_INVENTORY, parameters=parameters)
     repeated = _inventory_result(response, stamp)
     if device_scope(client) != scope or data["source"] != repeated["source"]:

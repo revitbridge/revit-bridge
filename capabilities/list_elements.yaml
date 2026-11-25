@@ -4,7 +4,7 @@ read_only: true
 display_name: List Elements
 description: "Read only. List element instances by category with optional exact level and type filters."
 version: "1.0.0"
-revit_versions: ["2026"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
   long idOf(ElementId id) => long.Parse(id.ToString(), System.Globalization.CultureInfo.InvariantCulture);
   Func<string, Level> levelByName = name =>

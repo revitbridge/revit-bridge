@@ -443,7 +443,7 @@ _ROLE_RENDERERS = {"analyst": _render_analyst, "planner": _render_planner, "supe
 
 
 def host_instructions(role: str | None = None, code: bool = True, mentions: bool = False, *,
-                      confirm_button_label: str = "确认并执行") -> str:
+                      confirm_button_label: str | None = "确认并执行") -> str:
     """The instructions for a host whose interface does the confirmation and execution.
 
     With no arguments: the whole text, as in 0.8.2 but for the version in its
@@ -451,6 +451,8 @@ def host_instructions(role: str | None = None, code: bool = True, mentions: bool
     snippet contract, blocked_code) and describes a card embedded in the proposing
     reply. The planner offers choices with ``ask_designer``, and the designer
     clicks the host's ``confirm_button_label`` on the card to confirm and run it.
+    A label must be printable, single-line, at most 20 characters and free of quotes.
+    An empty or invalid label uses the default.
     ``mentions=True`` adds the rule for a "Designer's selections" block. Any
     variant other than the default also names the query kinds added later
     (links, type_categories, link_id).
@@ -477,4 +479,8 @@ def host_instructions(role: str | None = None, code: bool = True, mentions: bool
         if role not in _ROLE_RENDERERS:
             raise ValueError(f"unknown role {role!r}: expected one of {', '.join(ROLES)}")
         text = _ROLE_RENDERERS[role](bool(code))
-    return text if code else text.replace("确认并执行", confirm_button_label)
+    if (code or not isinstance(confirm_button_label, str) or len(confirm_button_label) > 20
+            or not confirm_button_label.isprintable() or not confirm_button_label.strip()
+            or any(quote in confirm_button_label for quote in "\"'“”‘’")):
+        return text
+    return text.replace("确认并执行", confirm_button_label)

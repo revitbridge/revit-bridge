@@ -123,6 +123,10 @@ def test_validate_pack_checks_sources_choices_defaults_and_units():
     assert "parameters[1] (x): unknown source 'guess'" in validate_pack(param_variant(1, source="guess"))
     assert any("tool:<query> needs a query kind" in e for e in validate_pack(param_variant(0, source="tool:")))
     assert any("choices_from must be" in e for e in validate_pack(param_variant(0, choices_from="walls")))
+    assert validate_pack(param_variant(0, source="tool:elements", choices_from="links")) == [
+        "parameters[0] (level_name): choices_from must be levels | floor_types | family_types:OST_* | "
+        "elements[:OST_*], got 'links'"]
+    assert any("names no usable query" in e for e in validate_pack(param_variant(0, source="tool:links", choices_from=None)))
     # a tool source whose query is not a choices source needs choices_from
     assert any("names no usable query" in e for e in validate_pack(param_variant(0, source="tool:grids", choices_from=None)))
     assert validate_pack(param_variant(0, source="tool:family_types:OST_Walls", choices_from=None)) == []

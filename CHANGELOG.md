@@ -8,27 +8,33 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
-- Capability packs can declare `read_only: true`. The catalogue and pack details expose
+- Capability packs can declare `read_only: true`. The catalogue and loaded pack objects expose
   this boolean, which defaults to false. Eight built-in tools declare it. Hosts can check
-  the pack's origin separately when deciding how to handle user overrides.
+  the pack's origin separately when deciding how to handle user overrides. The MCP resource
+  `revit://tools/{name}` serves the original YAML, including comments and block scalars.
 - Selected and rechecked element items include `document_id`, an opaque identifier for
-  the open document on the current device. Hosts can compare it before accepting a pick.
+  the open document. Compare it only within the same connection. Reopening a document can
+  change its identifier, and a later document can reuse it.
 - Hosts can pass `confirm_button_label` to `host_instructions` for no-code chat prompts.
+  Empty labels, labels longer than 20 characters, and labels containing quotes, line
+  breaks or other nonprintable characters fall back to the default button text.
 - Built-in instance id parameters declare `choices_from: elements` or a category such
   as `elements:OST_Walls`. Unqualified pickers offer up to 50 current selections.
-  The link instance picker declares `links` and keeps its existing id choices.
+  The link instance picker keeps its 0.10.0 declaration, `elements:OST_RvtLinks`.
 
 ### Changed
 
-- Type searches allow up to 1,500 ms per inventory read. If the first read on a
-  connection reaches that time limit, the picker reads it once more. A complete
-  result can warm the clean document cache. A partial result reports its warning.
+- Type searches allow up to 1,500 ms per inventory read. If the first valid inventory
+  on a connection reports a timeout, the picker retries once. A failed initial read
+  leaves that retry available. A complete result can warm the clean document cache.
+  A partial result reports its warning.
 
 ### Compatibility
 
-- All eight declared read tools compile against Revit 2023 through 2027. Seven compile
-  against 2021. The 2021 API requires a different parameter specification getter for
-  `get_element_parameters`. This tool keeps its existing units on supported versions.
+- All eight declared read tools compile against Revit 2023 through 2027. Seven also compile
+  against 2021. The version lists for `get_element_geometry`, `list_elements` and
+  `query_levels` cover all six builds. `get_element_parameters` declares Revit 2023
+  through 2027 because its template uses `Definition.GetDataType`.
 
 ## [0.10.0] - 2026-11-25
 

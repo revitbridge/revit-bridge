@@ -4,8 +4,9 @@ read_only: true
 display_name: Get Element Parameters
 description: "Read only. Read instance parameters on one element. Type parameters are not included. Delimit requested names with semicolons. Value holds numeric or raw text data; ValueString holds formatted display text."
 version: "1.0.0"
-revit_versions: ["2026"]
+revit_versions: ["2023", "2024", "2025", "2026", "2027"]
 code_template: |
+  // Definition.GetDataType was introduced in Revit 2022. The first supported add-in build is 2023.
   long idOf(ElementId id) => long.Parse(id.ToString(), System.Globalization.CultureInfo.InvariantCulture);
   Func<string, Element> elementById = text =>
   {
@@ -78,6 +79,7 @@ parameters:
     default: ""
 preconditions:
   - text: The element must exist in the active document.
+  - text: Revit 2023 or later (Definition.GetDataType)
 not_for:
   - "change a parameter"
 applies_when:

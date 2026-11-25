@@ -97,12 +97,13 @@ def test_instance_choices_use_selected_ids_and_link_choice_keeps_legacy_values(t
         sources = [p for name in ("get_element_parameters", "delete_elements", "set_wall_constraints", "elements_in_link")
                    for p in store.get_dynamic_params(name) if p["name"] in ("element_id", "element_ids", "link_id")]
         sources[2] = dict(sources[2], name="wall")
-        return await executor.get_tool_choices([*sources, {"name": "old_link", "choices_from": "elements:OST_RvtLinks"}])
+        return await executor.get_tool_choices([*sources, {"name": "invalid", "choices_from": "links"}])
     choices = _run(handler, scenario)
     assert choices["element_id"] == [{"label": "Column (ID: 9007199254740993)", "value": 9007199254740993}]
     assert choices["element_ids"] == [{"label": "Column (ID: 9007199254740993)", "value": "9007199254740993"}]
     assert choices["wall"] == [{"label": "Basic wall (ID: 602)", "value": 602}]
-    assert choices["link_id"] == choices["old_link"] == [
+    assert choices["invalid"] == []
+    assert choices["link_id"] == [
         {"label": "Linked model (ID: 701)", "value": 701}, {"label": "? (ID: 702)", "value": 702},
     ]
 

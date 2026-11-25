@@ -44,7 +44,7 @@ _log = logging.getLogger("revit_bridge.snapshot.query")
 CATEGORY_RE = re.compile(r"OST_[A-Za-z0-9_]+")
 
 # ``choices_from`` values a capability pack may declare for a parameter.
-CHOICE_SOURCES = ("levels", "links", "family_types:<OST_Category>", "floor_types", "elements", "elements:<OST_Category>")
+CHOICE_SOURCES = ("levels", "family_types:<OST_Category>", "floor_types", "elements", "elements:<OST_Category>")
 
 # Unqualified element picks refer to the designer's selection, including for
 # comma-separated id parameters. Read at most one small page, without a pick prompt.
@@ -720,9 +720,8 @@ class RevitQueryExecutor:
             elif source == "elements":
                 response = await self.client.send_code(_SELECTED_CHOICES)
                 items = _element_choices(response, as_text=param.get("type") == "string")
-            elif source == "links" or source.startswith("elements:"):
-                # Keep the old link picker, including its id values and labels.
-                category = "OST_RvtLinks" if source == "links" else source.split(":", 1)[1]
+            elif source.startswith("elements:"):
+                category = source.split(":", 1)[1]
                 if not CATEGORY_RE.fullmatch(category):
                     _log.warning(f"[get_tool_choices] invalid category in {source!r}")
                     choices[param["name"]] = []

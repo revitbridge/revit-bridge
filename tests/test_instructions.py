@@ -693,6 +693,18 @@ def test_custom_button_label_only_changes_no_code_prompt(role, mentions):
         assert text == (default if code else default.replace("确认并执行", "Run approved task"))
 
 
+@pytest.mark.parametrize("label", [None, 42, "", "  ", "x" * 21, "Run\nnow", "Run\rnow", "Run\u2028now",
+                                   'Run "now"', "Run 'now'", "Run “now”"])
+def test_invalid_button_label_uses_the_default(label):
+    assert host_instructions(code=False, confirm_button_label=label) == host_instructions(code=False)
+
+
+def test_button_label_accepts_twenty_characters():
+    label = "确" * 20
+    text = host_instructions(code=False, confirm_button_label=label)
+    assert text == host_instructions(code=False).replace("确认并执行", label)
+
+
 def test_load_contract_reports_what_is_wrong(tmp_path):
     from revit_bridge.guidance import GuidanceError, load_contract
     from tests.test_guidance import lesson

@@ -4,7 +4,7 @@ read_only: true
 display_name: Get Element Geometry
 description: "Read only. Read linear location geometry by element id or from the current selection. Positions and lengths are in mm, direction vectors are unitless."
 version: "1.0.0"
-revit_versions: ["2026"]
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
   long idOf(ElementId id) => long.Parse(id.ToString(), System.Globalization.CultureInfo.InvariantCulture);
   Func<string, Element> elementById = text =>

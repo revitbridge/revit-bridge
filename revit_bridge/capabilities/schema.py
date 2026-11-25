@@ -20,7 +20,7 @@ IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
 CATEGORY_RE = re.compile(r"^OST_[A-Za-z]+$")
 PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_]\w*)\}")
 ELEMENT_CHOICES = r"elements(?::OST_[A-Za-z]+)?"
-CHOICES_FROM_RE = re.compile(rf"^(levels|links|floor_types|family_types:OST_[A-Za-z]+|{ELEMENT_CHOICES})$")
+CHOICES_FROM_RE = re.compile(rf"^(levels|floor_types|family_types:OST_[A-Za-z]+|{ELEMENT_CHOICES})$")
 PARAM_REF_RE = re.compile(r"^\{([A-Za-z_]\w*)\}$")
 
 TOP_LEVEL_FIELDS = frozenset({
@@ -148,7 +148,7 @@ def _validate_param(index: int, param: Any, declared: dict[str, dict]) -> list[s
 
     choices = param.get("choices_from")
     if choices is not None and (not isinstance(choices, str) or not CHOICES_FROM_RE.match(choices)):
-        errors.append(f"{label}: choices_from must be levels | links | floor_types | family_types:OST_* | elements[:OST_*], "
+        errors.append(f"{label}: choices_from must be levels | floor_types | family_types:OST_* | elements[:OST_*], "
                       f"got {choices!r}")
     if source.startswith("tool:") and choices is None and not CHOICES_FROM_RE.match(source[5:]):
         errors.append(f"{label}: source {source!r} names no usable query; add choices_from")

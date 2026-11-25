@@ -700,6 +700,36 @@ def test_first_fixed_inventory_repeats_only_after_its_time_budget(legacy, repeat
     assert review(cache._RETRY_INVENTORY) == (True, [])
 
 
+@pytest.mark.parametrize("initial_failure", ["error", "malformed"])
+def test_failed_inventory_leaves_the_first_budget_retry_available(initial_failure):
+    from revit_bridge import mention_cache as cache
+
+    model = FakeModel()
+    reads = []
+    def handle(request):
+        code = request.get("params", {}).get("code")
+        if code not in (cache.TYPE_INVENTORY, cache._RETRY_INVENTORY):
+            return model(request)
+        reads.append(code)
+        if len(reads) == 1:
+            if initial_failure == "error":
+                return FakeRevit.code_result(request["id"], None, success=False, error="read failed")
+            return FakeRevit.code_result(request["id"], {"rows": []})
+        if code == cache.TYPE_INVENTORY:
+            data = json.loads(model(request)["result"]["result"])
+            data.update(rows=[], warnings=["time budget"], truncated=True, timedOut=True)
+            return FakeRevit.code_result(request["id"], data)
+        return model(request)
+
+    async def scenario(ex):
+        failed = await mention_candidates(ex, "type", q="wall")
+        assert failed["error"] == "revit_error" and reads == [cache.TYPE_INVENTORY]
+        recovered = await mention_candidates(ex, "type", q="wall")
+        assert recovered["items"] and not recovered["truncated"] and "warnings" not in recovered
+        assert reads == [cache.TYPE_INVENTORY, cache.TYPE_INVENTORY, cache._RETRY_INVENTORY]
+    run(handle, scenario)
+
+
 def test_host_first_inventory_claim_uses_live_connection_across_adapters(monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from revit_bridge import mention_cache as cache
@@ -1041,15 +1071,19 @@ def test_selection_q_reads_full_details_only_after_ranking_and_paging():
 
 
 def test_element_recheck_distinguishes_matching_elements_in_different_open_documents():
-    first = selection_model([701], document_id="opening-a")
-    pick = candidates(first, "element", source="selection")["items"][0]
-    assert pick["document_id"] == "opening-a"
-    refs = [{"kind": "element", "id": pick["id"]}]
-    assert run(selection_model([], document_id="opening-a"), resolve_mentions, refs)[0]["resolved"] == [pick]
-    other = run(selection_model([], document_id="opening-b"), resolve_mentions, refs)[0]["resolved"]
-    assert other == [dict(pick, document_id="opening-b")]
-    with pytest.raises(RevitQueryError, match="document identity"):
-        run(selection_model([], document_id=None), resolve_mentions, refs)
+    active = selection_model([701], document_id="opening-a")
+    async def scenario(ex):
+        nonlocal active
+        pick = (await mention_candidates(ex, "element", source="selection"))["items"][0]
+        assert pick["document_id"] == "opening-a"
+        refs = [{"kind": "element", "id": pick["id"]}]
+        assert (await resolve_mentions(ex, refs))["resolved"] == [pick]
+        active = selection_model([], document_id="opening-b")
+        assert (await resolve_mentions(ex, refs))["resolved"] == [dict(pick, document_id="opening-b")]
+        active = selection_model([], document_id=None)
+        with pytest.raises(RevitQueryError, match="document identity"):
+            await resolve_mentions(ex, refs)
+    run(lambda request: active(request), scenario)
 
 
 def test_element_recheck_targets_document_not_selection_and_reports_deleted_id():

@@ -52,7 +52,18 @@ def test_declared_reader_calls_only_reviewed_read_apis(tmp_path, name):
         assert not re.search(r"\.\s*\w+\s*(?:[+*/-]?=(?!=|>)|\+\+|--)", source)
 
 
-def test_store_listing_resource_and_overrides_expose_the_effective_declaration(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name", ["get_element_geometry", "list_elements", "query_levels", "get_element_parameters"])
+def test_reader_declares_compiled_revit_versions(tmp_path, name):
+    pack = ToolStore(user_dir=tmp_path).load(name)
+    years = ["2023", "2024", "2025", "2026", "2027"]
+    if name == "get_element_parameters":
+        assert pack.revit_versions == years
+        assert {"text": "Revit 2023 or later (Definition.GetDataType)"} in pack.preconditions
+    else:
+        assert pack.revit_versions == ["2021", *years]
+
+
+def test_tool_resource_preserves_pack_text_and_listing_exposes_read_only(tmp_path, monkeypatch):
     user = tmp_path / "user"
     user.mkdir()
     store = ToolStore(user_dir=user)
@@ -62,16 +73,16 @@ def test_store_listing_resource_and_overrides_expose_the_effective_declaration(t
     assert {name for name, marked in listing().items() if marked} == READERS
     assert {p.name for p in store.list_tools() if p.read_only} == READERS
     for p in store.list_tools():
-        assert yaml.safe_load(mcp_server.tool_resource(p.name))["read_only"] is (p.name in READERS)
+        assert mcp_server.tool_resource(p.name).encode("utf-8") == store.path_of(p.name).read_bytes()
     for name in ("list_elements", "get_element_geometry", "get_element_parameters"):
         assert store.load(name).description.startswith("Read only. ")
-    yaml_text = "name: query_levels\ncode_template: |\n  // example\n  return 1;\n"
+    yaml_text = "# User comment\r\nname: query_levels\r\ncode_template: |-\r\n  // example\r\n  return 1;"
     path = user / "query_levels.yaml"
-    path.write_text(yaml_text, encoding="utf-8")
+    path.write_bytes(yaml_text.encode("utf-8"))
     assert store.path_of("query_levels") == path
     assert listing()["query_levels"] is False
-    assert mcp_server.tool_resource("query_levels") == "read_only: false\n" + yaml_text
-    path.write_text(yaml_text + "read_only: true\n", encoding="utf-8")
+    assert mcp_server.tool_resource("query_levels") == yaml_text
+    path.write_bytes((yaml_text + "\r\nread_only: true\r\n").encode("utf-8"))
     assert store.load("query_levels").read_only is True and store.path_of("query_levels") == path
     updated = store.update("query_levels", {"description": "New label"})
     assert updated.read_only is True and yaml.safe_load(path.read_text(encoding="utf-8"))["read_only"] is True
@@ -120,9 +131,10 @@ def test_catalogue_and_details_declare_exactly_the_instance_id_parameters(tmp_pa
         **{(name, "element_id"): "elements:OST_Walls" for name in ("set_wall_constraints", "modify_wall_height")},
         **{(name, "element_id"): "elements" for name in ("get_element_parameters", "get_element_geometry")},
         ("create_wall_from_element", "reference_id"): "elements",
+        ("elements_in_link", "link_id"): "elements:OST_RvtLinks",
     }
-    link = store.get_dynamic_params("elements_in_link")[0]
-    assert (link["name"], link["choices_from"]) == ("link_id", "links")
+    link = store.load("elements_in_link").parameters[0]
+    assert (link["name"], link["source"]) == ("link_id", "tool:elements")
 
 
 @pytest.mark.parametrize("tool,name,allowed", [
