@@ -9,6 +9,7 @@ description: >-
   type are listed under AlreadyThisType; if all have it, nothing is changed and the run says
   so. The validator reads the type back from every changed element; it needs Revit 2024 or
   later (its read-back uses ElementId.Value), so the tool is for Revit 2024 or later.
+  Supply element_ids to change the listed instances instead of the current selection.
 version: "1.0.0"
 revit_versions: ["2024", "2025", "2026", "2027"]
 code_template: |
@@ -34,22 +35,42 @@ code_template: |
       || !Enum.IsDefined(typeof(BuiltInCategory), category))
       throw new InvalidOperationException("REFUSED: \"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
   ElementId categoryId = new ElementId(category);
-  int typeNumber;
-  if (!int.TryParse(typeText, System.Globalization.NumberStyles.Integer, invariant, out typeNumber) || typeNumber <= 0)
-      throw new InvalidOperationException("REFUSED: The type must be given by its id (a whole number from list_types, 1 to 2147483647), got \"" + typeText + "\".");
-  // ElementId(int) on 2021-2023, obsolete on 2024-2025, gone from 2026 (the int then converts to
-  // ElementId(Int64)): one line for every year, without the 2024-2025 warning.
+  long typeNumber;
+  if (!long.TryParse(typeText, System.Globalization.NumberStyles.Integer, invariant, out typeNumber) || typeNumber <= 0)
+      throw new InvalidOperationException("REFUSED: Give a positive type id.");
   #pragma warning disable 618
-  ElementId typeId = new ElementId(typeNumber);
+  ElementType target = document.GetElement(new ElementId(typeNumber)) as ElementType;
   #pragma warning restore 618
-  ElementType target = document.GetElement(typeId) as ElementType;
   if (target == null)
-      throw new InvalidOperationException("REFUSED: There is no type with id " + typeText + " in this model. Look the type up with list_types.");
+      throw new InvalidOperationException("REFUSED: There is no type with id " + typeText + " in this model.");
+  ElementId typeId = target.Id;
   if (target.Category == null || !target.Category.Id.Equals(categoryId))
       throw new InvalidOperationException("REFUSED: Type " + typeText + " (" + target.Name + ") is not a " + categoryName + " type.");
 
   // 2. Check every selected element before changing any.
-  List<ElementId> selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  string idsText = "{element_ids}";
+  List<ElementId> selected;
+  if (idsText.Length == 0)
+      selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  else
+  {
+      selected = new List<ElementId>();
+      string[] parts = idsText.Split(',');
+      if (parts.Length > MaxSelected)
+          throw new InvalidOperationException("REFUSED: Give at most 100 element ids.");
+      foreach (string part in parts)
+      {
+          long number;
+          if (!long.TryParse(part.Trim(), System.Globalization.NumberStyles.None, invariant, out number) || number <= 0)
+              throw new InvalidOperationException("REFUSED: Invalid element id " + part + ".");
+          #pragma warning disable 618
+          var id = new ElementId(number);
+          #pragma warning restore 618
+          if (selected.Contains(id))
+              throw new InvalidOperationException("REFUSED: Duplicate element id " + part + ".");
+          selected.Add(id);
+      }
+  }
   if (selected.Count == 0)
       throw new InvalidOperationException("REFUSED: Nothing is selected in Revit. Select the elements first, then run the tool again.");
   if (selected.Count > MaxSelected)
@@ -107,8 +128,14 @@ parameters:
     description: Id of the target type, from list_types for that category (or a type picked in the host)
     source: designer
     required: true
+  - name: element_ids
+    type: string
+    description: "Comma-separated element ids. Omit to use the current selection."
+    source: designer
+    required: false
+    default: ""
 preconditions:
-  - text: "select the elements in Revit first (at most 100), all of the given category"
+  - text: "supply element_ids or select the elements in Revit first (at most 100), all of the given category"
   - text: "Revit 2024 or later: the param_equals validator reads ids with ElementId.Value"
 not_for:
   - "create type"
@@ -129,6 +156,9 @@ fixtures:
   - name: basic
     params: {category: "OST_Walls", type_id: 201}
     expect: {Status: "Changed"}
+  - name: by_id
+    params: {"category":"OST_Walls","type_id":201,"element_ids":"101,102"}
+    expect: {"Status":"Changed"}
 approved_by: null
 approved_at: null
 created_at: "2026-11-23T00:00:00"

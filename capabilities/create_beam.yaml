@@ -2,18 +2,23 @@ schema_version: 1
 name: create_beam
 display_name: Create Beam
 description: Create a structural beam of a named family type between two points at an
-  elevation, on a level.
+  elevation, on a level. Level is the requested level. Revit may choose the nearest
+  level as the beam's ReferenceLevel. ElevationMm is the absolute Z of the placed
+  location curve's start, including any start offset. An unavailable read-back is null.
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
   // Step 1: Get beam family symbol by name
-  var symbol = new FilteredElementCollector(document)
+  var types = new FilteredElementCollector(document)
       .OfClass(typeof(FamilySymbol))
       .OfCategory(BuiltInCategory.OST_StructuralFraming)
       .Cast<FamilySymbol>()
-      .FirstOrDefault(s => s.Name == "{type_name}");
+      .Where(s => s.Name == "{type_name}" || s.FamilyName + ": " + s.Name == "{type_name}").Take(2).ToList();
+  if (types.Count > 1)
+      throw new InvalidOperationException("REFUSED: More than one beam type matches; give Family: Type.");
+  var symbol = types.SingleOrDefault();
   if (symbol == null)
-      return new { Status = "Error", Message = "Beam type '{type_name}' not found" };
+      throw new InvalidOperationException("REFUSED: The requested beam type is missing.");
   if (!symbol.IsActive) symbol.Activate();
 
   // Step 2: Get level by name
@@ -22,11 +27,13 @@ code_template: |
       .Cast<Level>()
       .FirstOrDefault(l => l.Name == "{level_name}");
   if (level == null)
-      return new { Status = "Error", Message = "Level '{level_name}' not found" };
+      throw new InvalidOperationException("REFUSED: The requested level is missing.");
 
   // Step 3: Create beam line (mm -> feet)
-  XYZ start = new XYZ({start_x} / 304.8, {start_y} / 304.8, {elevation} / 304.8);
-  XYZ end = new XYZ({end_x} / 304.8, {end_y} / 304.8, {elevation} / 304.8);
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, double> mm = text => double.Parse(text, System.Globalization.NumberStyles.Float, invariant) / 304.8;
+  XYZ start = new XYZ(mm("{start_x}"), mm("{start_y}"), mm("{elevation}") + mm("{start_offset}"));
+  XYZ end = new XYZ(mm("{end_x}"), mm("{end_y}"), mm("{elevation}") + mm("{end_offset}"));
   Line beamLine = Line.CreateBound(start, end);
 
   // Step 4: Create beam instance
@@ -34,8 +41,24 @@ code_template: |
       beamLine, symbol, level,
       Autodesk.Revit.DB.Structure.StructuralType.Beam);
 
+  string usageText = "{structural_usage}";
+  if (usageText.Length > 0)
+  {
+      Autodesk.Revit.DB.Structure.StructuralInstanceUsage usage;
+      if (!Enum.TryParse(usageText, true, out usage) || !Enum.IsDefined(typeof(Autodesk.Revit.DB.Structure.StructuralInstanceUsage), usage))
+          throw new InvalidOperationException("REFUSED: Unknown structural usage " + usageText + ".");
+      beam.StructuralUsage = usage;
+      if (beam.StructuralUsage != usage)
+          throw new InvalidOperationException("REFUSED: The beam family did not accept this structural usage.");
+  }
+  document.Regenerate();
+  var reference = beam.get_Parameter(BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM);
+  var referenceLevel = reference?.StorageType == StorageType.ElementId && reference.HasValue
+      ? document.GetElement(reference.AsElementId()) as Level : null;
+  var curve = (beam.Location as LocationCurve)?.Curve;
   return new { ElementId = beam.Id.Value, Status = "Created",
-               FamilyType = symbol.Name, Level = level.Name };
+               FamilyType = symbol.Name, Level = level.Name, ReferenceLevel = referenceLevel?.Name,
+               ElevationMm = curve != null && curve.IsBound ? (double?)Math.Round(curve.GetEndPoint(0).Z * 304.8, 1) : null };
 parameters:
   - name: type_name
     type: string
@@ -79,6 +102,26 @@ parameters:
     unit: mm
     source: designer
     required: true
+  - name: start_offset
+    type: double
+    description: "Vertical offset of the start from elevation (mm)."
+    unit: mm
+    source: designer
+    required: false
+    default: 0
+  - name: end_offset
+    type: double
+    description: "Vertical offset of the end from elevation (mm)."
+    unit: mm
+    source: designer
+    required: false
+    default: 0
+  - name: structural_usage
+    type: string
+    description: "Structural usage, for example Girder, Joist, or Purlin."
+    source: designer
+    required: false
+    default: ""
 preconditions:
   - kind: levels_min
     value: 1
@@ -97,7 +140,10 @@ validator:
 fixtures:
   - name: basic
     params: {type_name: "W310X38.7", level_name: "L1", start_x: 0, start_y: 0, end_x: 5000, end_y: 0, elevation: 3000}
-    expect: {Status: "Created"}
+    expect: {Status: "Created", Level: "L1", ElevationMm: 3000}
+  - name: sloping
+    params: {"type_name":"W310X38.7","level_name":"L1","start_x":0,"start_y":0,"end_x":5000,"end_y":0,"elevation":3000,"start_offset":100,"end_offset":200,"structural_usage":"Girder"}
+    expect: {"Status":"Created","Level":"L1","ElevationMm":3100}
 approved_by: null
 approved_at: null
 created_at: "2026-03-13T00:00:00"

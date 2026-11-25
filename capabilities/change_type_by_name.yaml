@@ -1,0 +1,151 @@
+schema_version: 1
+name: change_type_by_name
+display_name: Change Type By Name
+description: >-
+  Change up to 100 selected or listed instances to a uniquely named type of the same category.
+  Use Family: Type to disambiguate. After applying all changes, read each instance's type id back.
+version: "1.0.0"
+revit_versions: ["2024", "2025", "2026", "2027"]
+code_template: |
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  string categoryName = "{category}";
+  const int MaxSelected = 100;
+
+  // Revit 2024 introduced the 64-bit ElementId constructor used for explicit instance ids.
+  int revitYear;
+  if (int.TryParse(document.Application.VersionNumber, System.Globalization.NumberStyles.Integer, invariant, out revitYear)
+      && revitYear < 2024)
+      throw new InvalidOperationException("REFUSED: This tool needs Revit 2024 or later; this is Revit " + revitYear + ".");
+
+  // 1. The category and the target type.
+  BuiltInCategory category;
+  if (!categoryName.StartsWith("OST_", StringComparison.Ordinal) || !Enum.TryParse(categoryName, out category)
+      || !Enum.IsDefined(typeof(BuiltInCategory), category))
+      throw new InvalidOperationException("REFUSED: \"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
+  ElementId categoryId = new ElementId(category);
+  string typeName = "{type_name}";
+  var matches = new FilteredElementCollector(document).OfCategory(category).WhereElementIsElementType()
+      .OfType<ElementType>().Where(t => t.Name == typeName || t.FamilyName + ": " + t.Name == typeName).Take(2).ToList();
+  if (matches.Count != 1)
+      throw new InvalidOperationException("REFUSED: The requested type is missing or ambiguous in " + categoryName + ". Give Family: Type.");
+  ElementType target = matches[0];
+  ElementId typeId = target.Id;
+  // 2. Check every selected element before changing any.
+  string idsText = "{element_ids}";
+  List<ElementId> selected;
+  if (idsText.Length == 0)
+      selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  else
+  {
+      selected = new List<ElementId>();
+      string[] parts = idsText.Split(',');
+      if (parts.Length > MaxSelected)
+          throw new InvalidOperationException("REFUSED: Give at most 100 element ids.");
+      foreach (string part in parts)
+      {
+          long number;
+          if (!long.TryParse(part.Trim(), System.Globalization.NumberStyles.None, invariant, out number) || number <= 0)
+              throw new InvalidOperationException("REFUSED: Invalid element id " + part + ".");
+          #pragma warning disable 618
+          var id = new ElementId(number);
+          #pragma warning restore 618
+          if (selected.Contains(id))
+              throw new InvalidOperationException("REFUSED: Duplicate element id " + part + ".");
+          selected.Add(id);
+      }
+  }
+  if (selected.Count == 0)
+      throw new InvalidOperationException("REFUSED: Nothing is selected in Revit. Select the elements first, then run the tool again.");
+  if (selected.Count > MaxSelected)
+      throw new InvalidOperationException("REFUSED: " + selected.Count + " elements are selected; this tool changes at most " + MaxSelected + " per run. Select fewer.");
+  var problems = new List<string>();
+  var toChange = new List<ElementId>();
+  var already = new List<long>();
+  foreach (ElementId id in selected)
+  {
+      Element element = document.GetElement(id);
+      if (element == null) { problems.Add(idOf(id) + " no longer exists"); continue; }
+      if (element.Category == null || !element.Category.Id.Equals(categoryId)) { problems.Add(idOf(id) + " is not in " + categoryName); continue; }
+      if (!element.GroupId.Equals(ElementId.InvalidElementId)) { problems.Add(idOf(id) + " is in a group; change it in the group"); continue; }
+      if (element.GetTypeId().Equals(typeId)) { already.Add(idOf(id)); continue; }
+      if (!element.IsValidType(typeId)) { problems.Add(idOf(id) + " cannot take type " + target.Name); continue; }
+      toChange.Add(id);
+  }
+  if (problems.Count > 0)
+      throw new InvalidOperationException("REFUSED: Nothing was changed: " + problems.Count + " of " + selected.Count + " selected elements cannot change to "
+          + target.Name + ". " + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
+  if (toChange.Count == 0)
+      throw new InvalidOperationException("REFUSED: Nothing was changed: all " + selected.Count + " selected elements already have type " + target.Name + ".");
+
+  // 3. Change, then read every type back. In rare cases (a curtain panel and a basic wall) Revit
+  // replaces the element and ChangeTypeId returns the new element's id; follow it then.
+  var changed = new List<long>();
+  foreach (ElementId id in toChange)
+  {
+      ElementId replacement = document.GetElement(id).ChangeTypeId(typeId);
+      Element replaced = replacement == null || replacement.Equals(ElementId.InvalidElementId) ? null : document.GetElement(replacement);
+      ElementId now = replaced != null && !(replaced is ElementType) ? replacement : id;
+      Element after = document.GetElement(now);
+      if (after == null || !after.GetTypeId().Equals(typeId))
+          throw new InvalidOperationException("Element " + idOf(id) + " did not take type " + target.Name + "; nothing was changed.");
+      changed.Add(idOf(now));
+  }
+
+  // Re-check all affected instances after Revit has applied joins and dependent changes.
+  document.Regenerate();
+  foreach (long rawId in changed.Concat(already))
+  {
+      Element instance = document.GetElement(new ElementId(rawId));
+      if (instance == null || !instance.GetTypeId().Equals(typeId))
+          throw new InvalidOperationException("Element " + rawId + " did not keep the requested type; nothing was changed.");
+  }
+  return new
+  {
+      Status = "Changed",
+      TypeId = idOf(typeId),
+      Type = target.FamilyName + ": " + target.Name,
+      ElementIds = changed,
+      Count = changed.Count,
+      AlreadyThisType = already
+  };
+parameters:
+  - name: category
+    type: string
+    description: OST_* name of the selected elements' category, such as OST_Walls or OST_Doors
+    source: designer
+    required: true
+  - name: element_ids
+    type: string
+    description: "Comma-separated element ids. Omit to use the current selection."
+    source: designer
+    required: false
+    default: ""
+  - name: type_name
+    type: string
+    description: "Type name in the requested category, or Family: Type."
+    source: designer
+    required: true
+preconditions:
+  - text: "supply element_ids or select the elements in Revit first (at most 100), all of the given category"
+  - text: "Revit 2024 or later for 64-bit element ids"
+not_for:
+  - "create type"
+  - "duplicate type"
+  - "type parameter"
+  - "set parameter"
+applies_when:
+  - "change type by name"
+  - "swap to a named type"
+validator: null
+fixtures:
+  - name: by_name
+    params: {"category":"OST_Walls","type_name":"Generic","element_ids":"101,102"}
+    expect: {"Status":"Changed"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-23T00:00:00"
+source_query: change elements to a named type

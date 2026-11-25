@@ -1,18 +1,20 @@
-"""Mentions: what a designer picks in the host (``@level``, ``@type``, ``@link``).
+"""Mentions: what a designer picks in the host (levels, types, links and selected elements).
 
 Three functions for a host that lets the designer pick model items while
 writing a message (section 2.4 of the hostv2 plan):
 
-``mention_candidates(executor, kind, category=None, q=None, limit=50)``
+``mention_candidates(executor, kind, category=None, q=None, limit=50, offset=0, source=None)``
     The items to offer, ``{kind, items, total, truncated}``; each item is
     ``{kind, id, name, label, detail, category?, family?}``, and an item that
     cannot be picked (a link that is not loaded) adds ``disabled: true`` and
-    ``reason``. ``kind`` is ``level``, ``type`` or ``link``; ``type`` without
-    ``category`` offers the categories first (items of kind ``category``
-    whose ``id`` is the OST_* name). ``q`` keeps the items whose name, label,
-    family or category contains it (case-insensitive); ``limit`` (1..200)
-    cuts the list, ``total`` counts every match and ``truncated`` says
-    whether some were cut; ``warnings`` (only when there are any) are the
+    ``reason``. An empty type search without a category offers categories
+    first. Text searches rank all matching types across categories, with
+    bilingual aliases and unpaginated category facets. ``element`` requires
+    ``source="selection"`` and returns at most 50 items in one page. ``limit``
+    and ``offset`` select a page; ``total`` counts every match on a complete
+    search. A budget-limited selection reports its full selection count,
+    ``facets_partial`` and a warning. ``truncated`` also covers incomplete
+    reads. ``warnings`` (only when there are any) are the
     add-in's lines about rows it could not read. Bad input and Revit failures
     come back as ``{"error": code, "kind": kind, ...}`` like ``run_query``; a
     transport failure (no add-in) raises.
@@ -29,17 +31,24 @@ writing a message (section 2.4 of the hostv2 plan):
     ``Designer's selections (picked in the host, verified against the model):
     level "F2" (id 312, 3000 mm).``
 
-Every read goes through ``run_query`` / the query executor, so the add-in's
-``list_model_items`` is used when it offers it and the old paths otherwise;
-both give the same candidates for the same model, and a type offered on one
-path is resolved on the same path.
+Levels, links and types use the query executor's supported add-in or legacy
+path. Fixed read-only queries identify the active document, collect types on
+a cross-category cache miss and read the selection. A type search makes at
+most five bridge calls. Complete type lists can be reused for up to 30 seconds
+on the same connection and unmodified document. Incomplete reads return the
+available types with warnings and truncation and are retried on the next search.
+All kinds accept up to eight distinct search terms; more return invalid_args.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import unicodedata
 
+from revit_bridge import mention_cache
+from revit_bridge.mention_elements import SELECTION_LIMIT, items_by_id, selected_items
+from revit_bridge.mention_search import category_terms, facets, rank_items, search_terms
 from revit_bridge.snapshot.query import (
     CATEGORY_RE,
     MAX_QUERY_LIMIT,
@@ -53,7 +62,7 @@ from revit_bridge.snapshot.query import (
     run_query,
 )
 
-MENTION_KINDS = ("level", "type", "link")
+MENTION_KINDS = ("level", "type", "link", "element")
 MAX_MENTIONS = 20                   # the host's ChatRequest takes at most this many
 DEFAULT_MENTION_LIMIT = 50
 # A name in the text block is at most this many characters AFTER escaping, quotes not counted
@@ -92,11 +101,11 @@ def _type_item(type_id, family, name, shown, category: str | None) -> dict | Non
     """A type as a candidate: ``label`` is ``family: type``, ``detail`` the category as Revit shows it,
     ``category`` the OST_* name when it is known (the category asked for, or the row's
     ``BuiltInCategory``; never guessed from the display name)."""
-    type_id = int_or_none(type_id)
+    type_id = element_id_or_none(type_id)
     if type_id is None:
         return None
     family, shown = str(family or ""), str(shown or "")
-    if category is not None and not CATEGORY_RE.fullmatch(category):
+    if not isinstance(category, str) or not CATEGORY_RE.fullmatch(category):
         category = None
     item = {"kind": "type", "id": type_id, "name": str(name or ""),
             "label": f"{family}: {name}" if family else str(name or ""), "detail": shown}
@@ -137,11 +146,6 @@ def _category_item(row: dict) -> dict:
             "detail": f"{count} types" if isinstance(count, int) else ""}
 
 
-def _matches(item: dict, needle: str) -> bool:
-    fields = (item.get("name"), item.get("label"), item.get("family"), item.get("category"))
-    return any(needle in str(f).casefold() for f in fields if f)
-
-
 def _limit(limit) -> int:
     if limit is None:
         return DEFAULT_MENTION_LIMIT
@@ -155,60 +159,151 @@ def _limit(limit) -> int:
 # -- candidates -------------------------------------------------------------------------------
 
 async def mention_candidates(executor: RevitQueryExecutor, kind: str, category: str | None = None,
-                             q: str | None = None, limit: int | None = DEFAULT_MENTION_LIMIT) -> dict:
+                             q: str | None = None, limit: int | None = DEFAULT_MENTION_LIMIT,
+                             offset: int | None = 0, source: str | None = None) -> dict:
     """What the designer can pick for ``@<kind>``: ``{kind, items, total, truncated}`` (see the module)."""
     if kind not in MENTION_KINDS:
         return {"error": "unknown_kind", "kind": kind, "kinds": list(MENTION_KINDS)}
     if q is not None and not isinstance(q, str):
         return {"error": "invalid_args", "kind": kind, "message": "q must be a string"}
+    if (kind == "element" and source != "selection") or (kind != "element" and source is not None):
+        return {"error": "invalid_args", "kind": kind, "message": "only element takes source=selection"}
+    if offset is None:
+        offset = 0
+    if int_or_none(offset) is None or int(offset) < 0:
+        return {"error": "invalid_args", "kind": kind, "message": "offset must be a non-negative integer"}
+    offset = int(offset)
     if category is not None and (kind != "type" or not isinstance(category, str)
                                  or not CATEGORY_RE.fullmatch(category.strip())):
         return {"error": "invalid_args", "kind": kind,
                 "message": f"invalid category {category!r}: only type takes one, an OST_* name"}
     limit = _limit(limit)
 
-    if category is not None:
-        category = category.strip()
-        reply = await _type_candidates(executor, category)
+    try:
+        terms = search_terms(q or "")
+    except ValueError as exc:
+        return {"error": "invalid_args", "kind": kind, "message": str(exc)}
+    matched, remaining = category_terms(terms) if kind == "type" else (None, terms)
+    category = category and category.strip()
+    if kind == "element":
+        limit = min(limit, SELECTION_LIMIT)
+        try:
+            return await selected_items(executor, offset, limit, terms)
+        except RevitQueryError as exc:
+            return {"error": "revit_error", "kind": kind, "message": str(exc)}
+    elif kind == "type":
+        scope = await mention_cache.request_scope(executor.client)
+        reply = await _type_candidates(executor, scope, category, matched, bool(terms))
+        if "error" in reply:
+            return reply
+        items = reply["items"]
     else:
-        reply = await run_query(executor, {"level": "levels", "link": "links", "type": "type_categories"}[kind])
-    if "error" in reply:
-        return dict(reply, kind=kind)
-    if kind == "level":
-        items = [_level_item(row) for row in reply["items"]]
-    elif kind == "link":
-        items = [_link_item(link) for link in reply["items"]]
-    elif category is None:
-        items = [_category_item(row) for row in reply["items"]]
-    else:
-        items = [_type_item(t.get("FamilyTypeId"), t.get("FamilyName"), _type_name(t), t.get("Category"), category)
-                 for t in reply["items"]]
-    items = [item for item in items if item is not None]
-    needle = (q or "").strip().casefold()
-    if needle:
-        items = [item for item in items if _matches(item, needle)]
-    out = {"kind": kind, "items": items[:limit], "total": len(items),
-           "truncated": len(items) > limit or reply.get("truncated") is True}
+        reply = await run_query(executor, {"level": "levels", "link": "links"}[kind])
+        if "error" in reply:
+            return dict(reply, kind=kind)
+        convert = _level_item if kind == "level" else _link_item
+        items = [item for row in reply["items"] if (item := convert(row)) is not None]
+    if remaining:
+        items = await asyncio.to_thread(rank_items, items, remaining, name_and_family_only=matched is not None)
+    elif matched is not None:
+        items = sorted(items, key=lambda item: ((item["name"] or "").casefold(), item["id"]))
+    out = {"kind": kind, "items": [dict(i) for i in items[offset:offset + limit]], "total": len(items),
+           "truncated": len(items) > offset + limit or reply.get("truncated") is True,
+           "offset": offset, "category_matched": sorted(matched or ()),
+           "facets": [dict(f) for f in reply["facets"]] if "facets" in reply else facets(items)}
     if reply.get("warnings"):
         out["warnings"] = list(reply["warnings"])      # rows the add-in could not read: said, not dropped
+    if kind == "type" and scope != mention_cache.device_scope(executor.client):
+        return {"error": "revit_error", "kind": kind, "message": "The device connection changed; pick the type again."}
     return out
 
 
-async def _type_candidates(executor: RevitQueryExecutor, category: str) -> dict:
-    """The types of one category as raw rows: list_model_items when the add-in offers it (every
-    type of the category, with warnings), else ``get_available_family_types``; errors as replies."""
+async def _type_candidates(executor, scope, category, matched, searching):
+    """Fetch only the necessary categories, preserving category navigation on an empty query."""
     try:
-        data = await executor.get_type_rows(category)
+        stamp = await mention_cache.document_stamp(executor.client, scope)
+        inventory = mention_cache.inventories(stamp) if stamp else {}
+        if matched is not None and (not matched or (category and category not in matched)):
+            return {"items": []}
+        cross_category = searching and not category
+        if cross_category:
+            hit = _cached_type_search(inventory, matched)
+        else:
+            hit = mention_cache.cached(inventory, category)
+        if hit is not None:
+            return hit
+        if cross_category:
+            data = await mention_cache.read_type_inventory(executor, matched, stamp)
+            reply = _inventory_items(data, matched)
+        else:
+            reply = await _type_category(executor, category)
+        if "error" not in reply and stamp and not stamp.modified:
+            additions = {}
+            if not reply.get("truncated") and not reply.get("warnings"):
+                additions = (_category_inventories(reply["items"], matched) if cross_category
+                             else {category: mention_cache.pending(reply)})
+            current = await mention_cache.document_stamp(executor.client, scope)
+            if current and current.document != stamp.document:
+                mention_cache.discard(scope)
+                raise RevitQueryError("The active document changed; pick the type again.")
+            if current == stamp:
+                mention_cache.publish(stamp, additions)
+            else:
+                mention_cache.discard(scope)
+        return reply
     except ValueError as exc:
         return {"error": "invalid_args", "kind": "type", "message": str(exc)}
     except ModelItemsError as exc:
         return exc.reply("type")
     except RevitQueryError as exc:
         return {"error": "revit_error", "kind": "type", "message": str(exc)}
-    reply = {"items": data.rows, "warnings": list(data.warnings)}
-    if data.truncated:
-        reply["truncated"] = True
-    return reply
+
+
+def _cached_type_search(inventory, matched):
+    all_types = mention_cache.cached(inventory, "*")
+    if all_types is not None:
+        return {"items": [t for t in all_types if matched is None or t["category"] in matched]}
+    if matched:
+        groups = [mention_cache.cached(inventory, key) for key in sorted(matched)]
+        if all(group is not None for group in groups):
+            return {"items": [item for group in groups for item in group["items"]]}
+    return None
+
+
+def _inventory_items(data, matched):
+    items = []
+    unreadable = False
+    for row in data["rows"]:
+        if isinstance(row, dict):
+            item = _type_item(row.get("id"), row.get("family"), row.get("name"), row.get("shown"), row.get("category"))
+            if item and item.get("category") and (matched is None or item["category"] in matched):
+                items.append(item)
+                continue
+        unreadable = True
+    warnings = list(data["warnings"])
+    if unreadable:
+        warnings.append("The type inventory contained an unreadable row.")
+    return {"items": items, "warnings": warnings, "truncated": bool(warnings) or data["truncated"]}
+
+
+def _category_inventories(items, matched):
+    grouped = {key: [] for key in matched or ()}
+    for item in items:
+        grouped.setdefault(item["category"], []).append(item)
+    additions = {key: mention_cache.pending({"items": rows}) for key, rows in grouped.items()}
+    if matched is None:
+        additions["*"] = mention_cache.pending(items)
+    return additions
+
+
+async def _type_category(executor, category):
+    if category:
+        data = await executor.get_type_rows(category)
+        return _inventory_items(mention_cache.native_types(data, category), {category})
+    rows, warnings = mention_cache.native_categories(await executor.get_type_category_rows())
+    return {"items": [_category_item(row) for row in rows], "warnings": warnings, "truncated": bool(warnings),
+            "facets": [{"category": r["category"], "label": r["display_name"] or r["category"],
+                        "count": r["count"]} for r in rows]}
 
 
 # -- resolution -------------------------------------------------------------------------------
@@ -281,12 +376,20 @@ async def resolve_mentions(executor: RevitQueryExecutor, mentions: list) -> dict
             if item is not None:
                 types.setdefault(item["id"], item)
 
+    elements = {}
+    if ids["element"]:
+        rows, element_warnings = await items_by_id(executor, ids["element"])
+        elements = {item["id"]: item for item in rows}
+        warnings.extend(element_warnings)
+
     resolved: list[dict] = []
     for kind, mention_id in wanted:
         if kind == "level":
             found = levels.get(mention_id)
         elif kind == "type":
             found = types.get(mention_id)
+        elif kind == "element":
+            found = elements.get(mention_id)
         else:
             link = links.get(mention_id)
             if link is not None and _link_reason(link) is not None:
@@ -309,6 +412,7 @@ _BLOCK = {
         "head": "Designer's selections (picked in the host, verified against the model): ",
         "level": "level {name} (id {id}{elevation})",
         "type": "type {name} ({family}id {id}{category})",
+        "element": "element {name} (id {id}, {summary})",
         "link": "link {name} (id {id}; queries about its content carry link_id {id})",
         "family": "family {family}, ",
         "category": ", category {category}",
@@ -320,6 +424,7 @@ _BLOCK = {
         "head": "设计师的选择（在宿主中选取，已与模型核对）：",
         "level": "标高 {name}（id {id}{elevation}）",
         "type": "类型 {name}（{family}id {id}{category}）",
+        "element": "元素 {name}（id {id}，{summary}）",
         "link": "链接 {name}（id {id}；查询其内容时带 link_id {id}）",
         "family": "族 {family}，",
         "category": "，类别 {category}",
@@ -386,6 +491,9 @@ def mention_block(resolved: list[dict], language: str = "zh") -> str:
                 name=_quote(item.get("name")), id=_shown_id(item.get("id")),
                 family=table["family"].format(family=_quote(family)) if family else "",
                 category=table["category"].format(category=_quote(category)) if category else ""))
+        elif kind == "element":
+            parts.append(table["element"].format(name=_quote(item.get("name")), id=_shown_id(item.get("id")),
+                                                 summary=_quote(item.get("summary"))))
         elif kind == "link":
             parts.append(table["link"].format(name=_quote(item.get("label") or item.get("name")),
                                               id=_shown_id(item.get("id"))))

@@ -48,10 +48,11 @@ so the instructions never lose the item.
 
 ``host_instructions(role=None, code=True, mentions=False)`` also renders,
 from the same pieces, the host text without code-writing (``code=False``:
-no execute_code, snippet contract or blocked_code, for a host whose model
-never writes code), with the rule for the designer's selections block
-(``mentions=True``), and one shorter text per role of a host that splits the
-work: ``analyst`` (route a message, one JSON object), ``planner`` (fill and
+no execute_code, snippet contract or blocked_code). That host embeds the card
+in the proposing reply, offers choices with ``ask_designer`` and labels the
+confirmation button "确认并执行". The ``mentions=True`` option adds the designer's
+selections block. A host that splits the work can request one shorter text per
+role: ``analyst`` (route a message, one JSON object), ``planner`` (fill and
 propose the spec) and ``supervisor`` (read and report the execution result).
 With no arguments it returns the 0.8.2 host text, only the version in its
 first line changed.
@@ -278,16 +279,33 @@ def _propose_step(code: bool, number: str = "6") -> str:
     return _swap(step, "6. ", f"{number}. ")
 
 
+_CARD_ACTION = 'Ask the designer to click "确认并执行" on the card inside the reply that submitted it.'
+_CARD_LOCATION = ('If they cannot find it, say "卡片在我上一条提交它的回复里" in their language. '
+                  'Do not submit it again.')
+
+
+def _questions_step(code: bool) -> str:
+    step = _HEAD_STEPS["3"]
+    if code:
+        return step
+    return (step + "   Call ask_designer when you can offer choices.\n"
+            "   Use options grounded in the facts you read. Present them on the form and end the turn.\n")
+
+
 def _host_confirms_step(code: bool, number: str = "7") -> str:
-    step = _HOST_STEPS["7"]
-    if not code:
-        step = _swap(step, "have no confirm_spec, run_tool or execute_code;", "have no confirm_spec or run_tool;")
-    return _swap(step, "7. ", f"{number}. ")
+    if code:
+        return _swap(_HOST_STEPS["7"], "7. ", f"{number}. ")
+    return (f"{number}. {_CARD_ACTION}\n"
+            "   Only that click authorizes execution. A typed yes only points back to the card.\n"
+            f"   {_CARD_LOCATION}\n"
+            "   You have no confirm_spec or run_tool; you only propose the spec.\n")
 
 
 def _intro(code: bool) -> str:
-    text = _INTRO.format(closing=_INTRO_CLOSING["host"])
-    return text if code else _swap(text, "capability packs and C# in Revit", "capability packs in Revit")
+    if code:
+        return _INTRO.format(closing=_INTRO_CLOSING["host"])
+    text = _INTRO.format(closing="and propose it\nas a card in this chat.")
+    return _swap(text, "capability packs and C# in Revit", "capability packs in Revit")
 
 
 def _taskspec(code: bool) -> str:
@@ -304,8 +322,8 @@ _NEVER_CODE = "- Write code: if no tool fits, say that no existing tool can do i
 # (A picked link's queries carry args.link_id: step 2 says so, next to the rule on its ids.)
 _SELECTIONS = """\
 ## Designer's selections
-Picks in "Designer's selections": value = the name, evidence "mention:<kind>#<id>", source
-tool if the pack parameter has choices_from or tool:* source, else designer; never re-ask.
+Picks in "Designer's selections": element value = id as a decimal string; level/type/link value = the name.
+Use evidence "mention:<kind>#<id>", source tool if the pack parameter has choices_from or tool:* source, else designer; never re-ask.
 """
 
 _NEVER_CLAIM = "- Claim success on an error or on a failed validation; do not soften errors.\n"
@@ -323,8 +341,9 @@ def _notes(code: bool) -> str:
 
 def _render_host(code: bool, mentions: bool) -> str:
     """The whole host text without code-writing and/or with the selections rule."""
-    flow = (_FLOW_TITLE + _HEAD_STEPS["1"] + _query_step(code) + _HEAD_STEPS["3"] + _HEAD_STEPS["4"]
-            + _FLOW_CHECK["host"] + _FLOW_CARD["host"] + _propose_step(code) + _host_confirms_step(code)
+    card = _FLOW_CARD["host"] if code else "5. Summarize the ready spec for the card embedded in this reply.\n"
+    flow = (_FLOW_TITLE + _HEAD_STEPS["1"] + _query_step(code) + _questions_step(code) + _HEAD_STEPS["4"]
+            + _FLOW_CHECK["host"] + card + _propose_step(code) + _host_confirms_step(code)
             + _HOST_STEPS["8"])
     sections = [_intro(code), flow, _taskspec(code)]
     if mentions:
@@ -335,6 +354,10 @@ def _render_host(code: bool, mentions: bool) -> str:
 
 def _render_analyst(code: bool) -> str:
     none_rule = "" if code else " Never offer to write code."
+    card_rule = "" if code else (
+        " With a pending card, route plain assent without changes or a question about its location to chat.\n"
+        f"  {_CARD_ACTION} {_CARD_LOCATION}\n"
+        "  If the reply asks for a change, route it by what it requests: query, tool, or none.")
     return f"""\
 You are the analyst of a Revit host built on revit-bridge 0.9. You read one message
 from the designer and route it; you call no tools. You get the message, a
@@ -343,7 +366,7 @@ digest of the open model and the tool list (a name and one line each).
 
 ## Routes
 - chat: small talk, or a question about Revit or this host that needs nothing from
-  the model. Answer it in `note`.
+  the model. Answer it in `note`.{card_rule}
 - query: the designer only wants to know something about the model (levels, types,
   counts, elements, links, selection); nothing changes.
 - tool: a tool in the list does what is asked. Name it in `tool`.
@@ -367,15 +390,16 @@ Your reply is exactly one JSON object and nothing else, no text before or after 
 
 
 def _render_planner(code: bool) -> str:
-    intro = _swap(_intro(code), "get it\nconfirmed by the designer in this host's interface, and report what the "
-                                "validator found.\n",
-                  "and propose\nit; the designer confirms it in this host's interface and the host runs it.\n")
+    intro = _intro(code)
+    if code:
+        intro = _swap(intro, _INTRO_CLOSING["host"],
+                      "and propose\nit; the designer confirms it in this host's interface and the host runs it.")
     intro = _swap(intro, "You are connected to a running Autodesk Revit through revit-bridge 0.9.",
                   "You are the planner of a Revit host built on revit-bridge 0.9.")
     intro += ("You start from the analyst's routing {route, tool?, facts_needed, note}. Route\n"
               "query: read with get_project_snapshot and query, answer, no spec. Route tool:\n"
               "start from its tool and facts_needed; list_tools decides.\n")
-    flow = (_FLOW_TITLE + _HEAD_STEPS["1"] + _query_step(code) + _HEAD_STEPS["3"] + _HEAD_STEPS["4"]
+    flow = (_FLOW_TITLE + _HEAD_STEPS["1"] + _query_step(code) + _questions_step(code) + _HEAD_STEPS["4"]
             + _FLOW_CHECK["host"] + _propose_step(code, "5") + _host_confirms_step(code, "6"))
     return "\n".join([intro, flow, _taskspec(code), _SELECTIONS, _never(code), _notes(code)])
 
@@ -383,9 +407,11 @@ def _render_planner(code: bool) -> str:
 def _render_supervisor(code: bool) -> str:
     report = " ".join(_HOST_STEPS["8"].split()[1:])            # step 8 without its number, on one line
     report = _swap(report, "The execution comes back to you as a message from the host. ", "")
+    location = "in this host's interface" if code else 'by clicking "确认并执行" on the card in the chat reply'
+    ask_form = "" if code else " The host shows your question as a form in this reply."
     return f"""\
 You are the supervisor of a Revit host built on revit-bridge 0.9. The designer
-confirmed a TaskSpec in this host's interface and the host ran exactly what was
+confirmed a TaskSpec {location} and the host ran exactly what was
 confirmed. You get the confirmed spec and the execution result as a message from
 the host, and you tell the designer what happened.
 
@@ -404,7 +430,7 @@ Your reply is exactly one JSON object and nothing else, no text before or after 
   what the planner should change. The host sends one task back at most twice.
 - ask: anything else, after the second retry, or a validator failure you cannot
   explain (never done). `question` is what to ask the designer; never choose a new
-  value yourself.
+  value yourself.{ask_form}
 - `fix` only with retry, `question` only with ask.
 
 ## Never
@@ -421,7 +447,9 @@ def host_instructions(role: str | None = None, code: bool = True, mentions: bool
 
     With no arguments: the whole text, as in 0.8.2 but for the version in its
     first line. ``code=False`` leaves out writing code (execute_code, the
-    snippet contract, blocked_code) for a host whose model never writes any;
+    snippet contract, blocked_code) and describes a card embedded in the proposing
+    reply. The planner offers choices with ``ask_designer``, and the designer
+    clicks "确认并执行" on the card to confirm and run it.
     ``mentions=True`` adds the rule for a "Designer's selections" block. Any
     variant other than the default also names the query kinds added later
     (links, type_categories, link_id).
@@ -435,7 +463,8 @@ def host_instructions(role: str | None = None, code: bool = True, mentions: bool
     report, fix?, question?}``). ``mentions`` does not apply to a role;
     ``code`` does.
 
-    The selections rule (section 2.4 as amended): value the name, evidence
+    The selections rule uses the decimal id string for an element and the
+    name for a level, type or link. Each pick carries evidence
     ``mention:<kind>#<id>``, source tool when the pack parameter has
     ``choices_from`` or a ``tool:*`` source, else designer; never asked again.
     """

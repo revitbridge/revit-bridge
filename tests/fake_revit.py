@@ -219,6 +219,9 @@ class FakeModel:
                  advertise_only: bool = False, honour_ids: bool = True, fail: str | None = None,
                  warnings: list[str] | None = None):
         self.model = copy.deepcopy(model or DEFAULT_MODEL)
+        self.document_stamp = "open document 1"
+        self.document_modified = False
+        self.document_version = "save 1"
         self.list_model_items = list_model_items
         self.capabilities = capabilities
         self.advertise_only = advertise_only
@@ -242,6 +245,15 @@ class FakeModel:
                 return FakeRevit.error(rid, -32601, "Method 'list_model_items' not found")
             return self._list_model_items(rid, params)
         if method == "send_code_to_revit":
+            if "new ElementMulticategoryFilter(categories)" in params.get("code", ""):
+                modern, *categories = params["parameters"]
+                rows = [dict(id=t["FamilyTypeId"], name=t["TypeName"], family=t["FamilyName"],
+                             category=key, shown=t.get("Category", key))
+                        for key, types in self.model["types"].items()
+                        if (not categories or key in categories) and (modern or key in self.model["old_command_categories"])
+                        for t in types]
+                return FakeRevit.code_result(rid, {"source": self.document_stamp, "rows": rows,
+                                                   "warnings": self.warnings, "truncated": bool(self.warnings)})
             return self._send_code(rid, params.get("code", ""))
         if method == "get_available_family_types":
             # the released command: no BuiltInCategory, and not every category
@@ -328,6 +340,9 @@ class FakeModel:
 
     def _send_code(self, rid, code: str):
         doc = self.model
+        if "Document.GetDocumentVersion(document)" in code:
+            return FakeRevit.code_result(rid, {"document": self.document_stamp, "version": self.document_version,
+                                               "modified": self.document_modified})
         linked = re.search(r"l\.Id\.Value == (\d+)\);", code)
         if linked and "LinkError" in code:
             link_id = int(linked.group(1))

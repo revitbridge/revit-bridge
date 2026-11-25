@@ -1,4 +1,4 @@
-"""Capability pack v1: validate_pack, the 22 built-ins, preconditions."""
+"""Capability pack v1: validate_pack, built-ins, preconditions."""
 from __future__ import annotations
 
 import copy
@@ -54,12 +54,16 @@ def param_variant(index: int, **changes) -> dict:
 
 # No built-in validator can prove these three (an arbitrary parameter, a move, a mixed deletion);
 # each reads its own result back instead. Planner's ruling, 2026-11-23: an open item.
-WITHOUT_VALIDATOR = {"set_parameter", "move_elements", "delete_selected"}
+WITHOUT_VALIDATOR = {
+    "set_parameter", "move_elements", "delete_selected", "delete_elements",
+    "copy_elements", "rotate_elements", "mirror_elements",
+    "get_element_geometry", "get_element_parameters", "change_type_by_name",
+}
 
 
 def test_every_builtin_pack_is_valid_v1_with_a_validator():
     files = sorted(builtin_capabilities_dir().glob("*.yaml"))
-    assert len(files) == 22
+    assert len(files) == 40
     assert WITHOUT_VALIDATOR <= {path.stem for path in files}
     for path in files:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))

@@ -60,7 +60,10 @@ settings through environment variables (see Configure), for example in the
 `Ledger` and Revit client, plus `revit_bridge.host_instructions()` for a host
 whose interface does the confirmation (`role`, `code` and `mentions` give a
 text per role, one without code-writing, one with the designer's selections)
-and `revit_bridge.mentions` for levels, types and links the designer picks.
+and `revit_bridge.mentions` for levels, types, links and elements the designer
+picks. Request `kind="element", source="selection"` to page through the active
+selection. Type searches accept Chinese and English category names and return
+matching types across categories.
 
 From a checkout: `uv sync` then `uv run revit-bridge`.
 
@@ -146,7 +149,7 @@ describes the starter generator; it does not install or launch the add-in.
      family types, selection, …); `query(kind, args)` answers single read-only
      questions (`levels`, `grids`, `family_types`, `elements`, `selection`,
      `view_elements`, `units`, `counts`). Neither needs confirmation.
-   - `list_tools` — the capability packs (22 built-ins such as
+   - `list_tools` — the capability packs (40 built-ins such as
      `create_wall`, `create_level`, `move_elements`, `query_levels`, plus your own);
      `missing_params(tool, known)` — the questions still open, with the real
      options, who can answer each (`kind`) and the steps it holds up

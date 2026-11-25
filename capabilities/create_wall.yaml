@@ -3,66 +3,182 @@ name: create_wall
 display_name: Create Wall
 description: Create a straight wall between two points on a level, with the given height.
   The wall uses the document's default wall type.
+  You can specify a basic wall type and either an unconnected height (default 3000 mm) or a top level.
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
-  // Step 1: Get level by name
-  var level = new FilteredElementCollector(document)
-      .OfClass(typeof(Level))
-      .Cast<Level>()
-      .FirstOrDefault(l => l.Name == "{level_name}");
-  if (level == null)
-      return new { Status = "Error", Message = "Level '{level_name}' not found" };
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, double> number = text =>
+  {
+      double value;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out value)
+          || double.IsNaN(value) || double.IsInfinity(value))
+          throw new InvalidOperationException("REFUSED: Expected a finite number: " + text);
+      return value;
+  };
+  Func<string, double> feet = text => UnitUtils.ConvertToInternalUnits(number(text), UnitTypeId.Millimeters);
 
-  // Step 2: Create wall line from mm coordinates
-  XYZ start = new XYZ({start_x} / 304.8, {start_y} / 304.8, 0);
-  XYZ end = new XYZ({end_x} / 304.8, {end_y} / 304.8, 0);
-  Line wallLine = Line.CreateBound(start, end);
+  Func<string, Level> levelByName = name =>
+  {
+      Level result = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+          .FirstOrDefault(l => l.Name == name);
+      if (result == null)
+          throw new InvalidOperationException("REFUSED: No level named " + name);
+      return result;
+  };
 
-  // Step 3: Create wall (Transaction already active - do NOT create one)
-  Wall wall = Wall.Create(document, wallLine, level.Id, false);
-  wall.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM)
-      .Set({height} / 304.8);
+  Action<Element, BuiltInParameter, ElementId> setId = (element, key, value) =>
+  {
+      Parameter p = element.get_Parameter(key);
+      if (p == null || p.IsReadOnly || (!p.Set(value) && p.AsElementId() != value))
+          throw new InvalidOperationException("REFUSED: Cannot set " + key + " on " + element.Id);
+  };
+  Action<Element, BuiltInParameter, double> setLength = (element, key, value) =>
+  {
+      Parameter p = element.get_Parameter(key);
+      if (p == null || p.IsReadOnly || (!p.Set(value) && (!p.HasValue || Math.Abs(p.AsDouble() - value) > 1e-9)))
+          throw new InvalidOperationException("REFUSED: Cannot set " + key + " on " + element.Id);
+  };
 
+  string topName = "{top_level_name}", heightText = "{height}", typeName = "{type_name}";
+  Level top = topName == "" ? null : levelByName(topName);
+  // The typed-wall creation overload needs an initial height even for a constrained wall.
+  double unconnectedHeight = top == null ? feet(heightText) : feet("3000");
+  if (unconnectedHeight <= 0)
+      throw new InvalidOperationException("REFUSED: Height must be positive.");
+  WallType wallType = null;
+  if (typeName != "")
+  {
+      var types = new FilteredElementCollector(document).OfClass(typeof(WallType)).Cast<WallType>()
+          .Where(t => t.Name == typeName || t.FamilyName + ": " + t.Name == typeName).Take(2).ToList();
+      if (types.Count != 1 || types[0].Kind != WallKind.Basic)
+          throw new InvalidOperationException("REFUSED: Choose a unique basic wall type: " + typeName);
+      wallType = types[0];
+  }
+  Level level = levelByName("{level_name}");
+  bool structural = bool.Parse("{structural}");
+  double baseOffset = feet("{base_offset}"), topOffset = feet("{top_offset}");
+  if (top == null && topOffset != 0)
+      throw new InvalidOperationException("REFUSED: A top offset requires a top level.");
+  if (top != null && top.ProjectElevation + topOffset <= level.ProjectElevation + baseOffset)
+      throw new InvalidOperationException("REFUSED: The top of the wall must be above its base.");
+  string lineName = "{location_line}";
+  WallLocationLine locationLine;
+  if (!Enum.TryParse(lineName, true, out locationLine) || !Enum.IsDefined(typeof(WallLocationLine), locationLine))
+      throw new InvalidOperationException("REFUSED: Unknown wall location line: " + lineName);
+  Func<XYZ, XYZ, Wall> create = (start, end) =>
+  {
+      if (!XYZ.IsWithinLengthLimits(start) || !XYZ.IsWithinLengthLimits(end)
+          || start.DistanceTo(end) <= document.Application.ShortCurveTolerance)
+          throw new InvalidOperationException("REFUSED: Wall segment is too short or outside the model limits.");
+      Line axis = Line.CreateBound(start, end);
+      Wall wall = wallType == null
+          ? Wall.Create(document, axis, level.Id, structural)
+          : Wall.Create(document, axis, wallType.Id, level.Id, unconnectedHeight, 0, false, structural);
+      if (top != null)
+          setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, top.Id);
+      else
+          setLength(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM, unconnectedHeight);
+      return wall;
+  };
+  XYZ start = new XYZ(feet("{start_x}"), feet("{start_y}"), 0);
+  XYZ end = new XYZ(feet("{end_x}"), feet("{end_y}"), 0);
+  Wall wall = create(start, end);
+  if (baseOffset != 0) setLength(wall, BuiltInParameter.WALL_BASE_OFFSET, baseOffset);
+  if (topOffset != 0) setLength(wall, BuiltInParameter.WALL_TOP_OFFSET, topOffset);
+  if (locationLine != WallLocationLine.WallCenterline)
+  {
+      Parameter p = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM);
+      if (p == null || p.IsReadOnly || (!p.Set((int)locationLine) && p.AsInteger() != (int)locationLine))
+          throw new InvalidOperationException("REFUSED: Cannot set the wall location line.");
+      document.Regenerate();
+      var location = wall.Location as LocationCurve;
+      if (location == null)
+          throw new InvalidOperationException("Created wall has no location curve.");
+      // Changing the reference line can change its position within the wall.
+      // Keep the new reference line on the designer's two XY coordinates.
+      double z = location.Curve.GetEndPoint(0).Z;
+      location.Curve = Line.CreateBound(new XYZ(start.X, start.Y, z), new XYZ(end.X, end.Y, z));
+  }
   return new { ElementId = wall.Id.Value, Status = "Created", Level = level.Name };
 parameters:
   - name: level_name
     type: string
-    description: Level the wall stands on
+    description: Base level name
     source: tool:levels
-    choices_from: levels
     required: true
+    choices_from: levels
   - name: start_x
     type: double
-    description: Wall start X (mm)
-    unit: mm
+    description: "start_x (mm)"
     source: designer
     required: true
+    unit: mm
   - name: start_y
     type: double
-    description: Wall start Y (mm)
-    unit: mm
+    description: "start_y (mm)"
     source: designer
     required: true
+    unit: mm
   - name: end_x
     type: double
-    description: Wall end X (mm)
-    unit: mm
+    description: "end_x (mm)"
     source: designer
     required: true
+    unit: mm
   - name: end_y
     type: double
-    description: Wall end Y (mm)
-    unit: mm
+    description: "end_y (mm)"
     source: designer
     required: true
+    unit: mm
   - name: height
     type: double
-    description: Wall height (mm)
-    unit: mm
+    description: "Unconnected height (mm), ignored when top_level_name is given"
     source: default
     required: false
     default: 3000
+    unit: mm
+  - name: type_name
+    type: string
+    description: "Exact wall type name; omit for the document default"
+    source: answer
+    choices_from: family_types:OST_Walls
+    required: false
+    default: ""
+  - name: top_level_name
+    type: string
+    description: "Top constraint level, by exact name"
+    source: answer
+    choices_from: levels
+    required: false
+    default: ""
+  - name: top_offset
+    type: double
+    description: "Offset from top level (mm)"
+    source: default
+    required: false
+    default: 0
+    unit: mm
+  - name: base_offset
+    type: double
+    description: "Offset from base level (mm)"
+    source: default
+    required: false
+    default: 0
+    unit: mm
+  - name: structural
+    type: bool
+    description: Structural wall
+    source: default
+    required: false
+    default: false
+  - name: location_line
+    type: string
+    description: "WallCenterline, CoreCenterline, FinishFaceExterior, FinishFaceInterior, CoreExterior or CoreInterior"
+    source: default
+    required: false
+    default: WallCenterline
 preconditions:
   - kind: levels_min
     value: 1
@@ -71,7 +187,6 @@ preconditions:
 not_for:
   - "curtain wall"
   - "modify wall"
-  - "wall type"
 applies_when:
   - "create wall"
   - "draw wall"
@@ -82,9 +197,12 @@ validator:
   expected: 1
 fixtures:
   - name: basic
-    params: {level_name: "L1", start_x: 0, start_y: 0, end_x: 5000, end_y: 0, height: 3000}
-    expect: {Status: "Created"}
+    params: {level_name: L1, start_x: 0, start_y: 0, end_x: 5000, end_y: 0, height: 3000}
+    expect: {Status: Created}
+  - name: typed_top
+    params: {level_name: L1, start_x: 0, start_y: 0, end_x: 5000, end_y: 0, top_level_name: L2, type_name: Generic 200}
+    expect: {Status: Created}
 approved_by: null
 approved_at: null
 created_at: "2026-03-13T00:00:00"
-source_query: create a wall
+source_query: create wall

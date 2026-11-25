@@ -1,0 +1,20 @@
+{
+  "OST_Walls": ["墙", "wall", "幕墙", "curtain wall"],
+  "OST_Columns": ["柱", "建筑柱", "column", "architectural column"],
+  "OST_StructuralColumns": ["柱", "结构柱", "column", "structural column"],
+  "OST_StructuralFraming": ["梁", "beam", "framing", "structural framing"],
+  "OST_Floors": ["板", "楼板", "floor", "slab"],
+  "OST_Doors": ["门", "door"],
+  "OST_Windows": ["窗", "window"],
+  "OST_Ceilings": ["天花板", "ceiling"],
+  "OST_Roofs": ["屋顶", "roof"],
+  "OST_Rooms": ["房间", "room"],
+  "OST_Grids": ["轴网", "grid"],
+  "OST_Stairs": ["楼梯", "stair"],
+  "OST_StairsRailing": ["栏杆", "railing"],
+  "OST_CurtainWallPanels": ["幕墙", "curtain", "curtain panel"],
+  "OST_CurtainWallMullions": ["幕墙", "curtain", "curtain mullion"],
+  "OST_Furniture": ["家具", "furniture"],
+  "OST_PipeCurves": ["管道", "pipe"],
+  "OST_DuctCurves": ["风管", "duct"]
+}

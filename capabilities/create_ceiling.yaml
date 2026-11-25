@@ -48,27 +48,28 @@ code_template: |
           + string.Join(", ", types.Select(t => t.FamilyName).Distinct()) + "). Give the type as \"Family: Type\".");
   CeilingType ceilingType = types[0];
 
-  double x = toFeet("X", "{x}");
-  double y = toFeet("Y", "{y}");
-  double width = toFeet("Width", "{width}");
-  double length = toFeet("Length", "{length}");
-  double height = toFeet("Height", "{height}");
-  if (width <= tolerance || length <= tolerance)
-      throw new InvalidOperationException("REFUSED: Width and length must both be more than zero mm.");
+  double height = toFeet("Height above the level", "{height}");
   if (height < 0)
       throw new InvalidOperationException("REFUSED: The height above the level must be zero or more mm.");
-  // The level's height in model coordinates, whatever its elevation base (on Revit 2026 the
-  // ceiling sat at the level's ProjectElevation plus its height offset).
   double z = level.ProjectElevation;
-  XYZ[] corners =
-  {
-      new XYZ(x, y, z), new XYZ(x + width, y, z), new XYZ(x + width, y + length, z), new XYZ(x, y + length, z)
-  };
-  if (!corners.All(c => XYZ.IsWithinLengthLimits(c)) || !XYZ.IsWithinLengthLimits(new XYZ(x, y, z + height)))
-      throw new InvalidOperationException("REFUSED: The ceiling reaches outside the model's limits.");
+  var corners = new List<XYZ>();
+  double x = toFeet("X", "{x}"), y = toFeet("Y", "{y}");
+  double width = toFeet("Width", "{width}");
+  double length = toFeet("Length", "{length}");
+  if (width <= tolerance || length <= tolerance)
+      throw new InvalidOperationException("REFUSED: Width and length must both be more than zero mm.");
+  corners.AddRange(new[] { new XYZ(x, y, z), new XYZ(x + width, y, z),
+      new XYZ(x + width, y + length, z), new XYZ(x, y + length, z) });
+  if (!corners.All(p => XYZ.IsWithinLengthLimits(p) && XYZ.IsWithinLengthLimits(new XYZ(p.X, p.Y, z + height))))
+      throw new InvalidOperationException("REFUSED: The outline reaches outside the model's limits.");
   var edges = new List<Curve>();
-  for (int i = 0; i < 4; i++)
-      edges.Add(Line.CreateBound(corners[i], corners[(i + 1) % 4]));
+  for (int i = 0; i < corners.Count; i++)
+  {
+      XYZ start = corners[i], end = corners[(i + 1) % corners.Count];
+      if (start.DistanceTo(end) <= tolerance)
+          throw new InvalidOperationException("REFUSED: Two consecutive vertices are too close together.");
+      edges.Add(Line.CreateBound(start, end));
+  }
 
   Ceiling ceiling = Ceiling.Create(document, new List<CurveLoop> { CurveLoop.Create(edges) }, ceilingType.Id, level.Id);
   if (ceiling == null)
@@ -143,6 +144,7 @@ preconditions:
     category: OST_Ceilings
   - text: "Revit 2023 or later: the API has no way to create a ceiling before 2022 and the add-in has no 2022 build"
 not_for:
+  - "polygonal ceiling specified by vertices"
   - "ceiling type"
   - "ceiling grid"
   - "move ceiling"

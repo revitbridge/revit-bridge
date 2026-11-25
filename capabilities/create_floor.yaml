@@ -3,16 +3,19 @@ name: create_floor
 display_name: Create Floor
 description: Create a rectangular floor slab of a named floor type on a level, from an
   origin corner and a width/length.
+  Use offset for the height above the level (mm) and structural for a structural slab.
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
   // Step 1: Get floor type by name
-  var floorType = new FilteredElementCollector(document)
+  string typeName = "{type_name}";
+  var matches = new FilteredElementCollector(document)
       .OfClass(typeof(FloorType))
       .Cast<FloorType>()
-      .FirstOrDefault(ft => ft.Name == "{type_name}");
-  if (floorType == null)
-      return new { Status = "Error", Message = "Floor type '{type_name}' not found" };
+      .Where(ft => ft.Name == typeName || ft.FamilyName + ": " + ft.Name == typeName).Take(2).ToList();
+  if (matches.Count != 1)
+      throw new InvalidOperationException("REFUSED: The requested floor type is missing or ambiguous. Give Family: Type.");
+  FloorType floorType = matches[0];
 
   // Step 2: Get level by name
   var level = new FilteredElementCollector(document)
@@ -20,21 +23,54 @@ code_template: |
       .Cast<Level>()
       .FirstOrDefault(l => l.Name == "{level_name}");
   if (level == null)
-      return new { Status = "Error", Message = "Level '{level_name}' not found" };
+      throw new InvalidOperationException("REFUSED: The requested level is missing.");
 
-  // Step 3: Create rectangular profile (mm -> feet)
-  double x0 = {x} / 304.8, y0 = {y} / 304.8;
-  double w = {width} / 304.8, h = {length} / 304.8;
-  var profile = new List<Curve>();
-  profile.Add(Line.CreateBound(new XYZ(x0, y0, 0), new XYZ(x0 + w, y0, 0)));
-  profile.Add(Line.CreateBound(new XYZ(x0 + w, y0, 0), new XYZ(x0 + w, y0 + h, 0)));
-  profile.Add(Line.CreateBound(new XYZ(x0 + w, y0 + h, 0), new XYZ(x0, y0 + h, 0)));
-  profile.Add(Line.CreateBound(new XYZ(x0, y0 + h, 0), new XYZ(x0, y0, 0)));
-  var curveLoop = CurveLoop.Create(profile);
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, string, double> toFeet = (label, text) =>
+  {
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
+          || double.IsInfinity(mm) || double.IsNaN(mm))
+          throw new InvalidOperationException("REFUSED: Give a finite " + label + " in mm.");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  };
+  double tolerance = document.Application.ShortCurveTolerance;
+  double z = 0;
+  var corners = new List<XYZ>();
+  double x = toFeet("X", "{x}"), y = toFeet("Y", "{y}");
+  double width = toFeet("Width", "{width}");
+  double length = toFeet("Length", "{length}");
+  corners.AddRange(new[] { new XYZ(x, y, z), new XYZ(x + width, y, z),
+      new XYZ(x + width, y + length, z), new XYZ(x, y + length, z) });
+  if (!corners.All(p => XYZ.IsWithinLengthLimits(p)))
+      throw new InvalidOperationException("REFUSED: The outline reaches outside the model's limits.");
+  var edges = new List<Curve>();
+  for (int i = 0; i < corners.Count; i++)
+  {
+      XYZ start = corners[i], end = corners[(i + 1) % corners.Count];
+      if (start.DistanceTo(end) <= tolerance)
+          throw new InvalidOperationException("REFUSED: Two consecutive vertices are too close together.");
+      edges.Add(Line.CreateBound(start, end));
+  }
 
   // Step 4: Create floor
+  var curveLoop = CurveLoop.Create(edges);
   var floor = Floor.Create(document, new List<CurveLoop> { curveLoop },
                            floorType.Id, level.Id);
+
+  if (bool.Parse("{structural}"))
+  {
+      Parameter structural = floor.get_Parameter(BuiltInParameter.FLOOR_PARAM_IS_STRUCTURAL);
+      if (structural == null || structural.IsReadOnly || !structural.Set(1))
+          throw new InvalidOperationException("REFUSED: The floor cannot be marked structural.");
+  }
+  double offsetFeet = toFeet("Offset", "{offset}");
+  if (offsetFeet != 0)
+  {
+      Parameter offset = floor.get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM);
+      if (offset == null || offset.IsReadOnly || !offset.Set(offsetFeet))
+          throw new InvalidOperationException("REFUSED: The floor offset cannot be set.");
+  }
 
   return new { ElementId = floor.Id.Value, Status = "Created",
                FloorType = floorType.Name, Level = level.Name };
@@ -75,12 +111,26 @@ parameters:
     unit: mm
     source: designer
     required: true
+  - name: offset
+    type: double
+    description: "Vertical offset from the level (mm)."
+    unit: mm
+    source: designer
+    required: false
+    default: 0
+  - name: structural
+    type: bool
+    description: "Mark the floor as structural."
+    source: designer
+    required: false
+    default: false
 preconditions:
   - kind: levels_min
     value: 1
   - kind: category_present
     category: OST_Floors
 not_for:
+  - "polygonal floor specified by vertices"
   - "roof"
   - "ceiling"
   - "sloped floor"
