@@ -538,9 +538,9 @@ def test_every_character_that_ends_a_csharp_literal_or_line_is_escaped(tmp_path)
     assert code.startswith('string levelName = "x\\r\\na\\u0085b\\u2028c\\u2029d\\0\\ud800";')
 
 
-def test_every_built_in_fixture_renders_as_before():
+def test_every_built_in_fixture_renders_as_before(tmp_path):
     """Known-good values are written as they always were: a number with str(), a plain string as is."""
-    store = ToolStore()
+    store = ToolStore(user_dir=tmp_path / "user")
     rendered = 0
     for tool in store.list_tools():
         for fixture in tool.fixtures:
@@ -552,7 +552,7 @@ def test_every_built_in_fixture_renders_as_before():
                 expected = expected.replace("{" + key + "}", str(value))
             assert code == expected, tool.name
             rendered += 1
-    assert rendered >= 25 + 12            # previous fixtures plus one for every new pack
+    assert rendered == 62
 
 
 def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):

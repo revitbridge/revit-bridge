@@ -185,7 +185,7 @@ parameters:
     required: true
   - name: sill_height
     type: double
-    description: Sill height above the wall's base level (mm)
+    description: Sill height above the placement level (mm)
     unit: mm
     source: designer
     required: true

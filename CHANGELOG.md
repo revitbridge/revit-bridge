@@ -6,7 +6,9 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
-### Added
+### Modeling tools
+
+#### Added
 
 - Inspect model instances with `list_elements`, `get_element_geometry` and
   `get_element_parameters`. The parameter listing includes raw and formatted values.
@@ -22,7 +24,7 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   each instance. `delete_elements` checks the supplied IDs and reports auxiliary
   elements removed by Revit.
 
-### Changed
+#### Changed
 
 - Existing modelling tools retain their 0.9.1 required parameters and defaults.
   A wall's top-level constraint takes precedence over its unconnected height.
@@ -31,7 +33,7 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   creation now produces a `REFUSED` result where those tools previously returned
   `Status="Error"`.
 
-### Fixed
+#### Fixed
 
 - Parameter read-back compares element IDs as 64-bit integers. Adjacent IDs
   above the exact precision of a floating-point number are now distinguished.
