@@ -543,7 +543,7 @@ def test_every_character_that_ends_a_csharp_literal_or_line_is_escaped(tmp_path)
 
 
 def test_every_built_in_fixture_renders_as_before(tmp_path):
-    """Known-good values are written as they always were: a number with str(), a plain string as is."""
+    """Check the rendered text, including C# literal escaping for the Windows path fixtures."""
     store = ToolStore(user_dir=tmp_path / "user")
     rendered = 0
     for tool in store.list_tools():
@@ -553,10 +553,11 @@ def test_every_built_in_fixture_renders_as_before(tmp_path):
             assert errors == [], (tool.name, errors)
             expected = tool.code_template
             for key, value in store.validate_params(tool.name, params)[2].items():
-                expected = expected.replace("{" + key + "}", str(value))
+                text = json.dumps(value, ensure_ascii=False)[1:-1] if isinstance(value, str) else str(value)
+                expected = expected.replace("{" + key + "}", text)
             assert code == expected, tool.name
             rendered += 1
-    assert rendered == 91
+    assert rendered == 97
 
 
 def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):
