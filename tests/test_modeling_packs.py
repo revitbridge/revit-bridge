@@ -26,6 +26,18 @@ def test_type_id_readback_distinguishes_adjacent_64_bit_ids():
     assert _compare(row, type_id - 1, tolerance=1)[0]
 
 
+def test_list_elements_limits_attempted_rows_even_when_every_read_fails(tmp_path):
+    store = ToolStore(user_dir=tmp_path / "user")
+    code, errors = store.render("list_elements", {"category": "OST_Walls", "limit": 1})
+    assert not errors and code
+    scan = code.index("while (items.Count + skipped.Count < limit && ids.MoveNext())")
+    read = code.index("document.GetElement(id)", scan)
+    skip = code.index("skipped.Add(new { Id = id.Value", read)
+    lookahead = code.index("truncated = items.Count + skipped.Count == limit && ids.MoveNext();", skip)
+    assert code[scan:lookahead].count("ids.MoveNext()") == 1
+    assert "document.GetElement" not in code[lookahead:]
+
+
 @pytest.mark.parametrize("name", MODELING)
 def test_every_modeling_fixture_renders_and_passes_review(name, tmp_path):
     store = ToolStore(user_dir=tmp_path / "user")

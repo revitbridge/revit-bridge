@@ -33,7 +33,6 @@ code_template: |
   }
   var items = new List<object>();
   var skipped = new List<object>();
-  bool truncated = false;
   var elements = new FilteredElementCollector(document).OfCategory(category).WhereElementIsNotElementType();
   if (level != null) elements.WherePasses(new ElementLevelFilter(level.Id));
   if (types != null)
@@ -43,15 +42,24 @@ code_template: |
           ParameterFilterRuleFactory.CreateEqualsRule(typeParameter, typeId))).ToList();
       elements.WherePasses(filters.Count == 1 ? filters[0] : new LogicalOrFilter(filters));
   }
-  foreach (Element e in elements)
+  bool truncated;
+  using (var ids = elements.GetElementIdIterator())
   {
-      try
+      while (items.Count + skipped.Count < limit && ids.MoveNext())
       {
-          if (items.Count == limit) { truncated = true; break; }
-          var t = document.GetElement(e.GetTypeId()) as ElementType;
-          items.Add(new { Id = e.Id.Value, Type = t?.Name, Family = t?.FamilyName, Level = (document.GetElement(e.LevelId) as Level)?.Name });
+          ElementId id = ids.Current;
+          try
+          {
+              var e = document.GetElement(id);
+              if (e == null)
+                  throw new InvalidOperationException("Element no longer exists.");
+              var t = document.GetElement(e.GetTypeId()) as ElementType;
+              items.Add(new { Id = id.Value, Type = t?.Name, Family = t?.FamilyName, Level = (document.GetElement(e.LevelId) as Level)?.Name });
+          }
+          catch (Exception ex) { skipped.Add(new { Id = id.Value, Reason = ex.Message }); }
       }
-      catch (Exception ex) { skipped.Add(new { Id = e.Id.Value, Reason = ex.Message }); }
+      // Read at most one extra id. Its presence decides truncation without expanding it.
+      truncated = items.Count + skipped.Count == limit && ids.MoveNext();
   }
   return new { Status = "Ok", Items = items, Truncated = truncated, Skipped = skipped };
 parameters:
@@ -75,7 +83,7 @@ parameters:
     default: ""
   - name: limit
     type: integer
-    description: "Maximum returned rows (1 to 200)"
+    description: "Maximum rows examined, including skipped instances (1 to 200)"
     source: default
     required: false
     default: 50
@@ -94,6 +102,9 @@ fixtures:
   - name: walls
     params: {category: OST_Walls}
     expect: {Status: Ok}
+  - name: one_of_several_walls
+    params: {category: OST_Walls, limit: 1}
+    expect: {Status: Ok, Truncated: true}
 approved_by: null
 approved_at: null
 created_at: "2026-11-25T00:00:00"
