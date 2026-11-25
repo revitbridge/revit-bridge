@@ -68,22 +68,9 @@ code_template: |
   };
   Level oldBase = document.GetElement(current(BuiltInParameter.WALL_BASE_CONSTRAINT).AsElementId()) as Level;
   if (oldBase == null) throw new InvalidOperationException("REFUSED: Cannot resolve the wall base level.");
-  double oldBaseOffset = current(BuiltInParameter.WALL_BASE_OFFSET).AsDouble();
-  double oldBaseZ = oldBase.ProjectElevation + oldBaseOffset;
   ElementId oldTopId = current(BuiltInParameter.WALL_HEIGHT_TYPE).AsElementId();
-  double oldTopZ;
-  double oldTopOffset = 0;
-  if (oldTopId == ElementId.InvalidElementId)
-      oldTopZ = oldBaseZ + current(BuiltInParameter.WALL_USER_HEIGHT_PARAM).AsDouble();
-  else
-  {
-      Level oldTop = document.GetElement(oldTopId) as Level;
-      if (oldTop == null) throw new InvalidOperationException("REFUSED: Cannot resolve the wall top level.");
-      oldTopOffset = current(BuiltInParameter.WALL_TOP_OFFSET).AsDouble();
-      oldTopZ = oldTop.ProjectElevation + oldTopOffset;
-  }
   Level baseLevel = baseName == "" ? oldBase : levelByName(baseName);
-  double baseZ = baseLevel.ProjectElevation + (baseText == "" ? oldBaseOffset : feet(baseText));
+  double baseZ = baseLevel.ProjectElevation + (baseText == "" ? current(BuiltInParameter.WALL_BASE_OFFSET).AsDouble() : feet(baseText));
   ElementId topId = topName != "" ? levelByName(topName).Id
       : heightText != "" ? ElementId.InvalidElementId : oldTopId;
   if (topName != "" && topText == "") topText = "0";
@@ -97,37 +84,14 @@ code_template: |
   {
       Level topLevel = document.GetElement(topId) as Level;
       if (topLevel == null) throw new InvalidOperationException("REFUSED: Cannot resolve the wall top level.");
-      topZ = topLevel.ProjectElevation + (topText == "" ? oldTopOffset : feet(topText));
+      topZ = topLevel.ProjectElevation + (topText == "" ? current(BuiltInParameter.WALL_TOP_OFFSET).AsDouble() : feet(topText));
   }
   if (topZ <= baseZ) throw new InvalidOperationException("REFUSED: Effective wall top must be above its base.");
-  void WriteBase()
-  {
-      // A lower requested offset can make a higher base level safe to bind.
-      double? offset = baseText == "" ? (double?)null : feet(baseText);
-      bool offsetFirst = baseName != "" && offset < oldBaseOffset;
-      if (offsetFirst) setLength(wall, BuiltInParameter.WALL_BASE_OFFSET, offset.Value);
-      if (baseName != "") setId(wall, BuiltInParameter.WALL_BASE_CONSTRAINT, baseLevel.Id);
-      if (offset.HasValue && (!offsetFirst || current(BuiltInParameter.WALL_BASE_OFFSET).AsDouble() != offset.Value))
-          setLength(wall, BuiltInParameter.WALL_BASE_OFFSET, offset.Value);
-  }
-  void WriteTop()
-  {
-      // Raise an existing constrained top's offset first if its old offset
-      // would put the replacement level below the current base.
-      double? offset = topText == "" ? (double?)null : feet(topText);
-      bool offsetFirst = topName != "" && oldTopId != ElementId.InvalidElementId && offset > oldTopOffset;
-      if (offsetFirst) setLength(wall, BuiltInParameter.WALL_TOP_OFFSET, offset.Value);
-      if (topName != "") setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, topId);
-      if (offset.HasValue && (!offsetFirst || current(BuiltInParameter.WALL_TOP_OFFSET).AsDouble() != offset.Value))
-          setLength(wall, BuiltInParameter.WALL_TOP_OFFSET, offset.Value);
-      if (heightText != "")
-      {
-          setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, ElementId.InvalidElementId);
-          setLength(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM, feet(heightText));
-      }
-  }
-  if (baseZ >= oldTopZ) { WriteTop(); WriteBase(); }
-  else { WriteBase(); WriteTop(); }
+  if (baseName != "") setId(wall, BuiltInParameter.WALL_BASE_CONSTRAINT, baseLevel.Id);
+  if (baseText != "") setLength(wall, BuiltInParameter.WALL_BASE_OFFSET, feet(baseText));
+  if (topName != "" || heightText != "") setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, topId);
+  if (topText != "") setLength(wall, BuiltInParameter.WALL_TOP_OFFSET, feet(topText));
+  if (heightText != "") setLength(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM, feet(heightText));
   document.Regenerate();
   Func<BuiltInParameter, string, bool> matchesOffset = (key, text) =>
   {

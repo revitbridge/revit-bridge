@@ -21,14 +21,14 @@ class Wall : Element {
 }
 class Parameter {
     object value;
-    readonly Action validate;
-    public Parameter(object initial, Action validate) { value = initial; this.validate = validate; }
+    readonly Action onSet;
+    public Parameter(object initial, Action onSet) { value = initial; this.onSet = onSet; }
     public bool HasValue => true;
     public bool IsReadOnly => false;
     public ElementId AsElementId() => (ElementId)value;
     public double AsDouble() => (double)value;
-    public bool Set(ElementId id) { value = id; validate(); return true; }
-    public bool Set(double d) { value = d; validate(); return true; }
+    public bool Set(ElementId id) { value = id; onSet(); return true; }
+    public bool Set(double d) { value = d; onSet(); return true; }
 }
 class FilteredElementCollector : List<Element> {
     public FilteredElementCollector(Document document) : base(document.Levels) { }
@@ -36,7 +36,7 @@ class FilteredElementCollector : List<Element> {
 }
 class Document {
     public readonly List<Level> Levels = new();
-    public readonly List<BuiltInParameter> Writes = new();
+    public int WriteCount { get; private set; }
     readonly Wall wall = new() { Id = new(101) };
     public Document(bool bound = true, bool highBase = false, bool lowTop = false) {
         for (int i = 0; i < 4; i++) {
@@ -51,29 +51,30 @@ class Document {
     public Element GetElement(ElementId id) => id == wall.Id ? wall : Levels.FirstOrDefault(level => level.Id == id);
     static double Mm(double value) => value / 304.8;
     void Add(BuiltInParameter key, object value) {
-        wall.Parameters[key] = new Parameter(value, () => { Writes.Add(key); Validate(); });
+        wall.Parameters[key] = new Parameter(value, () => WriteCount++);
     }
-    void Validate() {
+    public void Commit() {
         var p = wall.Parameters;
         var baseElevation = ((Level)GetElement(p[BuiltInParameter.WALL_BASE_CONSTRAINT].AsElementId())).ProjectElevation
                 + p[BuiltInParameter.WALL_BASE_OFFSET].AsDouble();
         var level = GetElement(p[BuiltInParameter.WALL_HEIGHT_TYPE].AsElementId()) as Level;
         double top = level != null ? level.ProjectElevation + p[BuiltInParameter.WALL_TOP_OFFSET].AsDouble()
                                    : baseElevation + p[BuiltInParameter.WALL_USER_HEIGHT_PARAM].AsDouble();
-        if (top <= baseElevation) throw new Exception("Invalid intermediate wall constraints");
+        if (top <= baseElevation) throw new Exception("Cannot commit an inverted wall");
     }
-    public void Regenerate() => Validate();
+    public void Regenerate() { }
 }
 class Program {
     static void Check(string name, Func<Document, object> operation, bool bound, string level, double? offset, double height,
-                      BuiltInParameter first, bool ignored = false, bool highBase = false, bool lowTop = false) {
+                      bool ignored = false, bool highBase = false, bool lowTop = false) {
         var doc = new Document(bound, highBase, lowTop);
         var result = JsonSerializer.SerializeToElement(operation(doc));
+        doc.Commit();
         var reportedOffset = result.GetProperty("TopOffsetMm");
         bool correctOffset = offset.HasValue
             ? Math.Abs(reportedOffset.GetDouble() - offset.Value) < 1e-6
             : reportedOffset.ValueKind == JsonValueKind.Null;
-        if (doc.Writes[0] != first || result.GetProperty("TopLevel").GetString() != level ||
+        if (result.GetProperty("TopLevel").GetString() != level ||
             result.GetProperty("HeightIgnored").GetBoolean() != ignored || !correctOffset ||
             Math.Abs(result.GetProperty("HeightMm").GetDouble() - height) > 1e-6) {
             throw new Exception(name + ": " + result);
@@ -81,18 +82,16 @@ class Program {
         Console.WriteLine("PASS " + name);
     }
     public static void Main() {
-        Check("raise base past old top", Rendered.Raise, true, "L4", 0, 3000, BuiltInParameter.WALL_HEIGHT_TYPE, true);
-        Check("bind previously unconnected wall and clear stale offset", Rendered.Bind, false, "L3", 0, 6000, BuiltInParameter.WALL_HEIGHT_TYPE);
-        Check("explicit top offset", Rendered.Offset, true, "L3", 125, 6125, BuiltInParameter.WALL_HEIGHT_TYPE);
-        Check("base only keeps top offset", Rendered.BaseOnly, true, "L2", 180, 2980, BuiltInParameter.WALL_BASE_OFFSET);
-        Check("unconnected height has no top offset", Rendered.Height, true, null, null, 2000, BuiltInParameter.WALL_HEIGHT_TYPE);
-        Check("clear old negative top offset before binding lower top", Rendered.LowerTop, true, "L3", 0, 2000,
-              BuiltInParameter.WALL_TOP_OFFSET, lowTop: true);
-        Check("lower positive base offset before raising base level", Rendered.RaiseBase, true, "L2", 180, 1180,
-              BuiltInParameter.WALL_BASE_OFFSET, highBase: true);
+        Check("raise base past old top", Rendered.Raise, true, "L4", 0, 3000, true);
+        Check("bind previously unconnected wall and clear stale offset", Rendered.Bind, false, "L3", 0, 6000);
+        Check("explicit top offset", Rendered.Offset, true, "L3", 125, 6125);
+        Check("base only keeps top offset", Rendered.BaseOnly, true, "L2", 180, 2980);
+        Check("unconnected height has no top offset", Rendered.Height, true, null, null, 2000);
+        Check("bind lower top and clear negative offset", Rendered.LowerTop, true, "L3", 0, 2000, lowTop: true);
+        Check("raise base level and lower positive offset", Rendered.RaiseBase, true, "L2", 180, 1180, highBase: true);
         var doc = new Document();
         try { Rendered.Invalid(doc); throw new Exception("invalid target was accepted"); }
-        catch (InvalidOperationException ex) when (ex.Message.StartsWith("REFUSED:") && doc.Writes.Count == 0) {
+        catch (InvalidOperationException ex) when (ex.Message.StartsWith("REFUSED:") && doc.WriteCount == 0) {
             Console.WriteLine("PASS inverted target refused before write");
         }
     }

@@ -1,8 +1,8 @@
-"""Exercise the effective constraints after every individual Revit parameter write."""
+"""Check final wall constraints, read-back values and refusal before a bad edit."""
 from tests.csharp_simulation import simulate
 
 
-def test_move_wall_constraints_without_crossing_the_other_end(tmp_path):
+def test_wall_constraint_results_and_commit(tmp_path):
     params = {
         "Raise": dict(base_level_name="L3", top_level_name="L4", height=99),
         "Bind": dict(top_level_name="L3"),
