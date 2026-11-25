@@ -29,19 +29,19 @@ writing a message (section 2.4 of the hostv2 plan):
     ``Designer's selections (picked in the host, verified against the model):
     level "F2" (id 312, 3000 mm).``
 
-Every read goes through ``run_query`` / the query executor, so the add-in's
-``list_model_items`` is used when it offers it and the old paths otherwise;
-both give the same candidates for the same model, and a type offered on one
-path is resolved on the same path.
+Levels, links and types use the query executor's supported add-in or legacy
+path. Element selection and document identity use fixed, read-only queries.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import unicodedata
 
+from revit_bridge import mention_cache
 from revit_bridge.mention_elements import SELECTION_LIMIT, items_by_id, selected_items
-from revit_bridge.mention_search import category_terms, facets, rank_items
+from revit_bridge.mention_search import category_terms, facets, rank_items, search_terms
 from revit_bridge.snapshot.query import (
     CATEGORY_RE,
     MAX_QUERY_LIMIT,
@@ -153,7 +153,7 @@ def _limit(limit) -> int:
 
 async def mention_candidates(executor: RevitQueryExecutor, kind: str, category: str | None = None,
                              q: str | None = None, limit: int | None = DEFAULT_MENTION_LIMIT,
-                             offset: int = 0, source: str | None = None) -> dict:
+                             offset: int | None = 0, source: str | None = None) -> dict:
     """What the designer can pick for ``@<kind>``: ``{kind, items, total, truncated}`` (see the module)."""
     if kind not in MENTION_KINDS:
         return {"error": "unknown_kind", "kind": kind, "kinds": list(MENTION_KINDS)}
@@ -161,6 +161,8 @@ async def mention_candidates(executor: RevitQueryExecutor, kind: str, category: 
         return {"error": "invalid_args", "kind": kind, "message": "q must be a string"}
     if (kind == "element" and source != "selection") or (kind != "element" and source is not None):
         return {"error": "invalid_args", "kind": kind, "message": "only element takes source=selection"}
+    if offset is None:
+        offset = 0
     if int_or_none(offset) is None or int(offset) < 0:
         return {"error": "invalid_args", "kind": kind, "message": "offset must be a non-negative integer"}
     offset = int(offset)
@@ -170,18 +172,21 @@ async def mention_candidates(executor: RevitQueryExecutor, kind: str, category: 
                 "message": f"invalid category {category!r}: only type takes one, an OST_* name"}
     limit = _limit(limit)
 
-    terms = (q or "").casefold().split()
+    try:
+        terms = search_terms(q or "")
+    except ValueError as exc:
+        return {"error": "invalid_args", "kind": kind, "message": str(exc)}
     matched, remaining = category_terms(terms) if kind == "type" else (None, terms)
     category = category and category.strip()
     if kind == "element":
         limit = min(limit, SELECTION_LIMIT)
         try:
-            items, warnings = await selected_items(executor, offset, limit, bool(terms))
+            return await selected_items(executor, offset, limit, terms)
         except RevitQueryError as exc:
             return {"error": "revit_error", "kind": kind, "message": str(exc)}
-        reply = {"warnings": warnings}
     elif kind == "type":
-        reply = await _type_candidates(executor, category, matched, bool(terms))
+        scope = await mention_cache.request_scope(executor.client)
+        reply = await _type_candidates(executor, scope, category, matched, bool(terms))
         if "error" in reply:
             return reply
         items = reply["items"]
@@ -191,26 +196,62 @@ async def mention_candidates(executor: RevitQueryExecutor, kind: str, category: 
             return dict(reply, kind=kind)
         convert = _level_item if kind == "level" else _link_item
         items = [item for row in reply["items"] if (item := convert(row)) is not None]
-    items = rank_items(items, remaining, name_only=matched is not None)
-    if matched is not None and not remaining:
+    if remaining:
+        items = await asyncio.to_thread(rank_items, items, remaining, name_and_family_only=matched is not None)
+    elif matched is not None:
         items.sort(key=lambda item: ((item["name"] or "").casefold(), item["id"]))
-    out = {"kind": kind, "items": items[offset:offset + limit], "total": len(items),
+    out = {"kind": kind, "items": [dict(i) for i in items[offset:offset + limit]], "total": len(items),
            "truncated": len(items) > offset + limit or reply.get("truncated") is True,
            "offset": offset, "category_matched": sorted(matched or ()),
            "facets": reply["facets"] if "facets" in reply else facets(items)}
     if reply.get("warnings"):
         out["warnings"] = list(reply["warnings"])      # rows the add-in could not read: said, not dropped
+    if kind == "type" and scope != mention_cache.device_scope(executor.client):
+        return {"error": "revit_error", "kind": kind, "message": "The device connection changed; pick the type again."}
     return out
 
 
-async def _type_candidates(executor, category, matched, searching):
+async def _type_candidates(executor, scope, category, matched, searching):
     """Fetch only the necessary categories, preserving category navigation on an empty query."""
+    try:
+        stamp = await mention_cache.document_stamp(executor.client, scope)
+        inventory = mention_cache.inventories(stamp) if stamp else {}
+        additions = {}
+        if stamp and stamp.modified and not category and searching:
+            data = await mention_cache.read_unsaved_types(executor, matched)
+            items = [item for row in data["rows"] if isinstance(row, dict) and (item := _type_item(
+                row.get("id"), row.get("family"), row.get("name"), row.get("shown"), row.get("category")))]
+            reply = {"items": items, "warnings": data.get("warnings", []), "truncated": data.get("truncated", False)}
+        else:
+            reply = await _type_inventory(executor, category, matched, searching, inventory, additions)
+        if stamp and (additions or stamp.modified):
+            current = await mention_cache.document_stamp(executor.client, scope)
+            if current != stamp:
+                if current:
+                    mention_cache.inventories(current)
+                raise RevitQueryError("The active document changed; pick the type again.")
+            if not stamp.modified:
+                mention_cache.publish(inventory, additions)
+        return reply
+    except ValueError as exc:
+        return {"error": "invalid_args", "kind": "type", "message": str(exc)}
+    except ModelItemsError as exc:
+        return exc.reply("type")
+    except RevitQueryError as exc:
+        return {"error": "revit_error", "kind": "type", "message": str(exc)}
+
+
+async def _type_inventory(executor, category, matched, searching, inventory, additions):
     warnings = []
     truncated = False
     if category:
         categories = [category]
     else:
-        reply = await run_query(executor, "type_categories")
+        reply = mention_cache.cached(inventory, None)
+        if reply is None:
+            reply = await run_query(executor, "type_categories")
+            if not any(reply.get(k) for k in ("error", "warnings", "truncated")):
+                additions[None] = mention_cache.pending(reply)
         if "error" in reply:
             return dict(reply, kind="type")
         warnings.extend(reply.get("warnings", []))
@@ -222,24 +263,27 @@ async def _type_candidates(executor, category, matched, searching):
                                 "count": r["count"]} for r in rows]}
         categories = [r["category"] for r in rows]
     items = []
-    try:
-        for key in categories:
-            if matched is not None and key not in matched:
+    for key in categories:
+        if matched is not None and key not in matched:
+            continue
+        rows = mention_cache.cached(inventory, key)
+        if rows is None:
+            try:
+                data = await executor.get_type_rows(key)
+            except (ValueError, RevitQueryError) as exc:
+                if category:
+                    raise
+                warnings.append(f"{key}: {exc}")
+                warnings.extend(getattr(exc, "warnings", []))
+                truncated = True
                 continue
-            data = await executor.get_type_rows(key)
             warnings.extend(data.warnings)
             truncated = truncated or data.truncated is True
-            for row in data.rows:
-                item = _type_item(row.get("FamilyTypeId"), row.get("FamilyName"), _type_name(row),
-                                  row.get("Category"), key)
-                if item is not None:
-                    items.append(item)
-    except ValueError as exc:
-        return {"error": "invalid_args", "kind": "type", "message": str(exc)}
-    except ModelItemsError as exc:
-        return exc.reply("type")
-    except RevitQueryError as exc:
-        return {"error": "revit_error", "kind": "type", "message": str(exc)}
+            rows = [item for row in data.rows if (item := _type_item(
+                row.get("FamilyTypeId"), row.get("FamilyName"), _type_name(row), row.get("Category"), key))]
+            if not data.truncated and not data.warnings:
+                additions[key] = mention_cache.pending(rows)
+        items.extend(rows)
     return {"items": items, "warnings": warnings, "truncated": truncated}
 
 

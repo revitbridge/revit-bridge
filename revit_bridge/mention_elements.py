@@ -1,30 +1,44 @@
 """Fixed, read-only queries for picking elements and rechecking their ids."""
+import asyncio
+
+from revit_bridge.mention_search import facets, rank_items
 from revit_bridge.snapshot.query import RevitQueryError, element_id_or_none
 
 SELECTION_LIMIT = 50
 
-# Each callback reads at most SELECTION_LIMIT elements. The older dedicated
-# get_selected_elements command materializes *every* element before applying
-# its limit and returns neither the total nor the type or level.
+# The index carries only the fields needed for facets and ranking. Cache
+# repeated category/type reads within this callback. Only the requested page
+# goes on to read levels and curves. Yield control on an unusually slow scan.
 _READ = """
 var items = new List<object>();
 var warnings = new List<string>();
+var categories = new Dictionary<ElementId, string[]>();
+var types = new Dictionary<ElementId, string[]>();
 foreach (ElementId id in ids) {
+    if (!details && timer.ElapsedMilliseconds >= 200)
+        throw new InvalidOperationException("Selection read took too long. Select fewer elements and try again.");
     Element e = document.GetElement(id);
     if (e == null) continue;
     string name = null, family = null, category = null, shown = null, level = null;
     double? length = null;
-    if (details) try {
-        ElementType type = e as ElementType ?? document.GetElement(e.GetTypeId()) as ElementType;
-        if (type != null) { name = type.Name; family = type.FamilyName; }
+    if (names) try {
+        ElementId typeId = e is ElementType ? id : e.GetTypeId();
+        if (!types.TryGetValue(typeId, out var pair)) {
+            ElementType type = e as ElementType ?? document.GetElement(typeId) as ElementType;
+            types[typeId] = pair = new string[] {type?.Name, type?.FamilyName};
+        }
+        name = pair[0]; family = pair[1];
     } catch (Exception ex) { warnings.Add(id + " type: " + ex.Message); }
     try {
         Category cat = e.Category;
         if (cat != null) {
-            shown = cat.Name;
-            int value;
-            if (int.TryParse(cat.Id.ToString(), out value))
-                category = Enum.GetName(typeof(BuiltInCategory), (BuiltInCategory)value);
+            if (!categories.TryGetValue(cat.Id, out var pair)) {
+                int value;
+                string key = int.TryParse(cat.Id.ToString(), out value)
+                    ? Enum.GetName(typeof(BuiltInCategory), (BuiltInCategory)value) : null;
+                categories[cat.Id] = pair = new string[] {key, cat.Name};
+            }
+            category = pair[0]; shown = pair[1];
         }
     } catch (Exception ex) { warnings.Add(id + " category: " + ex.Message); }
     if (details) try { level = document.GetElement(e.LevelId)?.Name; }
@@ -33,15 +47,28 @@ foreach (ElementId id in ids) {
         LocationCurve line = e.Location as LocationCurve;
         if (line?.Curve != null) length = line.Curve.Length * 304.8;
     } catch (Exception ex) { warnings.Add(id + " length: " + ex.Message); }
-    items.Add(new { id = id.ToString(), name, family, category, shown, level, length });
+    if (details) items.Add(new { id = id.ToString(), name, family, category, shown, level, length });
+    else if (names) items.Add(new { id = id.ToString(), name, family, category, shown });
+    else items.Add(new { id = id.ToString(), category, shown });
 }
-return new { items, warnings };
+return new { view, items, warnings };
 """
 
-_VIEW = 'string view = document.GetHashCode().ToString() + ":" + document.ActiveView.UniqueId;\n'
-_SELECTION = _VIEW + """
-var ids = new UIDocument(document).Selection.GetElementIds();
-return new { view, ids = ids.Select(id => id.ToString()).ToList() };
+_VIEW = """
+string viewId = document.ActiveView?.UniqueId;
+if (viewId == null) throw new InvalidOperationException("No active view.");
+string view = document.GetHashCode().ToString() + ":" + viewId;
+"""
+_TIMER = "var timer = System.Diagnostics.Stopwatch.StartNew();\n"
+_SELECTED_IDS = "var ids = new UIDocument(document).Selection.GetElementIds();\n"
+_MEMBERSHIP = _VIEW + _TIMER + _SELECTED_IDS + """
+var members = new List<string>(ids.Count);
+foreach (var id in ids) {
+    if (timer.ElapsedMilliseconds >= 200)
+        throw new InvalidOperationException("Selection read took too long. Select fewer elements and try again.");
+    members.Add(id.ToString());
+}
+return new { view, ids = members };
 """
 _CHANGED = "The active view or selection changed; pick the selection again."
 
@@ -75,9 +102,7 @@ def _items(rows):
 
 
 async def _selection(executor):
-    # Copy just the scalar ids of one native selection snapshot. All slicing,
-    # comparison and ranking of that snapshot take place outside Revit.
-    response = await executor.client.send_code(_SELECTION)
+    response = await executor.client.send_code(_MEMBERSHIP)
     data = response.result
     if (not response.success or not isinstance(data, dict) or not isinstance(data.get("ids"), list)
             or not isinstance(data.get("view"), str)):
@@ -88,40 +113,43 @@ async def _selection(executor):
     return data["view"], ids
 
 
-async def _by_ids(executor, numbers, *, details=True, view=None):
+async def _by_ids(executor, numbers, *, view=None):
     constructors = ", ".join(f"new ElementId({n})" for n in numbers)
     prelude = (_VIEW + 'if (view != (string)parameters[0]) throw new InvalidOperationException("The active view changed.");\n'
-               if view is not None else "")
-    page = await _read(executor, prelude + f"""
+               if view is not None else "string view = null;\n")
+    page = await _read(executor, prelude + _TIMER + f"""
 #pragma warning disable 618
 var ids = new ElementId[] {{ {constructors} }};
 #pragma warning restore 618
-bool details = {str(details).lower()};
+bool names = true, details = true;
 """, [view] if view is not None else [])
     return _items(page["items"]), page.get("warnings") or []
 
 
-async def selected_items(executor, offset, limit, searching):
-    """Read the requested detail page and count categories across the complete snapshot."""
-    view, ids = await _selection(executor)
-    items, warnings = [], []
-    # Searching needs all names for ranking. Otherwise only the actual page
-    # needs a type, level and location curve; the other ids are for facets.
-    groups = [(ids, True)] if searching else [
-        (ids[:offset], False), (ids[offset:offset + limit], True), (ids[offset + limit:], False)]
-    for group, details in groups:
-        for start in range(0, len(group), SELECTION_LIMIT):
-            batch = group[start:start + SELECTION_LIMIT]
-            rows, notes = await _by_ids(executor, batch, view=view, details=details)
-            if len(rows) != len(batch):
-                raise RevitQueryError(_CHANGED)
-            items.extend(rows)
-            warnings.extend(notes)
-    if ids:
-        last_view, last_ids = await _selection(executor)
-        if view != last_view or set(ids) != set(last_ids):
+async def selected_items(executor, offset, limit, terms):
+    """One lightweight index, at most one detail page, then verify the live selection."""
+    prelude = _VIEW + _TIMER + _SELECTED_IDS + f"bool names = {str(bool(terms)).lower()}, details = false;\n"
+    index = await _read(executor, prelude)
+    view = index.get("view")
+    items = _items(index["items"])
+    members = {item["id"] for item in items}
+    if not isinstance(view, str) or len(members) != len(index["items"]):
+        raise RevitQueryError("Invalid selection index")
+    ranked = await asyncio.to_thread(rank_items, items, terms) if terms else items
+    page_ids = [item["id"] for item in ranked[offset:offset + limit]]
+    warnings = list(index.get("warnings") or [])
+    rows = []
+    if page_ids:
+        rows, notes = await _by_ids(executor, page_ids, view=view)
+        if [item["id"] for item in rows] != page_ids:
             raise RevitQueryError(_CHANGED)
-    return items, warnings
+        warnings.extend(notes)
+    last_view, last_ids = await _selection(executor)
+    if view != last_view or members != set(last_ids):
+        raise RevitQueryError(_CHANGED)
+    return {"kind": "element", "items": rows, "offset": offset, "total": len(ranked),
+            "truncated": len(ranked) > offset + limit, "category_matched": [], "facets": facets(ranked),
+            **({"warnings": list(dict.fromkeys(warnings))} if warnings else {})}
 
 
 async def items_by_id(executor, ids):

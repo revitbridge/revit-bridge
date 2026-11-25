@@ -219,6 +219,8 @@ class FakeModel:
                  advertise_only: bool = False, honour_ids: bool = True, fail: str | None = None,
                  warnings: list[str] | None = None):
         self.model = copy.deepcopy(model or DEFAULT_MODEL)
+        self.document_stamp = "open document 1"
+        self.document_modified = False
         self.list_model_items = list_model_items
         self.capabilities = capabilities
         self.advertise_only = advertise_only
@@ -328,6 +330,8 @@ class FakeModel:
 
     def _send_code(self, rid, code: str):
         doc = self.model
+        if "Document.GetDocumentVersion(document)" in code:
+            return FakeRevit.code_result(rid, {"document": self.document_stamp, "modified": self.document_modified})
         linked = re.search(r"l\.Id\.Value == (\d+)\);", code)
         if linked and "LinkError" in code:
             link_id = int(linked.group(1))

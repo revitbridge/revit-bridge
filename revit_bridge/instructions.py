@@ -435,7 +435,8 @@ def host_instructions(role: str | None = None, code: bool = True, mentions: bool
     report, fix?, question?}``). ``mentions`` does not apply to a role;
     ``code`` does.
 
-    The selections rule (section 2.4 as amended): value the name, evidence
+    The selections rule uses the decimal id string for an element and the
+    name for a level, type or link. Each pick carries evidence
     ``mention:<kind>#<id>``, source tool when the pack parameter has
     ``choices_from`` or a ``tool:*`` source, else designer; never asked again.
     """

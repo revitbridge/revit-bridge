@@ -6,6 +6,23 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Hosts can page through selected elements with `mention_candidates(kind="element", source="selection")`,
+  resolve the picked ids against the active document, and include them in the designer's selections.
+  Search results include category counts and support an offset.
+
+### Changed
+
+- `mention_candidates(kind="type", q="...")` without a category now returns matching **types**.
+  An empty query still returns categories for navigation. Upgrade the web host to its V2 picker
+  together with this package. The previous picker only accepts category rows in this state, so
+  it displays the returned types as unselectable.
+- Mention search splits Chinese and non-Chinese text into distinct terms. It ranks exact,
+  prefix, word-start, substring and fuzzy matches in that order. Fuzzy matching uses name
+  and family words. Decimal terms only use the first four ranks. Category aliases can
+  narrow the search before the remaining terms match names and families.
+
 ## [0.9.1] - 2026-11-23
 
 Fourteen basic capability packs, and a way for any pack to refuse its input

@@ -6,6 +6,17 @@ from importlib.resources import files
 
 ALIASES = json.loads(files(__package__).joinpath("mention_aliases.json").read_text(encoding="utf-8"))
 _WORDS = re.compile(r"[^\W_]+")
+_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\u3400-\u9fff\s]+")
+MAX_TERMS = 8
+
+
+def search_terms(query):
+    terms = {}
+    for match in _TERMS.finditer(query.casefold()):
+        terms[match.group()] = None
+        if len(terms) > MAX_TERMS:
+            raise ValueError(f"q accepts at most {MAX_TERMS} distinct terms")
+    return list(terms)
 
 
 def category_terms(terms):
@@ -15,7 +26,8 @@ def category_terms(terms):
     for term in terms:
         categories = set()
         if len(term) >= 3 or any("\u3400" <= c <= "\u9fff" for c in term):
-            categories = {key for key, aliases in ALIASES.items() if any(a.startswith(term) for a in aliases)}
+            categories = {key for key, aliases in ALIASES.items() if any(
+                a.startswith(term) or (a.isascii() and term in (a + "s", a + "es")) for a in aliases)}
         if categories:
             matched = categories if matched is None else matched & categories
         else:
@@ -35,7 +47,7 @@ def _near(a, b):
     return True
 
 
-def _rank(term, fields, words, *, exact_number):
+def _rank(term, fields, words, fuzzy_words):
     if term in fields:
         return 0
     if any(field.startswith(term) for field in fields):
@@ -44,33 +56,41 @@ def _rank(term, fields, words, *, exact_number):
         return 2
     if any(term in field for field in fields):
         return 3
-    if len(term) >= 3 and not (exact_number and term.isdecimal()):
-        if any(_near(term, word) for word in words):
+    if len(term) >= 3 and not term.isdecimal():
+        if any(_near(term, word) for word in fuzzy_words):
             return 4
-        for field in fields:
-            chars = iter(field)
+        for word in fuzzy_words:
+            chars = iter(word)
             if all(c in chars for c in term):
                 return 4
     return None
 
 
-def rank_items(items, terms, *, name_only=False):
+def rank_items(items, terms, *, name_and_family_only=False):
     if not terms:
         return items
     ranked = []
     for item in items:
-        fields = [item.get("name")]
-        if not name_only:
-            fields.extend([item.get("family"), item.get("category"), item.get("category_label")])
+        fields = [v.casefold() for v in (item.get("name"), item.get("family")) if v]
+        fuzzy_words = [word for field in fields for word in _WORDS.findall(field)]
+        words = fuzzy_words
+        if not name_and_family_only:
+            extra = [item.get("category"), item.get("category_label")]
             if item["kind"] == "type":
-                fields.append(item.get("detail"))
+                extra.append(item.get("detail"))
             else:
-                fields.append(item.get("label"))
-            fields.extend(ALIASES.get(item.get("category"), ()))
-        fields = [f.casefold() for f in fields if f]
-        words = [word for field in fields for word in _WORDS.findall(field)]
-        scores = [_rank(term, fields, words, exact_number=name_only) for term in terms]
-        if None not in scores:
+                extra.append(item.get("label"))
+            extra.extend(ALIASES.get(item.get("category"), ()))
+            extra = [v.casefold() for v in extra if v]
+            words = fuzzy_words + [word for field in extra for word in _WORDS.findall(field)]
+            fields.extend(extra)
+        scores = []
+        for term in terms:
+            score = _rank(term, fields, words, fuzzy_words)
+            if score is None:
+                break
+            scores.append(score)
+        else:
             key = (max(scores), sum(scores), (item.get("name") or "").casefold(), item["id"])
             ranked.append((key, item))
     return [item for _, item in sorted(ranked, key=lambda pair: pair[0])]

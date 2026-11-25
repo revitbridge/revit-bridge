@@ -13,6 +13,7 @@ from revit_bridge.mentions import (
     resolve_mentions,
 )
 from revit_bridge.revit.client import RevitClient
+from revit_bridge.revit.sandbox import review
 from revit_bridge.snapshot.query import RevitQueryError, RevitQueryExecutor
 
 from tests.fake_revit import FakeModel, FakeRevit
@@ -63,7 +64,7 @@ def test_type_without_category_lists_categories_first(path):
 
 @pytest.mark.parametrize("path", sorted(PATHS))
 def test_type_with_category_lists_its_types(path):
-    out, methods = run(PATHS[path], mention_candidates, "type", category="OST_Walls")
+    out, methods = run(FakeModel(list_model_items=path == "new"), mention_candidates, "type", category="OST_Walls")
     assert out == {"kind": "type", "total": 2, "truncated": False, "offset": 0, "category_matched": [],
                    "facets": [{"category": "OST_Walls", "label": "Walls", "count": 2}], "items": [
         {"kind": "type", "id": 401, "name": "Generic - 200mm", "label": "Basic Wall: Generic - 200mm",
@@ -72,7 +73,7 @@ def test_type_with_category_lists_its_types(path):
          "detail": "Walls", "category": "OST_Walls", "family": "Basic Wall"}]}
     # the picker uses list_model_items where it exists (the same list the old command gives, with warnings)
     expected = "list_model_items" if path == "new" else "get_available_family_types"
-    assert methods == ["get_bridge_capabilities", expected]
+    assert methods == ["send_code_to_revit", "get_bridge_capabilities", expected, "send_code_to_revit"]
     out = candidates(PATHS[path], "type", category="OST_PipeCurves")
     assert [i["id"] for i in out["items"]] == ([431] if path == "new" else [])
 
@@ -146,7 +147,9 @@ def test_bad_input_never_reaches_revit():
     for kind, kwargs in (("type", {"category": "Walls"}), ("type", {"category": "OST_Walls; x"}),
                          ("level", {"category": "OST_Walls"}), ("level", {"q": 5}), ("element", {}),
                          ("element", {"source": "all"}), ("type", {"source": "selection"}),
-                         ("type", {"offset": -1}), ("type", {"offset": "oops"})):
+                         ("type", {"offset": -1}), ("type", {"offset": "oops"}),
+                         ("type", {"q": "a b c d e f g h i"}), ("element", {"q": "a b c d e f g h 墙200",
+                                                                            "source": "selection"})):
         out, methods = run(PATHS["new"], mention_candidates, kind, **kwargs)
         assert out["error"] == "invalid_args" and out["kind"] == kind and methods == [], (kind, kwargs)
 
@@ -158,19 +161,26 @@ def picker_model():
     for category, i, name in (("OST_Columns", 611, "Round"), ("OST_StructuralColumns", 612, "Steel"),
                               ("OST_Windows", 613, "Casement"), ("OST_Walls", 614, "Brick on Mtl 200"),
                               ("OST_Doors", 615, "Wall plate 200")):
+        family = {"OST_Windows": "Window", "OST_Walls": "基本墙"}.get(category, "Example")
         types.setdefault(category, []).append({"FamilyTypeId": i, "TypeName": name,
-                                             "Category": "Local " + category[4:], "FamilyName": "Example"})
+                                             "Category": "Local " + category[4:], "FamilyName": family})
     return model
 
 
 @pytest.mark.parametrize("query,ids,matched", [
     ("wal", [614, 401, 402], ["OST_Walls"]),
+    ("walls", [614, 401, 402], ["OST_Walls"]),
+    ("wall basic", [401, 402], ["OST_Walls"]),
+    ("墙 基本", [614], ["OST_Walls"]),
+    ("墙200", [614, 401], ["OST_Walls"]),
     ("column", [611, 612], ["OST_Columns", "OST_StructuralColumns"]),
+    ("columns", [611, 612], ["OST_Columns", "OST_StructuralColumns"]),
     ("柱", [611, 612], ["OST_Columns", "OST_StructuralColumns"]),
     ("structural column", [612], ["OST_StructuralColumns"]),
     ("wal   200", [614, 401], ["OST_Walls"]),
     ("mtl", [614], []),
     ("widow", [613], []),
+    ("sal", [], []),
 ])
 def test_category_aliases_and_fuzzy_type_search(picker_model, query, ids, matched):
     result = candidates(picker_model, "type", q=query)
@@ -193,6 +203,210 @@ def test_facets_pagination_and_explicit_category_intersection(picker_model):
     assert candidates(picker_model, "type", offset=99)["items"] == []
     # A short prefix stays a search term. The incidental match in a door name is eligible.
     assert 615 in [i["id"] for i in candidates(picker_model, "type", q="wa")["items"]]
+
+
+def test_decimal_terms_do_not_match_nearby_numbers_and_fuzzy_uses_name_or_family_words():
+    from revit_bridge.mention_search import rank_items, search_terms
+
+    item = {"kind": "type", "id": 1, "name": "300", "family": "A B", "category": "OST_Walls", "detail": "900"}
+    assert rank_items([item], ["200"]) == []
+    assert rank_items([dict(item, family="Frame Basic")], ["basik"]) != []
+    assert rank_items([dict(item, name="b r k")], ["brk"]) == []
+    assert rank_items([item], ["sal"]) == []
+    assert search_terms("墙200 墙 200 200") == ["墙", "200"]
+    assert search_terms("b a C d e F f g h b") == list("bacdefgh")
+
+
+def test_first_missing_term_stops_ranking_that_row(monkeypatch):
+    from revit_bridge import mention_search
+
+    calls = []
+    def miss(term, *fields):
+        calls.append(term)
+        return None
+
+    monkeypatch.setattr(mention_search, "_rank", miss)
+    rows = [{"kind": "type", "id": i, "name": "Sample"} for i in range(5000)]
+    assert mention_search.rank_items(rows, ["missing", "another", "last"]) == []
+    assert calls == ["missing"] * 5000
+
+
+@pytest.mark.parametrize("modern", [True, False])
+def test_failed_category_is_retried_and_other_categories_stay_pickable(modern):
+    model = FakeModel(list_model_items=modern)
+    failed = ["OST_Walls"]
+
+    def handler(request):
+        params = request.get("params", {})
+        if failed and (params.get("category") == failed[0] or params.get("categoryList") == failed):
+            if modern:
+                return model._failed(request["id"], "types", "busy", "not ready")
+            return FakeRevit.error(request["id"], -32000, "not ready")
+        return model(request)
+
+    out = candidates(handler, "type", q="si")
+    assert out["items"] and out["truncated"] and "OST_Walls" in " ".join(out["warnings"])
+    assert all(i["category"] != "OST_Walls" for i in out["items"])
+    assert candidates(handler, "type", category="OST_Walls")["error"] == "revit_error"
+    failed.clear()
+    out = candidates(handler, "type", q="basic")
+    assert out["total"] == 2 and "warnings" not in out and not out["truncated"]
+
+
+def test_category_transport_error_propagates(monkeypatch):
+    async def disconnected(self, category):
+        raise ConnectionError("device disconnected")
+
+    monkeypatch.setattr(RevitQueryExecutor, "get_type_rows", disconnected)
+    with pytest.raises(ConnectionError, match="device disconnected"):
+        candidates(FakeModel(), "type", q="example")
+
+
+def test_type_inventories_survive_new_clients_and_isolate_documents_devices_and_expiry(monkeypatch):
+    from revit_bridge import mention_cache
+
+    now = [10.0]
+    monkeypatch.setattr(mention_cache, "monotonic", lambda: now[0])
+    model = FakeModel()
+    types = model.model["types"]
+    for i in range(120):
+        types[f"OST_Extra{i}"] = [dict(FamilyTypeId=2000+i, FamilyName="Extra", TypeName="Original")]
+    async def pick(executor, scope, **kwargs):
+        # The host constructs a fresh adapter and executor on each request.
+        from types import SimpleNamespace
+        client = executor.client
+        adapter = SimpleNamespace(mention_cache_scope=scope, send_code=client.send_code,
+                                  send_command=client.send_command, ensure_connected=client.ensure_connected)
+        return await mention_candidates(RevitQueryExecutor(adapter), "type", **kwargs)
+
+    device = object()
+    initial, cold = run(model, pick, device, q="original")
+    assert initial["total"] == 120 and cold.count("list_model_items") >= 120
+    initial["items"][0]["name"] = "overwritten by a host"
+    warm, methods = run(model, pick, device, q="original", offset=0)
+    assert methods == ["send_code_to_revit"] and warm["items"][0]["name"] == "Original"
+    other = FakeModel()
+    other.model["types"]["OST_Walls"][0]["TypeName"] = "Device B"
+    out, methods = run(other, pick, object(), q="device")
+    assert out["total"] == 1 and "list_model_items" in methods
+    model.document_stamp = "open document 2"
+    types["OST_Extra0"][0]["TypeName"] = "Switched"
+    out, methods = run(model, pick, device, category="OST_Extra0")
+    assert out["items"][0]["name"] == "Switched" and "list_model_items" in methods
+    model.document_stamp = "open document 1"
+    out, methods = run(model, pick, device, category="OST_Extra0")
+    assert "list_model_items" in methods
+    types["OST_Extra0"][0]["TypeName"] = "After expiry"
+    now[0] += 30
+    out, methods = run(model, pick, device, category="OST_Extra0")
+    assert out["items"][0]["name"] == "After expiry" and "list_model_items" in methods
+
+
+def test_type_inventory_is_discarded_on_document_switch_during_read():
+    model = FakeModel()
+    def switch(request):
+        if request["method"] == "list_model_items":
+            model.document_stamp = "switched"
+        return model(request)
+
+    out = candidates(switch, "type", category="OST_Walls")
+    assert out["error"] == "revit_error" and "document changed" in out["message"]
+    _, methods = run(model, mention_candidates, "type", category="OST_Walls")
+    assert "list_model_items" in methods
+
+
+@pytest.mark.parametrize("modern,advertised_only", [(True, False), (False, False), (False, True)])
+def test_continuous_unsaved_type_edits_are_visible_with_one_collector_per_keystroke(modern, advertised_only):
+    from revit_bridge.mention_cache import DIRTY_TYPES, DOCUMENT_STAMP
+
+    model = FakeModel(list_model_items=modern or advertised_only, advertise_only=advertised_only)
+    snapshots = []
+    calls = []
+    walls = model.model["types"]["OST_Walls"]
+    assert review(DIRTY_TYPES) == (True, [])
+
+    def handler(request):
+        params = request.get("params", {})
+        calls.append(params.get("code") or request["method"])
+        if params.get("code") != DIRTY_TYPES:
+            return model(request)
+        supported, *categories = params["parameters"]
+        assert supported is modern
+        snapshots.append(categories)
+        rows = [{"id": t["FamilyTypeId"], "name": t["TypeName"], "family": t["FamilyName"],
+                 "category": cat, "shown": t["Category"]}
+                for cat, types in model.model["types"].items()
+                if (not categories or cat in categories) and (modern or cat in model.model["old_command_categories"])
+                for t in types]
+        return FakeRevit.code_result(request["id"], {"rows": rows, "warnings": [], "truncated": False})
+
+    async def edit(executor):
+        async def pick(q):
+            before = len(calls)
+            out = await mention_candidates(RevitQueryExecutor(executor.client), "type", q=q)
+            if model.document_modified:
+                sequence = calls[before:]
+                assert sequence[0] == DOCUMENT_STAMP and sequence[-2:] == [DIRTY_TYPES, DOCUMENT_STAMP]
+                assert all(method in ("list_model_items", "get_bridge_capabilities") for method in sequence[1:-2])
+                assert len(sequence) <= 5
+            return out
+        clean = await pick("basic")
+        assert [i["id"] for i in clean["items"]] == [401, 402]
+        model.document_modified = True
+        walls[0]["TypeName"] = "Edit alpha"
+        dirty = await pick("wall alpha")
+        assert [i["id"] for i in dirty["items"]] == [401]
+        walls[0]["TypeName"] = "Edit bravo"
+        walls.append(dict(walls[0], FamilyTypeId=700, TypeName="Another bravo"))
+        dirty = await pick("bravo")
+        assert {i["id"] for i in dirty["items"]} == {401, 700}
+        walls.pop(0)
+        dirty = await pick("bravo")
+        assert [i["id"] for i in dirty["items"]] == [700]
+        assert (await pick("alpha"))["total"] == 0
+        assert [i["id"] for i in (await pick("pipe"))["items"]] == ([431] if modern else [])
+        model.document_modified = False
+        saved = await pick("bravo")
+        assert [i["id"] for i in saved["items"]] == [700]
+
+    run(handler, edit)
+    assert snapshots == [["OST_Walls"], [], [], [], ["OST_PipeCurves"]]
+
+
+def test_reconnected_device_during_inventory_cannot_publish_another_devices_rows():
+    from types import SimpleNamespace
+    from revit_bridge.mention_cache import DOCUMENT_STAMP
+
+    assert review(DOCUMENT_STAMP) == (True, [])
+    model = FakeModel()
+    adapter = SimpleNamespace(mention_cache_scope=("device", object()))
+    async def pick(executor):
+        adapter.send_code = executor.client.send_code
+        adapter.send_command = executor.client.send_command
+        adapter.ensure_connected = executor.client.ensure_connected
+        return await mention_candidates(RevitQueryExecutor(adapter), "type", category="OST_Walls")
+
+    def switch(request):
+        if request["method"] == "list_model_items":
+            adapter.mention_cache_scope = ("device", object())
+        return model(request)
+
+    out, _ = run(switch, pick)
+    assert out["error"] == "revit_error" and "device connection changed" in out["message"]
+    out, methods = run(model, pick)
+    assert out["total"] == 2 and "list_model_items" in methods
+
+
+def test_list_model_items_works_uncached_when_fixed_code_queries_are_disabled():
+    model = FakeModel()
+    def handler(request):
+        if request["method"] == "send_code_to_revit":
+            return FakeRevit.code_result(request["id"], None, success=False, error="disabled")
+        return model(request)
+
+    for _ in range(2):
+        out, methods = run(handler, mention_candidates, "type", q="basic")
+        assert out["total"] == 2 and "list_model_items" in methods
 
 
 @pytest.mark.parametrize("alias,category", [
@@ -222,49 +436,55 @@ def test_five_ranks_and_name_order_within_a_rank():
     assert "bAK" not in [i["name"] for i in candidates(model, "level", q="bk")["items"]]
 
 
-def selection_model(selected, *, deleted=(), unreadable=(), changed=False):
+def selection_model(selected, *, deleted=(), unreadable=(), changed=False, year=2026, names=None):
     import re
 
-    snapshots = 0
     batches = []
 
     def handler(request):
-        nonlocal snapshots
         assert request["method"] == "send_code_to_revit"
         code = request["params"]["code"]
+        assert review(code) == (True, [])
         assert "PickObject" not in code and ".Skip(" not in code
         if code == "return document.Application.VersionNumber;":
-            return FakeRevit.code_result(request["id"], "2026")
-        if "Selection.GetElementIds()" in code:
+            return FakeRevit.code_result(request["id"], str(year))
+        if "ids = members" in code:
             assert "document.GetElement(" not in code
-            snapshots += 1
             ids = list(selected)
-            if snapshots > 1 and changed == "count":
+            if changed == "count":
                 ids.append(123456)
-            if snapshots > 1 and changed == "replacement":
+            if changed == "replacement":
                 ids[0] = 123456
             return FakeRevit.code_result(request["id"], {"view": "example", "ids": list(map(str, ids))})
-        ids = [int(n) for n in re.findall(r"new ElementId\((\d+)\)", code)]
-        assert len(ids) <= 50
+        index = "Selection.GetElementIds()" in code
+        if index:
+            assert "details = false" in code
+            ids = list(selected)
+        else:
+            ids = [int(n) for n in re.findall(r"new ElementId\((\d+)\)", code)]
+            assert 0 < len(ids) <= 50
+            batches.append(ids)
         if request["params"]["parameters"]:
             assert request["params"]["parameters"] == ["example"] and "if (view !=" in code
             if changed == "view":
                 return FakeRevit.code_result(request["id"], None, success=False, error="The active view changed.")
-        details = "bool details = true;" in code
-        batches.append((list(ids), details))
+        wants_names = "bool names = true" in code
         items, warnings = [], []
         for number in ids:
             if number in deleted:
                 continue
-            item = {"id": str(number), "name": "Example", "family": "Basic", "category": "OST_Walls",
+            item = {"id": str(number), "name": (names or {}).get(number, "Example"), "family": "Basic", "category": "OST_Walls",
                     "shown": "Walls", "level": "L1", "length": 4200.45}
             if number in unreadable:
                 item.update(name=None, family=None, level=None, length=None)
-                warnings.append(f"{number} type: unreadable")
-            if not details:
-                item.update(name=None, family=None, level=None, length=None)
+                if wants_names:
+                    warnings.append(f"{number} type: unreadable")
+            if index:
+                item.update(level=None, length=None)
+                if not wants_names:
+                    item.update(name=None, family=None)
             items.append(item)
-        return FakeRevit.code_result(request["id"], {"items": items, "warnings": warnings})
+        return FakeRevit.code_result(request["id"], {"items": items, "view": "example", "warnings": warnings})
     handler.batches = batches
     return handler
 
@@ -285,14 +505,26 @@ def test_selection_summary_count_nulls_empty_selection_and_changed_selection():
         assert changed["error"] == "revit_error"
 
 
-def test_large_selection_copies_ids_twice_and_reads_details_only_for_the_requested_page():
-    handler = selection_model(list(range(1, 512)))
+@pytest.mark.parametrize("size", [511, 5000])
+def test_selection_one_index_one_detail_page_one_recheck_regardless_of_size(size):
+    handler = selection_model(list(range(1, size + 1)))
     result, methods = run(handler, mention_candidates, "element", source="selection", offset=255, limit=30)
-    assert [i["id"] for i in result["items"]] == list(range(256, 286)) and result["total"] == 511
-    assert result["facets"] == [{"category": "OST_Walls", "label": "Walls", "count": 511}]
-    assert [i for ids, details in handler.batches if details for i in ids] == list(range(256, 286))
-    assert [i for ids, _ in handler.batches for i in ids] == list(range(1, 512))
-    assert len(methods) == len(handler.batches) + 2
+    assert [i["id"] for i in result["items"]] == list(range(256, 286)) and result["total"] == size
+    assert result["facets"] == [{"category": "OST_Walls", "label": "Walls", "count": size}]
+    assert handler.batches == [list(range(256, 286))]
+    assert methods == ["send_code_to_revit"] * 3
+
+
+def test_selection_q_reads_full_details_only_after_ranking_and_paging():
+    handler = selection_model(range(1, 501), names={111: "Door 200", 421: "200", 455: "Door 300"})
+    result, methods = run(handler, mention_candidates, "element", source="selection", q="200", limit=1, offset=None)
+    assert result["total"] == 2 and result["facets"][0]["count"] == 2 and result["truncated"]
+    assert [(i["id"], i["summary"]) for i in result["items"]] == [(421, "Walls, 4200 mm, L1")]
+    assert handler.batches == [[421]] and len(methods) == 3
+    handler = selection_model([1, 2, 3], unreadable=[2])
+    result, methods = run(handler, mention_candidates, "element", source="selection", q="999")
+    assert result["items"] == [] and result["warnings"] == ["2 type: unreadable"]
+    assert handler.batches == [] and len(methods) == 2
 
 
 def test_element_recheck_targets_document_not_selection_and_reports_deleted_id():
@@ -302,6 +534,16 @@ def test_element_recheck_targets_document_not_selection_and_reports_deleted_id()
     assert [i["id"] for i in result["resolved"]] == [2**33]
     assert methods == ["send_code_to_revit", "send_code_to_revit"]
     assert 'element "Example" (id 8589934592, "Walls, 4200 mm, L1")' in mention_block(result["resolved"], "en")
+
+
+@pytest.mark.parametrize("ids", [[2**31], [7, 2**31]])
+def test_pre_2024_element_recheck_skips_only_out_of_range_ids(ids):
+    handler = selection_model([], year=2023)
+    result, methods = run(handler, resolve_mentions, [{"kind": "element", "id": number} for number in ids])
+    assert result["not_found"] == [{"kind": "element", "id": 2**31, "reason": "not_found"}]
+    assert [i["id"] for i in result["resolved"]] == ids[:-1]
+    assert handler.batches == ([ids[:-1]] if len(ids) > 1 else [])
+    assert len(methods) == len(ids)
 
 
 def test_revit_errors_come_back_with_the_mention_kind():
@@ -406,10 +648,11 @@ def test_ids_that_are_not_element_ids_are_invalid_and_the_rest_is_still_checked(
 def test_an_unreadable_capability_is_an_error_when_checking_picks_never_not_found():
     """A capability probe that timed out or failed: checking by id must not fall back to the
     old type list (it lacks pipes and other types the picker offered) and report "not found"."""
+    model = FakeModel()
     def probe_fails(request):
         if request["method"] == "get_bridge_capabilities":
             return FakeRevit.error(request["id"], -32000, "internal error")
-        return FakeModel()(request)
+        return model(request)
 
     for kind, mention_id in (("type", 431), ("level", 312), ("link", 501)):
         with pytest.raises(RevitQueryError, match="capabilities could not be read"):

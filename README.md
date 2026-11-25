@@ -60,7 +60,10 @@ settings through environment variables (see Configure), for example in the
 `Ledger` and Revit client, plus `revit_bridge.host_instructions()` for a host
 whose interface does the confirmation (`role`, `code` and `mentions` give a
 text per role, one without code-writing, one with the designer's selections)
-and `revit_bridge.mentions` for levels, types and links the designer picks.
+and `revit_bridge.mentions` for levels, types, links and elements the designer
+picks. Request `kind="element", source="selection"` to page through the active
+selection. Type searches accept Chinese and English category names and return
+matching types across categories.
 
 From a checkout: `uv sync` then `uv run revit-bridge`.
 
