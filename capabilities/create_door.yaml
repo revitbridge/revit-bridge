@@ -8,6 +8,7 @@ description: >-
   wall, no such or ambiguous type, a point off the wall or too close to its ends for the
   door's width) stop the run and change nothing.
   The optional level_name chooses the placement level and flip reverses the door facing.
+  The bottom and head of the door opening must both fit within the host wall.
 version: "1.0.0"
 revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
@@ -98,13 +99,20 @@ code_template: |
           + " mm from an end of wall " + wallText + (widthParameter != null ? " and the door is " + toMm(2 * halfWidth) + " mm wide." : "."));
 
   double bottom = level.ProjectElevation;
-  if (levelName.Length > 0)
+  BoundingBoxXYZ wallBox = wall.get_BoundingBox(null);
+  if (wallBox == null)
+      throw new InvalidOperationException("REFUSED: Cannot verify the requested door elevation on the host wall.");
+  if (bottom < wallBox.Min.Z - tolerance || bottom >= wallBox.Max.Z - tolerance)
+      throw new InvalidOperationException("REFUSED: The requested door elevation is outside the height of the host wall.");
+  double DoorHeight(Element element)
   {
-      BoundingBoxXYZ wallBox = wall.get_BoundingBox(null);
-      if (wallBox == null)
-          throw new InvalidOperationException("REFUSED: Cannot verify the requested door elevation on the host wall.");
-      if (bottom < wallBox.Min.Z - tolerance || bottom >= wallBox.Max.Z - tolerance)
-          throw new InvalidOperationException("REFUSED: The requested door elevation is outside the height of the host wall.");
+      foreach (var key in new[] { BuiltInParameter.DOOR_HEIGHT, BuiltInParameter.FAMILY_HEIGHT_PARAM })
+      {
+          Parameter p = element.get_Parameter(key);
+          if (p != null && p.HasValue && p.StorageType == StorageType.Double && p.AsDouble() > 0)
+              return p.AsDouble();
+      }
+      return 0;
   }
 
   // 4. Place it and check that the wall hosts it.
@@ -127,7 +135,31 @@ code_template: |
   {
       if (!door.CanFlipFacing || !door.flipFacing())
           throw new InvalidOperationException("REFUSED: This family cannot flip its facing direction.");
+      document.Regenerate();
   }
+  XYZ placed = (door.Location as LocationPoint)?.Point;
+  if (placed == null)
+      throw new InvalidOperationException("REFUSED: Cannot verify the placed door's location.");
+  // Head height is relative to the placement level. Some families expose only their
+  // instance or type height; measure that height from the regenerated insertion point.
+  Parameter headParameter = door.get_Parameter(BuiltInParameter.INSTANCE_HEAD_HEIGHT_PARAM);
+  double head;
+  if (headParameter != null && headParameter.HasValue && headParameter.StorageType == StorageType.Double)
+  {
+      head = level.ProjectElevation + headParameter.AsDouble();
+      if (!(head > placed.Z))
+          throw new InvalidOperationException("REFUSED: The placed door head must be above its bottom.");
+  }
+  else
+  {
+      double height = DoorHeight(door);
+      if (height <= 0) height = DoorHeight(symbol);
+      if (height <= 0)
+          throw new InvalidOperationException("REFUSED: Cannot verify the opening height of this door family.");
+      head = placed.Z + height;
+  }
+  if (placed.Z < wallBox.Min.Z - tolerance || placed.Z >= wallBox.Max.Z - tolerance || head > wallBox.Max.Z + tolerance)
+      throw new InvalidOperationException("REFUSED: The door opening extends outside the height of wall " + wallText + ".");
   return new
   {
       Status = "Created",

@@ -4,7 +4,7 @@ display_name: Place Window Along Wall
 description: >-
   Place one window in a basic wall at a given distance along its straight or circular location curve.
   Use a loaded type name or Family: Type. The wall's base level is used unless another level is given.
-  Dimensions are in mm. Set flip to reverse facing.
+  Dimensions and the returned instance coordinates are in mm. Set flip to reverse facing.
 version: "1.0.0"
 revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
@@ -141,7 +141,11 @@ code_template: |
   {
       if (!window.CanFlipFacing || !window.flipFacing())
           throw new InvalidOperationException("REFUSED: This family cannot flip its facing direction.");
+      document.Regenerate();
   }
+  XYZ placed = (window.Location as LocationPoint)?.Point;
+  if (placed == null)
+      throw new InvalidOperationException("REFUSED: Cannot verify the placed window's location.");
   return new
   {
       Status = "Created",
@@ -150,8 +154,9 @@ code_template: |
       TypeId = idOf(symbol.Id),
       Type = symbol.FamilyName + ": " + symbol.Name,
       Level = level.Name,
-      XMm = toMm(onWall.X),
-      YMm = toMm(onWall.Y),
+      XMm = toMm(placed.X),
+      YMm = toMm(placed.Y),
+      ZMm = toMm(placed.Z),
       SillHeightMm = toMm(sillParameter.AsDouble()),
       WidthChecked = widthParameter != null,
       HeightChecked = heightParameter != null
