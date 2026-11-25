@@ -1,0 +1,220 @@
+schema_version: 1
+name: create_door_on_wall
+display_name: Place Door Along Wall
+description: >-
+  Place one door in a basic wall at a given distance along its straight or circular location curve.
+  Use a loaded type name or Family: Type. The wall's base level is used unless another level is given.
+  Dimensions are in mm. Set flip to reverse facing.
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, string, double> toFeet = (label, text) =>
+  {
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException("REFUSED: " + label + " must be a number in mm, got \"" + text + "\".");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  };
+  Func<double, double> toMm = feet => Math.Round(UnitUtils.ConvertFromInternalUnits(feet, UnitTypeId.Millimeters), 1);
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  Func<Element, BuiltInParameter, BuiltInParameter, Parameter> lengthOf = (e, first, second) =>
+  {
+      Parameter p = e.get_Parameter(first);
+      if (p == null || !p.HasValue || p.StorageType != StorageType.Double)
+          p = e.get_Parameter(second);
+      return p != null && p.HasValue && p.StorageType == StorageType.Double ? p : null;
+  };
+  string wallText = "{wall_id}";
+  string typeName = "{type_name}";
+  double tolerance = document.Application.ShortCurveTolerance;
+
+  // 1. The host wall, by id: it must exist, be a wall, and be a basic wall with a location line.
+  int wallNumber;
+  if (!int.TryParse(wallText, System.Globalization.NumberStyles.Integer, invariant, out wallNumber) || wallNumber <= 0)
+      throw new InvalidOperationException("REFUSED: The host wall must be given by its element id (a whole number from 1 to 2147483647), got \"" + wallText + "\".");
+  // ElementId(int) on 2021-2023, obsolete on 2024-2025, gone from 2026 (the int then converts to
+  // ElementId(Int64)): one line for every year, without the 2024-2025 warning.
+  #pragma warning disable 618
+  Wall wall = document.GetElement(new ElementId(wallNumber)) as Wall;
+  #pragma warning restore 618
+  if (wall == null)
+      throw new InvalidOperationException("REFUSED: There is no wall with id " + wallText + " in this model. Pick a wall from the list.");
+  if (wall.WallType.Kind != WallKind.Basic)
+      throw new InvalidOperationException("REFUSED: Wall " + wallText + " is a "
+          + (wall.WallType.Kind == WallKind.Curtain ? "curtain" : wall.WallType.Kind == WallKind.Stacked ? "stacked" : "special")
+          + " wall; this tool places doors in basic walls only.");
+  LocationCurve wallLocation = wall.Location as LocationCurve;
+  if (wallLocation == null || wallLocation.Curve == null)
+      throw new InvalidOperationException("REFUSED: Wall " + wallText + " has no location line.");
+  string levelName = "{level_name}";
+  Level level = levelName.Length == 0 ? document.GetElement(wall.LevelId) as Level :
+      new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>().FirstOrDefault(l => l.Name == levelName);
+  if (level == null && levelName.Length > 0)
+      throw new InvalidOperationException("REFUSED: There is no level named " + levelName + ".");
+  if (level == null)
+      throw new InvalidOperationException("REFUSED: Wall " + wallText + " has no base level.");
+
+  // 2. The door type, by name or "Family: Type", among loaded door types.
+  var types = new FilteredElementCollector(document).OfClass(typeof(FamilySymbol))
+      .OfCategory(BuiltInCategory.OST_Doors).Cast<FamilySymbol>()
+      .Where(s => s.Name == typeName || s.FamilyName + ": " + s.Name == typeName)
+      .ToList();
+  if (types.Count == 0)
+      throw new InvalidOperationException("REFUSED: No loaded door type is named \"" + typeName + "\". Pick a door type from the list, or load its family first.");
+  if (types.Count > 1)
+      throw new InvalidOperationException("REFUSED: " + types.Count + " door types are named \"" + typeName + "\" (families: "
+          + string.Join(", ", types.Select(s => s.FamilyName).Distinct()) + "). Give the type as \"Family: Type\".");
+  FamilySymbol symbol = types[0];
+  if (symbol.Family.FamilyPlacementType != FamilyPlacementType.OneLevelBasedHosted)
+      throw new InvalidOperationException("REFUSED: Door type \"" + typeName + "\" is not a door that is placed in a wall; pick a wall-hosted door type.");
+
+  // 3. The point: on the wall (within its thickness of the location line), not past its ends.
+
+  Curve line = wallLocation.Curve;
+  double distance = toFeet("Distance along the wall", "{offset_along_wall}");
+  if (distance < 0 || distance > line.Length || (!(line is Line) && !(line is Arc)))
+      throw new InvalidOperationException("REFUSED: Give a distance within the length of a straight or circular-arc host wall.");
+  XYZ onWall = line.Evaluate(distance / line.Length, true);
+  double toStart = distance;
+  double toEnd = line.Length - distance;
+  Parameter widthParameter = lengthOf(symbol, BuiltInParameter.DOOR_WIDTH, BuiltInParameter.FAMILY_WIDTH_PARAM);
+  double halfWidth = widthParameter != null ? widthParameter.AsDouble() / 2.0 : 0.0;
+  if (Math.Min(toStart, toEnd) < halfWidth + tolerance)
+      throw new InvalidOperationException("REFUSED: The door does not fit there: the point is " + toMm(Math.Min(toStart, toEnd))
+          + " mm from an end of wall " + wallText + (widthParameter != null ? " and the door is " + toMm(2 * halfWidth) + " mm wide." : "."));
+
+  double sill = toFeet("Sill height", "{sill_height}");
+  if (sill < 0)
+      throw new InvalidOperationException("REFUSED: Give a non-negative sill height.");
+  double bottom = level.ProjectElevation + sill;
+  if (levelName.Length > 0 || sill != 0)
+  {
+      BoundingBoxXYZ wallBox = wall.get_BoundingBox(null);
+      if (wallBox == null)
+          throw new InvalidOperationException("REFUSED: Cannot verify the requested door elevation on the host wall.");
+      if (bottom < wallBox.Min.Z - tolerance || bottom >= wallBox.Max.Z - tolerance)
+          throw new InvalidOperationException("REFUSED: The requested door elevation is outside the height of the host wall.");
+  }
+
+  // 4. Place it and check that the wall hosts it.
+  if (!symbol.IsActive)
+  {
+      symbol.Activate();
+      document.Regenerate();
+  }
+  // ProjectElevation: the level's height in model coordinates whatever its type's elevation base
+  // (on Revit 2026 the door's insertion Z was the level's ProjectElevation).
+  FamilyInstance door = document.Create.NewFamilyInstance(new XYZ(onWall.X, onWall.Y, bottom), symbol, wall, level,
+      Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+  if (door == null)
+      throw new InvalidOperationException("Revit returned no door; nothing was created.");
+  document.Regenerate();
+  if (door.Host == null || !door.Host.Id.Equals(wall.Id))
+      throw new InvalidOperationException("Revit did not place the door in wall " + wallText + "; nothing was created.");
+
+  // Hosted door families can clamp a requested sill to their instance default.
+  if (sill != 0)
+  {
+      Parameter p = door.get_Parameter(BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM);
+      if (p == null || p.StorageType != StorageType.Double)
+          throw new InvalidOperationException("REFUSED: This door family does not support a sill height.");
+      const double readbackTolerance = 1e-6; // feet
+      if (!p.HasValue || Math.Abs(p.AsDouble() - sill) > readbackTolerance)
+      {
+          if (p.IsReadOnly || !p.Set(sill))
+              throw new InvalidOperationException("REFUSED: The requested door sill cannot be set.");
+          document.Regenerate();
+          if (!p.HasValue || Math.Abs(p.AsDouble() - sill) > readbackTolerance)
+              throw new InvalidOperationException("REFUSED: The door did not keep the requested sill height.");
+      }
+  }
+  if (bool.Parse("{flip}"))
+  {
+      if (!door.CanFlipFacing || !door.flipFacing())
+          throw new InvalidOperationException("REFUSED: This family cannot flip its facing direction.");
+  }
+  return new
+  {
+      Status = "Created",
+      ElementId = idOf(door.Id),
+      HostId = idOf(wall.Id),
+      TypeId = idOf(symbol.Id),
+      Type = symbol.FamilyName + ": " + symbol.Name,
+      Level = level.Name,
+      XMm = toMm(onWall.X),
+      YMm = toMm(onWall.Y),
+      WidthChecked = widthParameter != null
+  };
+parameters:
+  - name: wall_id
+    type: integer
+    description: Element id of the basic wall that hosts the door
+    source: tool:elements
+    choices_from: elements:OST_Walls
+    required: true
+  - name: type_name
+    type: string
+    description: 'Loaded door type name, or "Family: Type" when two families share the name'
+    source: tool:family_types
+    choices_from: family_types:OST_Doors
+    required: true
+  - name: level_name
+    type: string
+    description: "Optional placement level."
+    source: answer
+    choices_from: levels
+    required: false
+    default: ""
+  - name: offset_along_wall
+    type: double
+    description: "Distance from the wall start (mm)."
+    unit: mm
+    source: designer
+    required: true
+  - name: sill_height
+    type: double
+    description: "Door sill height above the placement level (mm)."
+    unit: mm
+    source: designer
+    required: false
+    default: 0
+  - name: flip
+    type: bool
+    description: "Flip the facing direction."
+    source: designer
+    required: false
+    default: false
+preconditions:
+  - kind: levels_min
+    value: 1
+  - kind: category_present
+    category: OST_Doors
+  - text: "the host must be a basic wall (not curtain or stacked)"
+not_for:
+  - "curtain wall door"
+  - "door type"
+  - "move door"
+  - "window"
+applies_when:
+  - "place door at a distance along a wall"
+  - "locate door relative to the start of a wall"
+validator:
+  kind: count_delta
+  category: OST_Doors
+  expected: 1
+fixtures:
+  - name: by_distance
+    params: {"wall_id":101,"type_name":"Single 900","level_name":"L1","offset_along_wall":1500,"flip":true}
+    expect: {"Status":"Created"}
+  - name: default_level_and_sill
+    params: {wall_id: 101, type_name: "Single 900", offset_along_wall: 1500}
+    expect: {Status: "Created"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-23T00:00:00"
+source_query: place a door in a wall

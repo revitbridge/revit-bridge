@@ -19,6 +19,8 @@ BUILTIN_NAMES = {
     "create_wall_from_element", "create_walls_by_points", "set_wall_constraints",
     "create_column", "get_element_geometry", "list_elements", "get_element_parameters",
     "create_grids_array", "copy_elements", "rotate_elements", "mirror_elements", "delete_elements",
+    "create_floor_by_points", "create_ceiling_by_points", "create_roof_by_points",
+    "create_door_on_wall", "create_window_on_wall", "change_type_by_name",
 }
 # Demo artefacts with type, level and coordinates hard-coded in C#: kept as examples, never loaded.
 # create_room is also a built-in name now; the example of that name must still not be what loads.

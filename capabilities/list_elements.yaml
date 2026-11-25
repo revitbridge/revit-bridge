@@ -61,7 +61,8 @@ code_template: |
       // Read at most one extra id. Its presence decides truncation without expanding it.
       truncated = items.Count + skipped.Count == limit && ids.MoveNext();
   }
-  return new { Status = "Ok", Items = items, Truncated = truncated, Skipped = skipped };
+  return new { Status = "Ok", Items = items, Truncated = truncated, Skipped = skipped,
+      CombinedMatchingTypes = types != null && types.Count > 1, MatchingTypeCount = types?.Count };
 parameters:
   - name: category
     type: string
@@ -90,6 +91,7 @@ parameters:
 preconditions:
   - text: A model document must be open.
 not_for:
+  - "level filtering of instances that only expose a reference level, including some beams"
   - "linked elements"
   - "element types"
 applies_when:

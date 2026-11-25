@@ -87,7 +87,19 @@ code_template: |
   bool copies = bool.Parse("{copy}");
   if (!copies && sources.Any(e => e.Pinned))
       throw new InvalidOperationException("REFUSED: A selected element is pinned.");
-  ICollection<ElementId> resultIds = ElementTransformUtils.MirrorElements(document, selected, plane, copies);
+  ICollection<ElementId> resultIds;
+  try
+  {
+      resultIds = ElementTransformUtils.MirrorElements(document, selected, plane, copies);
+  }
+  catch (Autodesk.Revit.Exceptions.ArgumentException ex) when (!(ex is Autodesk.Revit.Exceptions.ArgumentNullException))
+  {
+      throw new InvalidOperationException("REFUSED: Revit rejected the transformation: " + ex.Message);
+  }
+  catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+  {
+      throw new InvalidOperationException("REFUSED: Revit cannot transform these instances: " + ex.Message);
+  }
   if (!copies) resultIds = selected;
 
   // Dependents copied with their host can outnumber the selected sources.
@@ -130,7 +142,7 @@ code_template: |
           if (direct || reverse) { match = id; break; }
       }
       if (match == null)
-          throw new InvalidOperationException("Element " + selected[i] + " did not produce the requested transformation; rolling back.");
+          throw new InvalidOperationException("REFUSED: Element " + selected[i] + " could not take the requested transformation; check its host and constraints.");
       checkedIds.Add(match);
   }
   return new { Status = "Mirrored", ElementIds = resultIds.Select(id => id.Value).ToList(), Count = checkedIds.Count };

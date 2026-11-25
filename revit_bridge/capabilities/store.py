@@ -681,11 +681,7 @@ class ToolStore:
             kind = source.split(":", 1)[0]
             has_default = "default" in pdef
 
-            # An explicitly projected empty default on a conditional numeric input
-            # has the same meaning as omitting it (for example, wall height vs top level).
-            empty_default = (ptype in NUMERIC_TYPES and not pdef.get("required", True) and has_default
-                             and pdef["default"] == "" and params.get(pname) == "")
-            if pname in params and (params[pname] is None or empty_default):
+            if pname in params and params[pname] is None:
                 del params[pname]                  # null is no value: treated as not given
             if pname not in params:
                 # Values that must come from Revit: never guessed, never defaulted

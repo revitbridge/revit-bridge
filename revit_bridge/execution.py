@@ -73,7 +73,7 @@ from revit_bridge.snapshot.query import RevitQueryExecutor
 from revit_bridge.spec.gate import Confirmation, Gate, GateError, confirmation_invalid, confirmation_required
 from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec, projection_hash
 from revit_bridge.validators.base import ValidationReport, ValidatorError, failed_report
-from revit_bridge.validators.builtin import NamedTypeEquals, get_validator
+from revit_bridge.validators.builtin import get_validator
 
 # Hosts that run their own confirmation flow may lift the gate; only an
 # environment the host passes in explicitly is consulted.
@@ -359,13 +359,6 @@ def _validation_error(kind: str, exc: Exception, before: dict) -> ValidationRepo
     return failed_report(kind, f"validator could not run: {type(exc).__name__}: {exc}", before)
 
 
-def _pack_validator(store: ToolStore, pack: SolidifiedTool, params: dict):
-    if (pack.name == "change_type" and params.get("type_name") and params.get("type_id") in ("", None)
-            and store.path_of(pack.name) == store.builtin_dir / "change_type.yaml"):
-        return NamedTypeEquals()
-    return get_validator(str(pack.validator.get("kind")))
-
-
 def device_confirmation(code: str, conf: Confirmation | None) -> dict:
     """The ``confirm`` field of an ad-hoc execution: what the device shows before it runs.
 
@@ -486,7 +479,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     validator = None
     if pack.validator:
         try:
-            validator = _pack_validator(store, pack, params)
+            validator = get_validator(str(pack.validator.get("kind")))
         except ValidatorError as e:
             warnings.append(f"validator: {e}")
     before: dict = {}
@@ -652,7 +645,7 @@ async def revalidate(*, store: ToolStore, ledger: Ledger, client, evidence_id: s
     if pack is None or not pack.validator:
         return {"error": "no_validator", "message": f"pack {record['tool']!r} has no validator now"}
     try:
-        validator = _pack_validator(store, pack, record.get("params") or {})
+        validator = get_validator(str(pack.validator.get("kind")))
     except ValidatorError as e:
         return {"error": "no_validator", "message": str(e)}
     projection = {"kind": "run_tool", "tool": record["tool"], "params": record.get("params") or {}}

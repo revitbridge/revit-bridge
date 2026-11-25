@@ -39,10 +39,9 @@ code_template: |
   };
 
   string topName = "{top_level_name}", heightText = "{height}", typeName = "{type_name}";
-  if (topName != "" && heightText != "")
-      throw new InvalidOperationException("REFUSED: Choose either top_level_name or height.");
   Level top = topName == "" ? null : levelByName(topName);
-  double unconnectedHeight = feet(heightText == "" ? "3000" : heightText);
+  // The typed-wall creation overload needs an initial height even for a constrained wall.
+  double unconnectedHeight = top == null ? feet(heightText) : feet("3000");
   if (unconnectedHeight <= 0)
       throw new InvalidOperationException("REFUSED: Height must be positive.");
   WallType wallType = null;
@@ -133,10 +132,10 @@ parameters:
     unit: mm
   - name: height
     type: double
-    description: "Unconnected height, 3000 when height and top level are omitted (mm)"
+    description: "Unconnected height (mm), ignored when top_level_name is given"
     source: default
     required: false
-    default: ""
+    default: 3000
     unit: mm
   - name: type_name
     type: string

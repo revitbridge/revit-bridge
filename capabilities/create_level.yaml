@@ -43,9 +43,9 @@ code_template: |
 
   if (bool.Parse("{create_plan_view}"))
   {
-      var planType = new FilteredElementCollector(document).OfClass(typeof(ViewFamilyType)).Cast<ViewFamilyType>()
-          .FirstOrDefault(t => t.ViewFamily == ViewFamily.FloorPlan);
-      if (planType == null)
+      ElementId defaultPlan = document.GetDefaultElementTypeId(ElementTypeGroup.ViewTypeFloorPlan);
+      var planType = document.GetElement(defaultPlan) as ViewFamilyType;
+      if (planType == null || planType.ViewFamily != ViewFamily.FloorPlan)
           throw new InvalidOperationException("REFUSED: No floor plan view type is available.");
       ViewPlan.Create(document, planType.Id, level.Id);
   }

@@ -2,8 +2,8 @@ schema_version: 1
 name: create_ceiling
 display_name: Create Ceiling
 description: >-
-  Create one ceiling (Revit 2023 or later) of a named type on a level. Use x, y, width and length for a rectangle or
-  points for a closed polygon. Dimensions and elevations are in mm. Give height or offset relative to the level.
+  Create one rectangular ceiling on Revit 2023 or later using a named type, level, corner,
+  width and length. Dimensions and height above the level are in mm.
 version: "1.0.0"
 revit_versions: ["2023", "2024", "2025", "2026", "2027"]
 code_template: |
@@ -43,44 +43,18 @@ code_template: |
           + string.Join(", ", types.Select(t => t.FamilyName).Distinct()) + "). Give the type as \"Family: Type\".");
   CeilingType ceilingType = types[0];
 
-  string heightText = "{height}";
-  string offsetText = "{offset}";
-  if (heightText.Length > 0 && offsetText.Length > 0)
-      throw new InvalidOperationException("REFUSED: Give either height or offset above the level.");
-  double height = toFeet("Height above the level", offsetText.Length > 0 ? offsetText : heightText);
-  if (height < 0 && offsetText.Length == 0)
+  double height = toFeet("Height above the level", "{height}");
+  if (height < 0)
       throw new InvalidOperationException("REFUSED: The height above the level must be zero or more mm.");
   double z = level.ProjectElevation;
-  string pointsText = "{points}";
   var corners = new List<XYZ>();
-  double width, length;
-  if (pointsText.Length > 0)
-  {
-      if (new string[] { "{x}", "{y}", "{width}", "{length}" }.Any(v => v.Length > 0))
-          throw new InvalidOperationException("REFUSED: Supply a polygon or a rectangle, not both.");
-      string[] pairs = pointsText.Split(';');
-      if (pairs.Length < 3 || pairs.Length > 256)
-          throw new InvalidOperationException("REFUSED: Give 3 to 256 polygon vertices as x,y; x,y; x,y.");
-      foreach (string pair in pairs)
-      {
-          string[] xy = pair.Split(',');
-          if (xy.Length != 2)
-              throw new InvalidOperationException("REFUSED: Each polygon vertex must have an x and a y in mm.");
-          corners.Add(new XYZ(toFeet("Vertex X", xy[0]), toFeet("Vertex Y", xy[1]), z));
-      }
-      width = corners.Max(p => p.X) - corners.Min(p => p.X);
-      length = corners.Max(p => p.Y) - corners.Min(p => p.Y);
-  }
-  else
-  {
-      double x = toFeet("X", "{x}"), y = toFeet("Y", "{y}");
-      width = toFeet("Width", "{width}");
-      length = toFeet("Length", "{length}");
-      if (width <= tolerance || length <= tolerance)
-          throw new InvalidOperationException("REFUSED: Width and length must both be more than zero mm.");
-      corners.AddRange(new[] { new XYZ(x, y, z), new XYZ(x + width, y, z),
-          new XYZ(x + width, y + length, z), new XYZ(x, y + length, z) });
-  }
+  double x = toFeet("X", "{x}"), y = toFeet("Y", "{y}");
+  double width = toFeet("Width", "{width}");
+  double length = toFeet("Length", "{length}");
+  if (width <= tolerance || length <= tolerance)
+      throw new InvalidOperationException("REFUSED: Width and length must both be more than zero mm.");
+  corners.AddRange(new[] { new XYZ(x, y, z), new XYZ(x + width, y, z),
+      new XYZ(x + width, y + length, z), new XYZ(x, y + length, z) });
   if (!corners.All(p => XYZ.IsWithinLengthLimits(p) && XYZ.IsWithinLengthLimits(new XYZ(p.X, p.Y, z + height))))
       throw new InvalidOperationException("REFUSED: The outline reaches outside the model's limits.");
   var edges = new List<Curve>();
@@ -133,49 +107,31 @@ parameters:
     description: X of the rectangle's corner with the smallest X and Y (mm)
     unit: mm
     source: designer
-    required: false
-    default: ""
+    required: true
   - name: y
     type: double
     description: Y of the rectangle's corner with the smallest X and Y (mm)
     unit: mm
     source: designer
-    required: false
-    default: ""
+    required: true
   - name: width
     type: double
     description: Rectangle size along X (mm)
     unit: mm
     source: designer
-    required: false
-    default: ""
+    required: true
   - name: length
     type: double
     description: Rectangle size along Y (mm)
     unit: mm
     source: designer
-    required: false
-    default: ""
+    required: true
   - name: height
     type: double
     description: Height of the ceiling above the level (mm)
     unit: mm
     source: designer
-    required: false
-    default: ""
-  - name: points
-    type: string
-    description: "Polygon outline in mm, as x,y; x,y; x,y, with an implicit closing edge."
-    source: designer
-    required: false
-    default: ""
-  - name: offset
-    type: double
-    description: "Vertical offset from the level (mm)."
-    unit: mm
-    source: designer
-    required: false
-    default: ""
+    required: true
 preconditions:
   - kind: levels_min
     value: 1
@@ -183,6 +139,7 @@ preconditions:
     category: OST_Ceilings
   - text: "Revit 2023 or later: the API has no way to create a ceiling before 2022 and the add-in has no 2022 build"
 not_for:
+  - "polygonal ceiling specified by vertices"
   - "ceiling type"
   - "ceiling grid"
   - "move ceiling"
@@ -198,9 +155,6 @@ fixtures:
   - name: basic
     params: {level_name: "L1", type_name: "Generic", x: 0, y: 0, width: 6000, length: 8000, height: 2700}
     expect: {Status: "Created"}
-  - name: polygon
-    params: {"level_name":"L1","type_name":"Generic","points":"0,0; 5000,0; 4000,4000; 0,4000","offset":2000}
-    expect: {"Status":"Created"}
 approved_by: null
 approved_at: null
 created_at: "2026-11-23T00:00:00"

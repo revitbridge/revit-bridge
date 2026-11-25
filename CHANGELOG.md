@@ -6,6 +6,31 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Inspect model instances with `list_elements`, `get_element_geometry` and
+  `get_element_parameters`. The parameter listing includes raw and formatted values.
+- Create walls from a reference or a path with `create_wall_from_element` and
+  `create_walls_by_points`. Edit existing walls with `set_wall_constraints`.
+  Create architectural columns with `create_column` and grid arrays with
+  `create_grids_array`.
+- Create polygonal outlines with `create_floor_by_points`, `create_ceiling_by_points`
+  and `create_roof_by_points`. Place a door or window at a distance along its host
+  wall with `create_door_on_wall` and `create_window_on_wall`.
+- Transform model instances with `copy_elements`, `rotate_elements` and
+  `mirror_elements`. Use `change_type_by_name` to resolve a target type and verify
+  each instance. `delete_elements` checks the supplied IDs and reports auxiliary
+  elements removed by Revit.
+
+### Changed
+
+- Existing modelling tools retain their 0.9.1 required parameters and defaults.
+  A wall's top-level constraint takes precedence over its unconnected height.
+- Name-based placement refuses ambiguous types and accepts a qualified
+  `Family: Type` name. A missing level or type in wall, floor, column or beam
+  creation now produces a `REFUSED` result where those tools previously returned
+  `Status="Error"`.
+
 ## [0.9.1] - 2026-11-23
 
 Fourteen basic capability packs, and a way for any pack to refuse its input

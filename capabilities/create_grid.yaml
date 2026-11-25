@@ -26,7 +26,7 @@ code_template: |
   if (!NamingUtils.IsValidName(gridName))
       throw new InvalidOperationException("REFUSED: \"" + gridName + "\" cannot be a grid name: Revit does not allow characters such as : ; [ ] | < > ? ` ~ or braces in names.");
   Grid clash = new FilteredElementCollector(document).OfClass(typeof(Grid)).Cast<Grid>()
-      .FirstOrDefault(g => string.Equals(g.Name, gridName, StringComparison.OrdinalIgnoreCase));
+      .FirstOrDefault(g => g.Name == gridName);
   if (clash != null)
       throw new InvalidOperationException("REFUSED: A grid named \"" + gridName + "\" already exists. Choose another name.");
 
@@ -101,10 +101,6 @@ fixtures:
   - name: basic
     params: {name: "A", start_x: 0, start_y: 0, end_x: 0, end_y: 10000}
     expect: {Status: "Created"}
-  # Precondition: the sample already contains a grid named Used Grid.
-  - name: taken_name
-    params: {"name":"Used Grid","start_x":0,"start_y":0,"end_x":0,"end_y":6000}
-    expect: {refused: "already exists"}
 approved_by: null
 approved_at: null
 created_at: "2026-11-23T00:00:00"

@@ -52,7 +52,16 @@ code_template: |
   var column = document.Create.NewFamilyInstance(location, symbol, level,
       Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
   if (column == null) throw new InvalidOperationException("Revit returned no column.");
-  if (top != null) setId(column, BuiltInParameter.FAMILY_TOP_LEVEL_PARAM, top.Id);
+  if (top != null)
+  {
+      Parameter baseOffset = column.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+      Parameter topOffset = column.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM);
+      if (baseOffset == null || !baseOffset.HasValue || topOffset == null || !topOffset.HasValue)
+          throw new InvalidOperationException("REFUSED: Cannot resolve the column offsets.");
+      if (top.ProjectElevation + topOffset.AsDouble() <= level.ProjectElevation + baseOffset.AsDouble())
+          throw new InvalidOperationException("REFUSED: Effective column top must be above its base.");
+      setId(column, BuiltInParameter.FAMILY_TOP_LEVEL_PARAM, top.Id);
+  }
 
   double angle = number("{rotation}") * Math.PI / 180;
   if (angle != 0)

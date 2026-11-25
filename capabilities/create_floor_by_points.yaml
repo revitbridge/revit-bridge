@@ -1,0 +1,148 @@
+schema_version: 1
+name: create_floor_by_points
+display_name: Create Floor By Points
+description: >-
+  Create one floor from 3 to 256 plan vertices supplied as x,y pairs in mm. The loop closes automatically.
+  A repeated closing point is also accepted.
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  // Step 1: Get floor type by name
+  string typeName = "{type_name}";
+  var matches = new FilteredElementCollector(document)
+      .OfClass(typeof(FloorType))
+      .Cast<FloorType>()
+      .Where(ft => ft.Name == typeName || ft.FamilyName + ": " + ft.Name == typeName).Take(2).ToList();
+  if (matches.Count != 1)
+      throw new InvalidOperationException("REFUSED: The requested floor type is missing or ambiguous. Give Family: Type.");
+  FloorType floorType = matches[0];
+
+  // Step 2: Get level by name
+  var level = new FilteredElementCollector(document)
+      .OfClass(typeof(Level))
+      .Cast<Level>()
+      .FirstOrDefault(l => l.Name == "{level_name}");
+  if (level == null)
+      throw new InvalidOperationException("REFUSED: The requested level is missing.");
+
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, string, double> toFeet = (label, text) =>
+  {
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
+          || double.IsInfinity(mm) || double.IsNaN(mm))
+          throw new InvalidOperationException("REFUSED: Give a finite " + label + " in mm.");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  };
+  double tolerance = document.Application.ShortCurveTolerance;
+  double z = 0;
+  string[] pairs = "{points}".Split(';');
+  if (pairs.Length < 3 || pairs.Length > 257)
+      throw new InvalidOperationException("REFUSED: Give 3 to 256 polygon vertices in mm.");
+  var corners = new List<XYZ>();
+  foreach (string pair in pairs)
+  {
+      string[] xy = pair.Split(',');
+      if (xy.Length != 2)
+          throw new InvalidOperationException("REFUSED: Each polygon vertex must have an x and a y in mm.");
+      corners.Add(new XYZ(toFeet("Vertex X", xy[0]), toFeet("Vertex Y", xy[1]), z));
+  }
+  if (corners[0].IsAlmostEqualTo(corners[corners.Count - 1]))
+      corners.RemoveAt(corners.Count - 1);
+  if (corners.Count < 3 || corners.Count > 256)
+      throw new InvalidOperationException("REFUSED: Give 3 to 256 polygon vertices excluding the closing point.");
+  if (!corners.All(p => XYZ.IsWithinLengthLimits(p)))
+      throw new InvalidOperationException("REFUSED: The outline reaches outside the model's limits.");
+  var edges = new List<Curve>();
+  for (int i = 0; i < corners.Count; i++)
+  {
+      XYZ start = corners[i], end = corners[(i + 1) % corners.Count];
+      if (start.DistanceTo(end) <= tolerance)
+          throw new InvalidOperationException("REFUSED: Two consecutive vertices are too close together.");
+      edges.Add(Line.CreateBound(start, end));
+  }
+
+  var outline = new List<CurveLoop> { CurveLoop.Create(edges) };
+  if (!BoundaryValidation.IsValidHorizontalBoundary(outline))
+      throw new InvalidOperationException("REFUSED: Give a simple, closed floor outline without crossing edges.");
+
+  // Step 4: Create floor
+  var floor = Floor.Create(document, outline,
+                           floorType.Id, level.Id);
+
+  if (bool.Parse("{structural}"))
+  {
+      Parameter structural = floor.get_Parameter(BuiltInParameter.FLOOR_PARAM_IS_STRUCTURAL);
+      if (structural == null || structural.IsReadOnly || !structural.Set(1))
+          throw new InvalidOperationException("REFUSED: The floor cannot be marked structural.");
+  }
+  double offsetFeet = toFeet("Offset", "{offset}");
+  if (offsetFeet != 0)
+  {
+      Parameter offset = floor.get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM);
+      if (offset == null || offset.IsReadOnly || !offset.Set(offsetFeet))
+          throw new InvalidOperationException("REFUSED: The floor offset cannot be set.");
+  }
+
+  return new { ElementId = floor.Id.Value, Status = "Created",
+               FloorType = floorType.Name, Level = level.Name };
+parameters:
+  - name: level_name
+    type: string
+    description: Level the floor sits on
+    source: tool:levels
+    choices_from: levels
+    required: true
+  - name: type_name
+    type: string
+    description: Floor type name
+    source: tool:floor_types
+    choices_from: floor_types
+    required: true
+  - name: points
+    type: string
+    description: "Polygon outline in mm, as x,y; x,y; x,y, with an implicit closing edge."
+    source: designer
+    required: true
+  - name: offset
+    type: double
+    description: "Vertical offset from the level (mm)."
+    unit: mm
+    source: designer
+    required: false
+    default: 0
+  - name: structural
+    type: bool
+    description: "Mark the floor as structural."
+    source: designer
+    required: false
+    default: false
+preconditions:
+  - kind: levels_min
+    value: 1
+  - kind: category_present
+    category: OST_Floors
+not_for:
+  - "roof"
+  - "ceiling"
+  - "sloped floor"
+applies_when:
+  - "create a polygonal floor"
+  - "floor from outline points"
+validator:
+  kind: created_ids
+  category: OST_Floors
+fixtures:
+  - name: basic
+    params: {level_name: "L1", type_name: "Generic", points: "0,0; 5000,0; 0,4000"}
+    expect: {Status: "Created"}
+  - name: polygon
+    params: {"level_name":"L1","type_name":"Generic","points":"0,0; 5000,0; 4000,4000; 0,4000","offset":100,"structural":true}
+    expect: {"Status":"Created"}
+  - name: repeated_closing_point
+    params: {"level_name":"L1","type_name":"Generic","points":"0,0; 5000,0; 4000,4000; 0,4000; 0,0","offset":100,"structural":true}
+    expect: {"Status":"Created"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-25T00:00:00"
+source_query: create a floor from polygon vertices

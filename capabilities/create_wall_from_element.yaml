@@ -90,9 +90,11 @@ code_template: |
       case "end": point = line.GetEndPoint(1); break;
       default: throw new InvalidOperationException("REFUSED: Choose start, mid or end.");
   }
-  XYZ along = new XYZ(line.Direction.X, line.Direction.Y, 0).Normalize();
-  if (along.IsZeroLength())
+  XYZ planDirection = new XYZ(line.Direction.X, line.Direction.Y, 0);
+  const double MinHorizontalComponent = 1e-9; // dimensionless on a unit tangent
+  if (planDirection.GetLength() <= MinHorizontalComponent)
       throw new InvalidOperationException("REFUSED: Vertical reference has no plan direction.");
+  XYZ along = planDirection.Normalize();
   XYZ vector;
   switch (direction)
   {
@@ -133,7 +135,7 @@ parameters:
     required: true
   - name: direction
     type: string
-    description: "normal_left, normal_right, along or reverse (viewed in plan from above)"
+    description: "normal_left, normal_right, along or reverse, relative to the reference's start-to-end direction in plan"
     source: designer
     required: true
   - name: length

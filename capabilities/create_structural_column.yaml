@@ -52,9 +52,23 @@ code_template: |
   var column = document.Create.NewFamilyInstance(location, symbol, level,
       Autodesk.Revit.DB.Structure.StructuralType.Column);
   if (column == null) throw new InvalidOperationException("Revit returned no column.");
-  if (top != null) setId(column, BuiltInParameter.FAMILY_TOP_LEVEL_PARAM, top.Id);
-
   string baseText = "{base_offset}", topText = "{top_offset}";
+  if (top != null || topText != "" || baseText != "")
+  {
+      Func<BuiltInParameter, double> offset = key =>
+      {
+          Parameter p = column.get_Parameter(key);
+          if (p == null || !p.HasValue) throw new InvalidOperationException("REFUSED: Cannot read column offset " + key);
+          return p.AsDouble();
+      };
+      var pTop = column.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM);
+      Level effectiveTop = top ?? (pTop != null && pTop.HasValue ? document.GetElement(pTop.AsElementId()) as Level : null);
+      if (effectiveTop == null) throw new InvalidOperationException("REFUSED: Cannot resolve the column top level.");
+      double baseZ = level.ProjectElevation + (baseText == "" ? offset(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM) : feet(baseText));
+      double topZ = effectiveTop.ProjectElevation + (topText == "" ? offset(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM) : feet(topText));
+      if (topZ <= baseZ) throw new InvalidOperationException("REFUSED: Effective column top must be above its base.");
+  }
+  if (top != null) setId(column, BuiltInParameter.FAMILY_TOP_LEVEL_PARAM, top.Id);
   if (baseText != "") setLength(column, BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM, feet(baseText));
   if (topText != "") setLength(column, BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM, feet(topText));
 

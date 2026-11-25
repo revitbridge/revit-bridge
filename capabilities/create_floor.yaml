@@ -2,8 +2,7 @@ schema_version: 1
 name: create_floor
 display_name: Create Floor
 description: >-
-  Create one floor of a named type on a level. Use x, y, width and length for a rectangle or
-  points for a closed polygon. Dimensions and elevations are in mm.
+  Create one rectangular floor of a named type on a level using its corner, width and length in mm.
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
@@ -36,34 +35,12 @@ code_template: |
   };
   double tolerance = document.Application.ShortCurveTolerance;
   double z = 0;
-  string pointsText = "{points}";
   var corners = new List<XYZ>();
-  double width, length;
-  if (pointsText.Length > 0)
-  {
-      if (new string[] { "{x}", "{y}", "{width}", "{length}" }.Any(v => v.Length > 0))
-          throw new InvalidOperationException("REFUSED: Supply a polygon or a rectangle, not both.");
-      string[] pairs = pointsText.Split(';');
-      if (pairs.Length < 3 || pairs.Length > 256)
-          throw new InvalidOperationException("REFUSED: Give 3 to 256 polygon vertices as x,y; x,y; x,y.");
-      foreach (string pair in pairs)
-      {
-          string[] xy = pair.Split(',');
-          if (xy.Length != 2)
-              throw new InvalidOperationException("REFUSED: Each polygon vertex must have an x and a y in mm.");
-          corners.Add(new XYZ(toFeet("Vertex X", xy[0]), toFeet("Vertex Y", xy[1]), z));
-      }
-      width = corners.Max(p => p.X) - corners.Min(p => p.X);
-      length = corners.Max(p => p.Y) - corners.Min(p => p.Y);
-  }
-  else
-  {
-      double x = toFeet("X", "{x}"), y = toFeet("Y", "{y}");
-      width = toFeet("Width", "{width}");
-      length = toFeet("Length", "{length}");
-      corners.AddRange(new[] { new XYZ(x, y, z), new XYZ(x + width, y, z),
-          new XYZ(x + width, y + length, z), new XYZ(x, y + length, z) });
-  }
+  double x = toFeet("X", "{x}"), y = toFeet("Y", "{y}");
+  double width = toFeet("Width", "{width}");
+  double length = toFeet("Length", "{length}");
+  corners.AddRange(new[] { new XYZ(x, y, z), new XYZ(x + width, y, z),
+      new XYZ(x + width, y + length, z), new XYZ(x, y + length, z) });
   if (!corners.All(p => XYZ.IsWithinLengthLimits(p)))
       throw new InvalidOperationException("REFUSED: The outline reaches outside the model's limits.");
   var edges = new List<Curve>();
@@ -86,10 +63,11 @@ code_template: |
       if (structural == null || structural.IsReadOnly || !structural.Set(1))
           throw new InvalidOperationException("REFUSED: The floor cannot be marked structural.");
   }
-  if ("{offset}".Length > 0)
+  double offsetFeet = toFeet("Offset", "{offset}");
+  if (offsetFeet != 0)
   {
       Parameter offset = floor.get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM);
-      if (offset == null || offset.IsReadOnly || !offset.Set(toFeet("Offset", "{offset}")))
+      if (offset == null || offset.IsReadOnly || !offset.Set(offsetFeet))
           throw new InvalidOperationException("REFUSED: The floor offset cannot be set.");
   }
 
@@ -113,42 +91,32 @@ parameters:
     description: Floor origin corner X (mm)
     unit: mm
     source: designer
-    required: false
-    default: ""
+    required: true
   - name: y
     type: double
     description: Floor origin corner Y (mm)
     unit: mm
     source: designer
-    required: false
-    default: ""
+    required: true
   - name: width
     type: double
     description: Floor width along X (mm)
     unit: mm
     source: designer
-    required: false
-    default: ""
+    required: true
   - name: length
     type: double
     description: Floor length along Y (mm)
     unit: mm
     source: designer
-    required: false
-    default: ""
-  - name: points
-    type: string
-    description: "Polygon outline in mm, as x,y; x,y; x,y, with an implicit closing edge."
-    source: designer
-    required: false
-    default: ""
+    required: true
   - name: offset
     type: double
     description: "Vertical offset from the level (mm)."
     unit: mm
     source: designer
     required: false
-    default: ""
+    default: 0
   - name: structural
     type: bool
     description: "Mark the floor as structural."
@@ -161,6 +129,7 @@ preconditions:
   - kind: category_present
     category: OST_Floors
 not_for:
+  - "polygonal floor specified by vertices"
   - "roof"
   - "ceiling"
   - "sloped floor"
@@ -175,9 +144,6 @@ fixtures:
   - name: basic
     params: {type_name: "Generic 150mm", level_name: "L1", x: 0, y: 0, width: 6000, length: 8000}
     expect: {Status: "Created"}
-  - name: polygon
-    params: {"level_name":"L1","type_name":"Generic","points":"0,0; 5000,0; 4000,4000; 0,4000","offset":100,"structural":true}
-    expect: {"Status":"Created"}
 approved_by: null
 approved_at: null
 created_at: "2026-03-13T00:00:00"

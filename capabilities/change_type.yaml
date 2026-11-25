@@ -2,13 +2,8 @@ schema_version: 1
 name: change_type
 display_name: Change Type
 description: >-
-  Change the listed element ids or the elements selected in Revit (at most 100) to another type of the same category.
-  The category is an OST_* name and the type is given by id or by type name (Family: Type for ambiguous names). Every
-  selected element is checked first; an element of another category, in a group, or that
-  cannot take the type stops the run and nothing is changed. Elements that already have the
-  type are listed under AlreadyThisType; if all have it, nothing is changed and the run says
-  so. The validator reads the type back from every changed element; it needs Revit 2024 or
-  later (its read-back uses ElementId.Value), so the tool is for Revit 2024 or later.
+  Change up to 100 selected or listed instances to another type of the same category, using its
+  element id. Revit 2024 or later is required for reading back 64-bit ids.
 version: "1.0.0"
 revit_versions: ["2024", "2025", "2026", "2027"]
 code_template: |
@@ -34,29 +29,14 @@ code_template: |
       || !Enum.IsDefined(typeof(BuiltInCategory), category))
       throw new InvalidOperationException("REFUSED: \"" + categoryName + "\" is not a category name; use an OST_ name such as OST_Walls.");
   ElementId categoryId = new ElementId(category);
-  string typeName = "{type_name}";
-  if ((typeText.Length == 0) == (typeName.Length == 0))
-      throw new InvalidOperationException("REFUSED: Give either the type id or the type name.");
-  ElementType target;
-  if (typeName.Length > 0)
-  {
-      var matches = new FilteredElementCollector(document).OfCategory(category).WhereElementIsElementType()
-          .OfType<ElementType>().Where(t => t.Name == typeName || t.FamilyName + ": " + t.Name == typeName).Take(2).ToList();
-      if (matches.Count != 1)
-          throw new InvalidOperationException("REFUSED: The requested type name is missing or ambiguous in " + categoryName + ". Give Family: Type.");
-      target = matches[0];
-  }
-  else
-  {
-      long typeNumber;
-      if (!long.TryParse(typeText, System.Globalization.NumberStyles.Integer, invariant, out typeNumber) || typeNumber <= 0)
-          throw new InvalidOperationException("REFUSED: Give a positive type id.");
-      #pragma warning disable 618
-      target = document.GetElement(new ElementId(typeNumber)) as ElementType;
-      #pragma warning restore 618
-      if (target == null)
-          throw new InvalidOperationException("REFUSED: There is no type with id " + typeText + " in this model.");
-  }
+  long typeNumber;
+  if (!long.TryParse(typeText, System.Globalization.NumberStyles.Integer, invariant, out typeNumber) || typeNumber <= 0)
+      throw new InvalidOperationException("REFUSED: Give a positive type id.");
+  #pragma warning disable 618
+  ElementType target = document.GetElement(new ElementId(typeNumber)) as ElementType;
+  #pragma warning restore 618
+  if (target == null)
+      throw new InvalidOperationException("REFUSED: There is no type with id " + typeText + " in this model.");
   ElementId typeId = target.Id;
   if (target.Category == null || !target.Category.Id.Equals(categoryId))
       throw new InvalidOperationException("REFUSED: Type " + typeText + " (" + target.Name + ") is not a " + categoryName + " type.");
@@ -141,17 +121,10 @@ parameters:
     type: integer
     description: Id of the target type, from list_types for that category (or a type picked in the host)
     source: designer
-    required: false
-    default: ""
+    required: true
   - name: element_ids
     type: string
     description: "Comma-separated element ids. Omit to use the current selection."
-    source: designer
-    required: false
-    default: ""
-  - name: type_name
-    type: string
-    description: "Type name in the requested category, or Family: Type."
     source: designer
     required: false
     default: ""
@@ -178,7 +151,7 @@ fixtures:
     params: {category: "OST_Walls", type_id: 201}
     expect: {Status: "Changed"}
   - name: by_id
-    params: {"category":"OST_Walls","type_name":"Generic","element_ids":"101,102"}
+    params: {"category":"OST_Walls","type_id":201,"element_ids":"101,102"}
     expect: {"Status":"Changed"}
 approved_by: null
 approved_at: null

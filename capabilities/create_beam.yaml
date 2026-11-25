@@ -28,8 +28,10 @@ code_template: |
       throw new InvalidOperationException("REFUSED: The requested level is missing.");
 
   // Step 3: Create beam line (mm -> feet)
-  XYZ start = new XYZ({start_x} / 304.8, {start_y} / 304.8, ({elevation} + {start_offset}) / 304.8);
-  XYZ end = new XYZ({end_x} / 304.8, {end_y} / 304.8, ({elevation} + {end_offset}) / 304.8);
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, double> mm = text => double.Parse(text, System.Globalization.NumberStyles.Float, invariant) / 304.8;
+  XYZ start = new XYZ(mm("{start_x}"), mm("{start_y}"), mm("{elevation}") + mm("{start_offset}"));
+  XYZ end = new XYZ(mm("{end_x}"), mm("{end_y}"), mm("{elevation}") + mm("{end_offset}"));
   Line beamLine = Line.CreateBound(start, end);
 
   // Step 4: Create beam instance

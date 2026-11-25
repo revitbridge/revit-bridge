@@ -57,13 +57,13 @@ def param_variant(index: int, **changes) -> dict:
 WITHOUT_VALIDATOR = {
     "set_parameter", "move_elements", "delete_selected", "delete_elements",
     "copy_elements", "rotate_elements", "mirror_elements",
-    "get_element_geometry", "get_element_parameters",
+    "get_element_geometry", "get_element_parameters", "change_type_by_name",
 }
 
 
 def test_every_builtin_pack_is_valid_v1_with_a_validator():
     files = sorted(builtin_capabilities_dir().glob("*.yaml"))
-    assert len(files) == 34
+    assert len(files) == 40
     assert WITHOUT_VALIDATOR <= {path.stem for path in files}
     for path in files:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -85,19 +85,14 @@ def test_builtin_coordinates_are_the_designers_not_defaults():
     store = ToolStore()
     for name, coords in (("create_wall", ("start_x", "start_y", "end_x", "end_y")),
                          ("create_structural_column", ("x", "y")),
-                         ("create_beam", ("start_x", "start_y", "end_x", "end_y", "elevation"))):
+                         ("create_beam", ("start_x", "start_y", "end_x", "end_y", "elevation")),
+                         ("create_floor", ("x", "y", "width", "length"))):
         params = {p["name"]: p for p in store.load(name).parameters}
         for coord in coords:
             assert params[coord]["source"] == "designer" and params[coord]["required"] is True, (name, coord)
             assert params[coord]["unit"] == "mm" and "default" not in params[coord], (name, coord)
     wall = {p["name"]: p for p in store.load("create_wall").parameters}
-    # Absence must survive rendering: a missing height means 3000 mm only for
-    # an unconnected wall. A top level alone binds the top instead.
-    assert wall["height"]["source"] == "default" and wall["height"]["default"] == ""
-    assert 'feet(heightText == "" ? "3000" : heightText)' in store.load("create_wall").code_template
-    floor = {p["name"]: p for p in store.load("create_floor").parameters}
-    for coord in ("x", "y", "width", "length"):
-        assert floor[coord]["unit"] == "mm" and floor[coord]["default"] == ""
+    assert wall["height"]["source"] == "default" and wall["height"]["default"] == 3000
 
 
 # -- validate_pack -----------------------------------------------------------------------

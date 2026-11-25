@@ -1,7 +1,7 @@
 schema_version: 1
 name: get_element_parameters
 display_name: Get Element Parameters
-description: "Read the named element's parameters. Delimit requested names with semicolons. Returns the display value, parameter id and storage type."
+description: "Read instance parameters on one element. Type parameters are not included. Delimit requested names with semicolons. Value holds numeric or raw text data; ValueString holds formatted display text."
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
@@ -17,6 +17,7 @@ code_template: |
   };
 
   Element element = elementById("{element_id}");
+  if (element is ElementType) throw new InvalidOperationException("REFUSED: Supply an instance id to read instance parameters.");
   string namesText = "{names}";
   var requested = new HashSet<string>(namesText.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
       .Select(n => n.Trim()).Where(n => n.Length > 0), StringComparer.OrdinalIgnoreCase);
@@ -45,12 +46,13 @@ code_template: |
                       var spec = p.Definition.GetDataType();
                       if (spec == SpecTypeId.Length) { value = UnitUtils.ConvertFromInternalUnits(p.AsDouble(), UnitTypeId.Millimeters); unit = "mm"; }
                       else if (spec == SpecTypeId.Angle) { value = UnitUtils.ConvertFromInternalUnits(p.AsDouble(), UnitTypeId.Degrees); unit = "degrees"; }
-                      else value = p.AsValueString();
+                      else { value = p.AsDouble(); unit = "Revit internal units"; }
                       break;
               }
           }
+          string display = !p.HasValue ? null : p.StorageType == StorageType.String ? p.AsString() : p.AsValueString();
           items.Add(new { ParameterId = p.Id.Value, Name = name, BuiltIn = builtIn, Storage = p.StorageType.ToString(),
-              Value = value, Unit = unit, Display = p.HasValue ? p.AsValueString() : null });
+              Value = value, Unit = unit, ValueString = display, Display = display });
       }
       catch (Exception ex) { skipped.Add(new { ParameterId = p.Id.Value, Reason = ex.Message }); }
   }

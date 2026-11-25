@@ -122,7 +122,7 @@ def test_the_listing_shows_the_fourteen_packs_next_to_the_eight_earlier_ones():
     store = ToolStore()                       # the package's own built-in directory
     listed = {tool.name for tool in store.list_tools()}
     assert set(NAMES) <= listed and set(PREEXISTING) <= listed
-    assert len(listed) == len(NAMES) + len(PREEXISTING) + 12
+    assert len(listed) == len(NAMES) + len(PREEXISTING) + 18
     for name in NAMES:
         assert store.path_of(name) == store.builtin_dir / f"{name}.yaml"
 
@@ -284,6 +284,9 @@ def test_lengths_are_mm_and_converted_with_the_unit_api(name):
     code = data["code_template"]
     doubles = [p for p in data["parameters"] if p["type"] == "double"]
     for param in doubles:
+        if name == "create_roof_by_footprint" and param["name"] == "slope":
+            assert "degrees" in param["description"] and "unit" not in param
+            continue
         assert param["unit"] == "mm" and "(mm)" in param["description"], (name, param["name"])
     if doubles:
         assert "UnitUtils.ConvertToInternalUnits(" in code and "UnitTypeId.Millimeters" in code
@@ -541,44 +544,50 @@ def thrown(exception: str, message: str):
     return lambda rid: FakeRevit.thrown(rid, exception, message)
 
 
-@pytest.mark.parametrize(("params", "ids", "passed"), [
-    ({"type_id": 901}, [], True),
-    ({"type_name": "Basic: Sample"}, [901], True),
-    ({"type_name": "Basic: Sample"}, [905], False),
-    ({"type_name": "Sample"}, [901, 902], False),
-])
-def test_change_type_checks_the_confirmed_type_against_each_changed_element(tmp_path, params, ids, passed):
+@pytest.mark.parametrize(("value", "passed"), [(901, True), (905, False)])
+def test_change_type_checks_the_confirmed_type_id_against_the_changed_element(tmp_path, value, passed):
     host = Host(tmp_path)
-    probes = []
     execution_reply = fake_addin(lambda rid: FakeRevit.code_result(rid, {"Status": "Changed", "ElementIds": [101]}))
 
     def handler(request):
         code = request["params"].get("code", "")
-        rid = request["id"]
-        if ".Take(2).Select(t => t.Id.Value)" in code:
-            assert '"OST_Walls"' in code and 't.FamilyName + ": " + t.Name == name' in code
-            probes.append("type lookup")
-            return FakeRevit.code_result(rid, ids)
         if 'string kind = "string";' in code:
-            probes.append("read back")
-            return FakeRevit.code_result(rid, [{"Id": 101, "Name": "ELEM_TYPE_PARAM", "Kind": "elementid", "Value": 901}])
+            return FakeRevit.code_result(request["id"], [{"Id": 101, "Name": "ELEM_TYPE_PARAM",
+                                                          "Kind": "elementid", "Value": value}])
         return execution_reply(request)
 
-    result, _ = host.run("change_type", {"category": "OST_Walls", **params}, handler)
+    result, _ = host.run("change_type", {"category": "OST_Walls", "type_id": 901}, handler)
     assert result.success is passed and result.validation.validator == "param_equals"
-    assert ("type lookup" in probes) == ("type_name" in params)
-    assert ("read back" in probes) == (len(ids) < 2)
 
 
-def test_named_type_readback_is_specific_to_the_shipped_pack(tmp_path):
-    import shutil
-    from revit_bridge.validators.builtin import ParamEquals
+def test_change_type_by_name_reads_back_all_instances_after_changing_them(store):
+    name = "change_type_by_name"
+    assert data_for(name)["validator"] is None
+    code, errors = store.render(name, {"category": "OST_Walls", "type_name": "Basic: Sample"})
+    assert not errors and 'string typeName = "Basic: Sample";' in code
+    assert code.index("if (matches.Count != 1)") < code.index("ChangeTypeId(")
+    assert code.index("ChangeTypeId(") < code.index("document.Regenerate()") < code.index("changed.Concat(already)")
+    assert "instance == null || !instance.GetTypeId().Equals(typeId)" in code
 
-    host = Host(tmp_path)
-    host.store.user_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(ROOT / "change_type.yaml", host.store.user_dir / "change_type.yaml")
-    validator = execution._pack_validator(host.store, host.store.load("change_type"), {"type_name": "Sample"})
-    assert type(validator) is ParamEquals
+
+@pytest.mark.parametrize("element", ["door", "window"])
+def test_point_and_distance_placement_have_separate_required_inputs(store, element):
+    xy = data_for("create_" + element)
+    along = data_for("create_" + element + "_on_wall")
+    original = {p["name"] for p in xy["parameters"] if p["required"]}
+    assert original == {"wall_id", "type_name", "x", "y"} | ({"sill_height"} if element == "window" else set())
+    assert {p["name"] for p in along["parameters"] if p["required"]} == {"wall_id", "type_name", "offset_along_wall"}
+    assert not {"x", "y"}.intersection(p["name"] for p in along["parameters"])
+    assert "offset_along_wall" not in {p["name"] for p in xy["parameters"]}
+    code, errors = store.render(along["name"], {"wall_id": 101, "type_name": "Sample", "offset_along_wall": 0})
+    assert errors == [] and 'toFeet("Distance along the wall", "0")' in code
+
+
+@pytest.mark.parametrize("tool", ["create_door", "create_door_on_wall"])
+def test_requested_door_elevation_must_be_within_host_wall_before_placement(tool):
+    code = code_of(tool)
+    assert code.index("bottom < wallBox.Min.Z - tolerance || bottom >= wallBox.Max.Z - tolerance") < code.index("NewFamilyInstance(")
+    assert 'throw new InvalidOperationException("REFUSED: The requested door elevation is outside' in code
 
 
 def test_a_refusal_is_refused_not_failed_and_leaves_the_counters_alone(tmp_path):

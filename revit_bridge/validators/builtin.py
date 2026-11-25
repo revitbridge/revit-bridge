@@ -6,10 +6,9 @@ written as ``"{param}"`` and then take the spec's value for that parameter.
 from __future__ import annotations
 
 import re
-from decimal import Decimal, InvalidOperation
 
 from revit_bridge.capabilities.store import escape_param_value
-from revit_bridge.spec.models import ParamBinding, Source, TaskSpec
+from revit_bridge.spec.models import TaskSpec
 from revit_bridge.validators.base import (
     Check,
     ValidationReport,
@@ -218,28 +217,6 @@ class ParamEquals:
                                 after={"ids": ids, "category": category})
 
 
-class NamedTypeEquals(ParamEquals):
-    """Read back a built-in change_type request made with a type name."""
-
-    async def after(self, client, spec: TaskSpec, cfg: dict, before: dict, result) -> ValidationReport:
-        category = _category(cfg, spec)
-        name = next(p.value for p in spec.parameters if p.name == "type_name")
-        code = (
-            f'var bic = (BuiltInCategory)Enum.Parse(typeof(BuiltInCategory), "{category}");\n'
-            f'string name = "{escape_param_value(name)}";\n'
-            'return new FilteredElementCollector(document).OfCategory(bic).WhereElementIsElementType()\n'
-            '    .OfType<ElementType>().Where(t => t.Name == name || t.FamilyName + ": " + t.Name == name)\n'
-            '    .Take(2).Select(t => t.Id.Value).ToList();'
-        )
-        ids = await _probe(client, code)
-        if not isinstance(ids, list) or len(ids) != 1 or type(ids[0]) is not int:
-            return failed_report(self.kind, f"expected one {category} type named {name!r}", before)
-        bindings = [p for p in spec.parameters if p.name != "type_id"]
-        bindings.append(ParamBinding(name="type_id", value=ids[0], source=Source.tool,
-                                     evidence="model lookup of confirmed type_name"))
-        return await super().after(client, spec.model_copy(update={"parameters": bindings}), cfg, before, result)
-
-
 def _number(value: float) -> str:
     """A whole number as an integer (element id 1221510, not ``:g``'s 1.22151e+06); anything else as ``:g``."""
     return str(int(value)) if value.is_integer() and abs(value) < 2 ** 63 else f"{value:g}"
@@ -257,20 +234,7 @@ def _compare(row: dict, expected, unit: str | None = None,
         return False, "element does not exist"
     if kind == "none":
         return False, "parameter not found on the element"
-    if kind == "elementid":
-        try:
-            ids = [Decimal(str(value)) for value in (actual, expected)]
-        except InvalidOperation:
-            ids = []
-        if len(ids) != 2 or any(not n.is_finite() or n < -(2**63) or n >= 2**63
-                                or n != n.to_integral_value() for n in ids):
-            return False, f"got {actual!r}, expected {expected!r}"
-        got_id, want_id = map(int, ids)
-        detail = f"got {got_id}, expected {want_id}"
-        if tolerance is None:
-            return got_id == want_id, detail
-        return abs(got_id - want_id) <= tolerance, f"{detail} +/- {tolerance:g}"
-    if kind in ("length_mm", "double", "int"):
+    if kind in ("length_mm", "double", "int", "elementid"):
         try:
             got, want = float(actual), float(expected)
         except (TypeError, ValueError):

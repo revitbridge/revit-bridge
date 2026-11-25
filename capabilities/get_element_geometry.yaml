@@ -37,10 +37,11 @@ code_template: |
               continue;
           }
           XYZ direction = curve.ComputeDerivatives(0.5, true).BasisX.Normalize();
-          XYZ normal = XYZ.BasisZ.CrossProduct(direction).Normalize();
+          XYZ horizontalNormal = XYZ.BasisZ.CrossProduct(direction);
+          const double MinHorizontalComponent = 1e-9; // dimensionless on a unit tangent
           items.Add(new { Id = id.Value, Start = point(curve.GetEndPoint(0)), End = point(curve.GetEndPoint(1)),
               Mid = point(curve.Evaluate(0.5, true)), Direction = vector(direction),
-              NormalLeft = normal.IsZeroLength() ? null : vector(normal),
+              NormalLeft = horizontalNormal.GetLength() <= MinHorizontalComponent ? null : vector(horizontalNormal.Normalize()),
               LengthMm = mm(curve.Length), Level = (document.GetElement(element.LevelId) as Level)?.Name });
       }
       catch (Exception ex) { skipped.Add(new { Id = id.Value, Reason = ex.Message }); }

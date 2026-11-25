@@ -2,10 +2,12 @@ schema_version: 1
 name: delete_elements
 display_name: Delete Elements
 description: >-
-  Delete the supplied ids (at most 100). Every selected element is checked
+  Delete the supplied ids (at most 100). Every supplied element is checked
   first; pinned elements, element types (deleting one deletes all its instances), views and
-  levels stop the run and nothing is deleted. The number actually deleted must equal the number of supplied ids.
-  If deleting a host would also remove unlisted dependents, the operation rolls back. Returns
+  levels stop the run and nothing is deleted. Unlisted dependent model hosts and family instances
+  stop the deletion. AlsoDeleted lists the first 100 additional ids (such as sketches and tags);
+  AlsoDeletedCount reports the total. If classification exceeds the time budget,
+  the operation rolls back. Returns
   the ids deleted; there is no validator, the tool checks that every one is gone.
 version: "1.0.0"
 revit_versions: ["2026"]
@@ -39,12 +41,7 @@ code_template: |
           selected.Add(id);
       }
   }
-  if (selected.Count == 0)
-      throw new InvalidOperationException("REFUSED: Nothing is selected in Revit. Select the elements first, then run the tool again.");
-  if (selected.Count > MaxSelected)
-      throw new InvalidOperationException("REFUSED: " + selected.Count + " elements are selected; this tool deletes at most " + MaxSelected + " per run. Select fewer.");
-
-  // 1. Check every selected element before deleting any.
+  var requested = new HashSet<ElementId>(selected);
   var problems = new List<string>();
   foreach (ElementId id in selected)
   {
@@ -56,36 +53,91 @@ code_template: |
       if (element.Pinned) { problems.Add(idOf(id) + " is pinned; unpin it in Revit first"); continue; }
   }
   if (problems.Count > 0)
-      throw new InvalidOperationException("REFUSED: Nothing was deleted: " + problems.Count + " of " + selected.Count + " selected elements cannot be deleted by this tool. "
+      throw new InvalidOperationException("REFUSED: Nothing was deleted: " + problems.Count + " of " + selected.Count + " supplied ids cannot be deleted by this tool. "
           + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
 
-  // 2. Delete, then check that every selected element is gone. Revit's own refusal of this selection
-  // (API docs: ArgumentException, "one or more of the elementIds cannot be deleted") is the designer's
-  // to fix; its other exceptions (the document in failure mode, ...) are failures.
-  ICollection<ElementId> deleted;
-  try
+  // Deleted elements cannot be opened afterwards. Snapshot model host/instance IDs with quick
+  // filters before the single deletion. Only candidates outside Settings.Categories need opening.
+  var clock = System.Diagnostics.Stopwatch.StartNew();
+  void CheckBudget()
   {
-      deleted = document.Delete(selected);
+      if (clock.ElapsedMilliseconds >= 250)
+          throw new InvalidOperationException("REFUSED: The model-instance check exceeded its time budget. No elements were deleted.");
   }
+  var knownCategories = new List<ElementId>();
+  var modelCategories = new List<ElementId>();
+  foreach (Category category in document.Settings.Categories)
+  {
+      CheckBudget();
+      if (category.CategoryType == CategoryType.Model) modelCategories.Add(category.Id);
+      knownCategories.Add(category.Id);
+  }
+  var modelInstances = new HashSet<ElementId>();
+  var unclassified = new HashSet<ElementId>();
+  using (var classes = new ElementMulticlassFilter(new List<Type> { typeof(HostObject), typeof(FamilyInstance) }))
+  {
+      if (modelCategories.Count != 0)
+      using (var filter = new ElementMulticategoryFilter(modelCategories))
+      using (var collection = new FilteredElementCollector(document))
+      using (var ids = collection.WherePasses(classes).WherePasses(filter).GetElementIdIterator())
+      {
+          while (ids.MoveNext()) { CheckBudget(); modelInstances.Add(ids.Current); }
+      }
+      using (var collection = new FilteredElementCollector(document))
+      using (var outside = knownCategories.Count == 0 ? null : new ElementMulticategoryFilter(knownCategories, true))
+      {
+          collection.WherePasses(classes);
+          if (outside != null) collection.WherePasses(outside);
+          foreach (Element element in collection)
+          {
+              CheckBudget();
+              ElementId id = element.Id;
+              try
+              {
+                  Category category = element.Category;
+                  if (category == null) unclassified.Add(id);
+                  else if (category.CategoryType == CategoryType.Model) modelInstances.Add(id);
+              }
+              catch (Autodesk.Revit.Exceptions.InvalidOperationException) { unclassified.Add(id); }
+          }
+      }
+  }
+  CheckBudget();
+  ICollection<ElementId> deleted;
+  try { deleted = document.Delete(selected); }
   catch (Autodesk.Revit.Exceptions.ArgumentException ex) when (!(ex is Autodesk.Revit.Exceptions.ArgumentNullException))
   {
-      throw new InvalidOperationException("REFUSED: Revit would not delete the selection: " + ex.Message);
+      throw new InvalidOperationException("REFUSED: Revit would not delete the supplied ids: " + ex.Message);
   }
+  clock.Restart();
+  int extraCount = 0;
+  var also = new List<long>();
+  var missing = new HashSet<ElementId>(requested);
+  foreach (ElementId id in deleted)
+  {
+      CheckBudget();
+      if (missing.Remove(id)) continue;
+      if (modelInstances.Contains(id))
+          throw new InvalidOperationException("REFUSED: Deletion also removes model instance " + id + "; include its id explicitly.");
+      if (unclassified.Contains(id))
+          throw new InvalidOperationException("Could not verify the category of dependent instance " + id + "; rolling back.");
+      extraCount++;
+      if (also.Count < 100) also.Add(idOf(id));
+  }
+  if (missing.Count > 0)
+      throw new InvalidOperationException("The deletion result did not contain every requested id.");
   var survivors = selected.Where(id => document.GetElement(id) != null).ToList();
   if (survivors.Count > 0)
       throw new InvalidOperationException("Revit did not delete " + survivors.Count + " selected element(s) ("
           + string.Join(", ", survivors.Take(5).Select(id => idOf(id))) + "); nothing was deleted.");
-  if (selected.Any(id => !deleted.Contains(id)) || deleted.Count != selected.Count)
-      throw new InvalidOperationException("REFUSED: Deleting those ids would also delete dependents. Include all affected ids explicitly.");
-  var also = deleted.Where(id => !selected.Contains(id)).Select(id => idOf(id)).ToList();
 
   return new
   {
       Status = "Deleted",
       ElementIds = selected.Select(id => idOf(id)).ToList(),
       Count = selected.Count,
-      AlsoDeleted = also.Take(100).ToList(),
-      AlsoDeletedCount = also.Count
+      AlsoDeleted = also,
+      AlsoDeletedCount = extraCount
   };
 parameters:
   - name: element_ids
@@ -103,7 +155,7 @@ not_for:
 applies_when:
   - "delete elements by id"
   - "delete element ids"
-  - "remove selected elements"
+  - "remove the listed element ids"
 validator: null
 fixtures:
   - name: basic

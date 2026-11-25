@@ -2,9 +2,9 @@ schema_version: 1
 name: create_window
 display_name: Create Window
 description: >-
-  Place a window in a basic wall. Give either x,y or the distance along the wall from its start.
-  The host's base level is used unless level_name is supplied. Coordinates and offsets are in mm.
-  Give the type name or Family: Type. Set flip to reverse facing.
+  Place one window in a basic wall at the wall point nearest the given x,y.
+  Use a loaded type name or Family: Type. The wall's base level is used unless another level is given.
+  Dimensions are in mm. Set flip to reverse facing.
 version: "1.0.0"
 revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
@@ -81,20 +81,7 @@ code_template: |
   if (sill < 0)
       throw new InvalidOperationException("REFUSED: The sill height must be zero or more mm above the level.");
   Curve line = wallLocation.Curve;
-  XYZ asked;
-  if ("{offset_along_wall}".Length > 0)
-  {
-      if ("{x}".Length > 0 || "{y}".Length > 0)
-          throw new InvalidOperationException("REFUSED: Give the distance along the wall or its x,y position, not both.");
-      double distance = toFeet("Distance along the wall", "{offset_along_wall}");
-      if (distance < 0 || distance > line.Length || (!(line is Line) && !(line is Arc)))
-          throw new InvalidOperationException("REFUSED: Give a distance within the length of a straight or circular-arc host wall.");
-      asked = line.Evaluate(distance / line.Length, true);
-  }
-  else
-  {
-      asked = new XYZ(toFeet("X", "{x}"), toFeet("Y", "{y}"), line.GetEndPoint(0).Z);
-  }
+  XYZ asked = new XYZ(toFeet("X", "{x}"), toFeet("Y", "{y}"), line.GetEndPoint(0).Z);
   if (!XYZ.IsWithinLengthLimits(asked))
       throw new InvalidOperationException("REFUSED: The point is outside the model's limits.");
   IntersectionResult nearest = line.Project(asked);
@@ -189,15 +176,13 @@ parameters:
     description: X of a point on the wall where the window's centre goes (mm)
     unit: mm
     source: designer
-    required: false
-    default: ""
+    required: true
   - name: y
     type: double
     description: Y of a point on the wall where the window's centre goes (mm)
     unit: mm
     source: designer
-    required: false
-    default: ""
+    required: true
   - name: sill_height
     type: double
     description: Sill height above the wall's base level (mm)
@@ -211,13 +196,6 @@ parameters:
     choices_from: levels
     required: false
     default: ""
-  - name: offset_along_wall
-    type: double
-    description: "Distance from the wall start (mm)."
-    unit: mm
-    source: designer
-    required: false
-    default: ""
   - name: flip
     type: bool
     description: "Flip the facing direction."
@@ -229,7 +207,7 @@ preconditions:
     value: 1
   - kind: category_present
     category: OST_Windows
-  - text: "the host must be a basic wall (not curtain or stacked); the sill is measured from the wall's base level"
+  - text: "the host must be a basic wall (not curtain or stacked); the sill is measured from the placement level"
 not_for:
   - "curtain wall"
   - "window type"
@@ -248,9 +226,6 @@ fixtures:
   - name: basic
     params: {wall_id: 101, type_name: "Fixed 1200", x: 1500, y: 0, sill_height: 900}
     expect: {Status: "Created"}
-  - name: by_distance
-    params: {"wall_id":101,"type_name":"Fixed","level_name":"L1","offset_along_wall":1500,"flip":true,"sill_height":900}
-    expect: {"Status":"Created"}
 approved_by: null
 approved_at: null
 created_at: "2026-11-23T00:00:00"
