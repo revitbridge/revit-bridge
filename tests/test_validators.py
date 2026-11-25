@@ -170,6 +170,32 @@ def test_created_ids_checks_existence_and_category():
 
 # -- param_equals -------------------------------------------------------------------------------
 
+@pytest.mark.parametrize(("actual", "expected", "tolerance", "passed"), [
+    (2**53 + 1, str(2**53 + 1), None, True),
+    (2**53 + 1, 2**53, None, False),
+    (2**53 + 1, 2**53, 1, True),
+    (2**63 - 1, str(2**63 - 1), None, True),
+    (9, "9.5", None, False),
+    (9, "NaN", None, False),
+    (9, str(2**63), None, False),
+])
+def test_param_equals_preserves_element_id_precision(actual, expected, tolerance, passed):
+    cfg = {"kind": "param_equals", "category": "OST_Walls",
+           "checks": [{"param_name": "ELEM_TYPE_PARAM", "spec_param": "type_id"}]}
+    rows = [{"Id": 7, "Name": "ELEM_TYPE_PARAM", "Kind": "elementid", "Value": actual}]
+
+    def handler(request):
+        if request["method"] == "send_code_to_revit":
+            return FakeRevit.code_result(request["id"], rows)
+        return FakeRevit.default_handler(request)
+
+    report, _ = run(handler, lambda client: ParamEquals().after(
+        client, spec(type_id=expected), cfg, {}, {"ElementId": 7},
+        tolerances={"type_id": tolerance} if tolerance is not None else None,
+    ))
+    assert report.passed is passed
+
+
 def test_param_equals_reads_back_values_with_length_tolerance():
     validator = ParamEquals()
     cfg = {"kind": "param_equals", "category": "OST_Walls",

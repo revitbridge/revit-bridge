@@ -31,6 +31,11 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   creation now produces a `REFUSED` result where those tools previously returned
   `Status="Error"`.
 
+### Fixed
+
+- Parameter read-back compares element IDs as 64-bit integers. Adjacent IDs
+  above the exact precision of a floating-point number are now distinguished.
+
 ## [0.9.1] - 2026-11-23
 
 Fourteen basic capability packs, and a way for any pack to refuse its input

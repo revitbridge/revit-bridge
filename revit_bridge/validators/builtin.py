@@ -6,6 +6,7 @@ written as ``"{param}"`` and then take the spec's value for that parameter.
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 
 from revit_bridge.capabilities.store import escape_param_value
 from revit_bridge.spec.models import TaskSpec
@@ -234,7 +235,20 @@ def _compare(row: dict, expected, unit: str | None = None,
         return False, "element does not exist"
     if kind == "none":
         return False, "parameter not found on the element"
-    if kind in ("length_mm", "double", "int", "elementid"):
+    if kind == "elementid":
+        try:
+            ids = [Decimal(str(value)) for value in (actual, expected)]
+        except InvalidOperation:
+            ids = []
+        if len(ids) != 2 or any(not n.is_finite() or n < -(2**63) or n >= 2**63
+                                or n != n.to_integral_value() for n in ids):
+            return False, f"got {actual!r}, expected {expected!r}"
+        got_id, want_id = map(int, ids)
+        detail = f"got {got_id}, expected {want_id}"
+        if tolerance is None:
+            return got_id == want_id, detail
+        return abs(got_id - want_id) <= tolerance, f"{detail} +/- {tolerance:g}"
+    if kind in ("length_mm", "double", "int"):
         try:
             got, want = float(actual), float(expected)
         except (TypeError, ValueError):
