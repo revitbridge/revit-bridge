@@ -2,60 +2,165 @@ schema_version: 1
 name: create_structural_column
 display_name: Create Structural Column
 description: Create a structural column of a named family type at X/Y on a level.
+  Specify a top level or let Revit use the next level above the base.
 version: "1.0.0"
 revit_versions: ["2026"]
 code_template: |
-  // Step 1: Get structural column family symbol by name
-  var symbol = new FilteredElementCollector(document)
-      .OfClass(typeof(FamilySymbol))
-      .OfCategory(BuiltInCategory.OST_StructuralColumns)
-      .Cast<FamilySymbol>()
-      .FirstOrDefault(s => s.Name == "{type_name}");
-  if (symbol == null)
-      return new { Status = "Error", Message = "Column type '{type_name}' not found" };
-  if (!symbol.IsActive) symbol.Activate();
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, double> number = text =>
+  {
+      double value;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out value)
+          || double.IsNaN(value) || double.IsInfinity(value))
+          throw new InvalidOperationException("REFUSED: Expected a finite number: " + text);
+      return value;
+  };
+  Func<string, double> feet = text => UnitUtils.ConvertToInternalUnits(number(text), UnitTypeId.Millimeters);
 
-  // Step 2: Get level by name
-  var level = new FilteredElementCollector(document)
-      .OfClass(typeof(Level))
-      .Cast<Level>()
-      .FirstOrDefault(l => l.Name == "{level_name}");
-  if (level == null)
-      return new { Status = "Error", Message = "Level '{level_name}' not found" };
+  Func<string, Level> levelByName = name =>
+  {
+      Level result = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+          .FirstOrDefault(l => l.Name == name);
+      if (result == null)
+          throw new InvalidOperationException("REFUSED: No level named " + name);
+      return result;
+  };
 
-  // Step 3: Create column at position (mm -> feet)
-  XYZ location = new XYZ({x} / 304.8, {y} / 304.8, 0);
-  var column = document.Create.NewFamilyInstance(
-      location, symbol, level,
+  Action<Element, BuiltInParameter, ElementId> setId = (element, key, value) =>
+  {
+      Parameter p = element.get_Parameter(key);
+      if (p == null || p.IsReadOnly || (!p.Set(value) && p.AsElementId() != value))
+          throw new InvalidOperationException("REFUSED: Cannot set " + key + " on " + element.Id);
+  };
+  Action<Element, BuiltInParameter, double> setLength = (element, key, value) =>
+  {
+      Parameter p = element.get_Parameter(key);
+      if (p == null || p.IsReadOnly || (!p.Set(value) && (!p.HasValue || Math.Abs(p.AsDouble() - value) > 1e-9)))
+          throw new InvalidOperationException("REFUSED: Cannot set " + key + " on " + element.Id);
+  };
+
+  Level level = levelByName("{level_name}");
+  string topName = "{top_level_name}", typeName = "{type_name}";
+  Level top = topName == "" ? null : levelByName(topName);
+  var symbols = new FilteredElementCollector(document).OfClass(typeof(FamilySymbol))
+      .OfCategory(BuiltInCategory.OST_StructuralColumns).Cast<FamilySymbol>()
+      .Where(s => s.Name == typeName || s.FamilyName + ": " + s.Name == typeName).Take(2).ToList();
+  if (symbols.Count != 1)
+      throw new InvalidOperationException("REFUSED: Choose a unique column type; use Family: Type if ambiguous: " + typeName);
+  var symbol = symbols[0];
+  if (!symbol.IsActive) { symbol.Activate(); document.Regenerate(); }
+  XYZ location = new XYZ(feet("{x}"), feet("{y}"), 0);
+  var column = document.Create.NewFamilyInstance(location, symbol, level,
       Autodesk.Revit.DB.Structure.StructuralType.Column);
+  if (column == null) throw new InvalidOperationException("Revit returned no column.");
+  string baseText = "{base_offset}", topText = "{top_offset}";
+  if (top != null && topText == "") topText = "0";
+  if (top != null || topText != "" || baseText != "")
+  {
+      Func<BuiltInParameter, double> offset = key =>
+      {
+          Parameter p = column.get_Parameter(key);
+          if (p == null || !p.HasValue) throw new InvalidOperationException("REFUSED: Cannot read column offset " + key);
+          return p.AsDouble();
+      };
+      var pTop = column.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM);
+      Level effectiveTop = top ?? (pTop != null && pTop.HasValue ? document.GetElement(pTop.AsElementId()) as Level : null);
+      if (effectiveTop == null) throw new InvalidOperationException("REFUSED: Cannot resolve the column top level.");
+      double baseZ = level.ProjectElevation + (baseText == "" ? offset(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM) : feet(baseText));
+      double topZ = effectiveTop.ProjectElevation + (topText == "" ? offset(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM) : feet(topText));
+      if (topZ <= baseZ) throw new InvalidOperationException("REFUSED: Effective column top must be above its base.");
+  }
+  if (top != null) setId(column, BuiltInParameter.FAMILY_TOP_LEVEL_PARAM, top.Id);
+  if (baseText != "") setLength(column, BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM, feet(baseText));
+  if (topText != "") setLength(column, BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM, feet(topText));
 
-  return new { ElementId = column.Id.Value, Status = "Created",
-               FamilyType = symbol.Name, Level = level.Name };
+  double angle = number("{rotation}") * Math.PI / 180;
+  if (angle != 0)
+      ElementTransformUtils.RotateElement(document, column.Id, Line.CreateBound(location, location + XYZ.BasisZ), angle);
+  document.Regenerate();
+  Level ReadLevel(BuiltInParameter key)
+  {
+      Parameter parameter = column.get_Parameter(key);
+      return parameter != null && parameter.HasValue ? document.GetElement(parameter.AsElementId()) as Level : null;
+  }
+  double? ReadOffset(BuiltInParameter key)
+  {
+      Parameter parameter = column.get_Parameter(key);
+      return parameter != null && parameter.HasValue ? (double?)parameter.AsDouble() : null;
+  }
+  Level actualBase = ReadLevel(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM);
+  Level actualTop = ReadLevel(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM);
+  double? actualBaseOffset = ReadOffset(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+  double? actualTopOffset = ReadOffset(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM);
+  double? height = actualTop?.ProjectElevation + actualTopOffset - actualBase?.ProjectElevation - actualBaseOffset;
+  if ((top != null && actualTop?.Id != top.Id)
+      || (topText != "" && (!actualTopOffset.HasValue || Math.Abs(actualTopOffset.Value - feet(topText)) > 1e-8))
+      || (baseText != "" && (!actualBaseOffset.HasValue || Math.Abs(actualBaseOffset.Value - feet(baseText)) > 1e-8)))
+      throw new InvalidOperationException("Column constraint read-back failed.");
+  if (height.HasValue && height.Value <= 0)
+      throw new InvalidOperationException("REFUSED: Effective column top must be above its base.");
+  if (!height.HasValue)
+  {
+      // Families without level constraints can still expose their physical height.
+      var box = column.get_BoundingBox(null);
+      if (box != null) height = box.Max.Z - box.Min.Z;
+  }
+  double? Mm(double? value) => value.HasValue
+      ? (double?)UnitUtils.ConvertFromInternalUnits(value.Value, UnitTypeId.Millimeters) : null;
+  return new { ElementId = column.Id.Value, Status = "Created", FamilyType = symbol.Name, Level = level.Name,
+      TopLevel = actualTop?.Name, TopOffsetMm = Mm(actualTopOffset), HeightMm = Mm(height) };
 parameters:
   - name: type_name
     type: string
-    description: Structural column family type name
+    description: Column type name
     source: tool:family_types
-    choices_from: family_types:OST_StructuralColumns
     required: true
+    choices_from: family_types:OST_StructuralColumns
   - name: level_name
     type: string
     description: Base level name
     source: tool:levels
-    choices_from: levels
     required: true
+    choices_from: levels
   - name: x
     type: double
-    description: Column X position (mm)
-    unit: mm
+    description: "X coordinate (mm)"
     source: designer
     required: true
+    unit: mm
   - name: y
     type: double
-    description: Column Y position (mm)
-    unit: mm
+    description: "Y coordinate (mm)"
     source: designer
     required: true
+    unit: mm
+  - name: top_level_name
+    type: string
+    description: "Top constraint level, by exact name"
+    source: answer
+    choices_from: levels
+    required: false
+    default: ""
+  - name: top_offset
+    type: double
+    description: "Offset from top level (mm)"
+    source: default
+    required: false
+    default: ""
+    unit: mm
+  - name: base_offset
+    type: double
+    description: "Offset from base level (mm)"
+    source: default
+    required: false
+    default: ""
+    unit: mm
+  - name: rotation
+    type: double
+    description: "Counterclockwise rotation (degrees)"
+    source: default
+    required: false
+    default: 0
 preconditions:
   - kind: levels_min
     value: 1
@@ -73,9 +178,12 @@ validator:
   category: OST_StructuralColumns
 fixtures:
   - name: basic
-    params: {type_name: "UC305x305x97", level_name: "L1", x: 0, y: 0}
-    expect: {Status: "Created"}
+    params: {type_name: UC305x305x97, level_name: L1, x: 0, y: 0}
+    expect: {Status: Created}
+  - name: top_and_rotation
+    params: {type_name: UC305x305x97, level_name: L1, x: 0, y: 0, top_level_name: L2, rotation: 30}
+    expect: {Status: Created}
 approved_by: null
 approved_at: null
 created_at: "2026-03-13T00:00:00"
-source_query: create a structural column
+source_query: create structural column

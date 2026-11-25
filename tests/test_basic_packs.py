@@ -122,7 +122,7 @@ def test_the_listing_shows_the_fourteen_packs_next_to_the_eight_earlier_ones():
     store = ToolStore()                       # the package's own built-in directory
     listed = {tool.name for tool in store.list_tools()}
     assert set(NAMES) <= listed and set(PREEXISTING) <= listed
-    assert len(listed) == len(NAMES) + len(PREEXISTING)
+    assert len(listed) == len(NAMES) + len(PREEXISTING) + 18
     for name in NAMES:
         assert store.path_of(name) == store.builtin_dir / f"{name}.yaml"
 
@@ -284,6 +284,9 @@ def test_lengths_are_mm_and_converted_with_the_unit_api(name):
     code = data["code_template"]
     doubles = [p for p in data["parameters"] if p["type"] == "double"]
     for param in doubles:
+        if name == "create_roof_by_footprint" and param["name"] == "slope":
+            assert "degrees" in param["description"] and "unit" not in param
+            continue
         assert param["unit"] == "mm" and "(mm)" in param["description"], (name, param["name"])
     if doubles:
         assert "UnitUtils.ConvertToInternalUnits(" in code and "UnitTypeId.Millimeters" in code
@@ -329,7 +332,7 @@ def test_messages_name_no_internal_enum_and_parameter_types_are_spelled_once(nam
     data = data_for(name)
     assert not re.search(r"\+\s*[\w.]*(?:Kind|PlacementType|StorageType)\s*\+", data["code_template"]), name
     # integer, as the earlier packs spell it (delete_elements_by_category, modify_wall_height)
-    assert {p["type"] for p in data["parameters"]} <= {"string", "double", "integer"}, name
+    assert {p["type"] for p in data["parameters"]} <= {"string", "double", "integer", "bool"}, name
 
 
 @pytest.mark.parametrize("name", ("create_door", "create_window", "create_room", "create_ceiling"))
@@ -347,8 +350,8 @@ def test_a_created_element_is_null_checked_before_use(name):
 
 def test_parameters_that_pick_from_the_model_offer_real_choices():
     expected = {
-        "create_door": {"wall_id": "elements:OST_Walls", "type_name": "family_types:OST_Doors"},
-        "create_window": {"wall_id": "elements:OST_Walls", "type_name": "family_types:OST_Windows"},
+        "create_door": {"wall_id": "elements:OST_Walls", "type_name": "family_types:OST_Doors", "level_name": "levels"},
+        "create_window": {"wall_id": "elements:OST_Walls", "type_name": "family_types:OST_Windows", "level_name": "levels"},
         "create_room": {"level_name": "levels"},
         "create_roof_by_footprint": {"level_name": "levels", "type_name": "family_types:OST_Roofs"},
         "create_ceiling": {"level_name": "levels", "type_name": "family_types:OST_Ceilings"},
@@ -358,7 +361,11 @@ def test_parameters_that_pick_from_the_model_offer_real_choices():
         for param in data_for(name)["parameters"]:
             wanted = expected.get(name, {}).get(param["name"])
             if wanted:
-                assert param["choices_from"] == wanted and param["source"].startswith("tool:"), (name, param)
+                assert param["choices_from"] == wanted, (name, param)
+                if (name, param["name"]) in {("create_door", "level_name"), ("create_window", "level_name")}:
+                    assert param["source"] == "answer" and param["required"] is False
+                else:
+                    assert param["source"].startswith("tool:"), (name, param)
             elif param["name"].endswith(("_id", "level_name", "type_name")):
                 # The planner's ruling: change_type.type_id is the designer's id from list_types.
                 assert (name, param["name"]) == ("change_type", "type_id"), (name, param["name"])
@@ -432,7 +439,11 @@ def test_a_collection_revit_fills_is_passed_as_an_instance():
 
 def test_move_asks_for_every_distance():
     for param in data_for("move_elements")["parameters"]:
-        assert param["source"] == "designer" and param["required"] is True and "default" not in param
+        if param["name"] == "element_ids":
+            assert param["required"] is False and param["default"] == ""
+        else:
+            assert param["name"] in {"x", "y", "z"}
+            assert param["source"] == "designer" and param["required"] is True and "default" not in param
     assert 'REFUSED: The move is zero' in code_of("move_elements")
 
 
@@ -531,6 +542,54 @@ class Host:
 
 def thrown(exception: str, message: str):
     return lambda rid: FakeRevit.thrown(rid, exception, message)
+
+
+@pytest.mark.parametrize(("value", "passed"), [(901, True), (905, False)])
+def test_change_type_checks_the_confirmed_type_id_against_the_changed_element(tmp_path, value, passed):
+    host = Host(tmp_path)
+    execution_reply = fake_addin(lambda rid: FakeRevit.code_result(rid, {"Status": "Changed", "ElementIds": [101]}))
+
+    def handler(request):
+        code = request["params"].get("code", "")
+        if 'string kind = "string";' in code:
+            return FakeRevit.code_result(request["id"], [{"Id": 101, "Name": "ELEM_TYPE_PARAM",
+                                                          "Kind": "elementid", "Value": value}])
+        return execution_reply(request)
+
+    result, _ = host.run("change_type", {"category": "OST_Walls", "type_id": 901}, handler)
+    assert result.success is passed and result.validation.validator == "param_equals"
+
+
+def test_change_type_by_name_reads_back_all_instances_after_changing_them(store):
+    name = "change_type_by_name"
+    assert data_for(name)["validator"] is None
+    code, errors = store.render(name, {"category": "OST_Walls", "type_name": "Basic: Sample"})
+    assert not errors and 'string typeName = "Basic: Sample";' in code
+    assert code.index("if (matches.Count != 1)") < code.index("ChangeTypeId(")
+    assert code.index("ChangeTypeId(") < code.index("document.Regenerate()") < code.index("changed.Concat(already)")
+    assert "instance == null || !instance.GetTypeId().Equals(typeId)" in code
+
+
+@pytest.mark.parametrize("element", ["door", "window"])
+def test_point_and_distance_placement_have_separate_required_inputs(store, element):
+    xy = data_for("create_" + element)
+    along = data_for("create_" + element + "_on_wall")
+    original = {p["name"] for p in xy["parameters"] if p["required"]}
+    assert original == {"wall_id", "type_name", "x", "y"} | ({"sill_height"} if element == "window" else set())
+    assert {p["name"] for p in along["parameters"] if p["required"]} == {"wall_id", "type_name", "offset_along_wall"}
+    assert not {"x", "y"}.intersection(p["name"] for p in along["parameters"])
+    assert "offset_along_wall" not in {p["name"] for p in xy["parameters"]}
+    code, errors = store.render(along["name"], {"wall_id": 101, "type_name": "Sample", "offset_along_wall": 0})
+    assert errors == [] and 'toFeet("Distance along the wall", "0")' in code
+
+
+@pytest.mark.parametrize("tool", ["create_door", "create_door_on_wall"])
+def test_requested_door_elevation_must_be_within_host_wall_before_placement(tool):
+    code = code_of(tool)
+    creation = code.index("NewFamilyInstance(")
+    assert code.index("bottom < wallBox.Min.Z - tolerance") < creation
+    assert code.index("bottom >= wallBox.Max.Z - tolerance") < creation
+    assert "toMm(wallBox.Min.Z - level.ProjectElevation)" in code
 
 
 def test_a_refusal_is_refused_not_failed_and_leaves_the_counters_alone(tmp_path):

@@ -520,7 +520,10 @@ def test_the_variants_share_the_default_steps_verbatim():
     step4 = default[default.index("4. reconcile("):default.index("5. Show the spec card")]
     for args, text in _variants():
         if args.get("role") in (None, "planner"):
-            assert step3 in text and step4 in text, args
+            assert step3 in text, args
+            if args.get("code") is False:
+                assert "Call ask_designer when you can offer choices." in text, args
+            assert step4 in text, args
             extended = LINK_STEP in " ".join(text.split())
             assert extended is (text != HOST_DEFAULT), args          # every variant but the default
             assert '"on F2", is an interpretation the designer must confirm.' in text, args
@@ -531,7 +534,8 @@ def test_the_variants_share_the_default_steps_verbatim():
 LINK_STEP = ("links, type_categories. With args.link_id (a picked link's id) levels, family_types, elements, "
              "counts, type_categories read that link; its ids are not the open model's: never pass them to a tool.")
 
-SELECTIONS_RULE = ('Picks in "Designer\'s selections": value = the name, evidence "mention:<kind>#<id>", source '
+SELECTIONS_RULE = ('Picks in "Designer\'s selections": element value = id as a decimal string; '
+                   'level/type/link value = the name. Use evidence "mention:<kind>#<id>", source '
                    'tool if the pack parameter has choices_from or tool:* source, else designer; never re-ask.')
 
 
@@ -612,11 +616,14 @@ def test_the_planner_reads_fills_and_proposes_and_reports_errors_as_they_are():
         text = host_instructions(role="planner", code=code)
         for part in ("get_project_snapshot", "query(kind, args)", "missing_params(tool, known)",
                      "reconcile(spec, snapshot)", "5. propose_spec(spec)",
-                     "6. Confirmation and execution happen in this host's interface",
                      "the analyst's routing {route, tool?, facts_needed, note}", "## TaskSpec", "## Notes",
                      # it answers query-route requests itself and sees query errors
                      "- Claim success on an error or on a failed validation; do not soften errors."):
             assert part in text, (code, part)
+        if code:
+            assert "6. Confirmation and execution happen in this host's interface" in text
+        else:
+            assert '6. Ask the designer to click "确认并执行"' in text
         assert [int(m) for m in re.findall(r"^(\d)\. ", text, flags=re.M)] == [1, 2, 3, 4, 5, 6]
         for absent in ("Show the spec card", "comes back to you", "validation.checks"):
             assert absent not in text, (code, absent)
@@ -624,7 +631,6 @@ def test_the_planner_reads_fills_and_proposes_and_reports_errors_as_they_are():
 
 def test_the_supervisor_reports_faithfully_and_answers_with_one_verdict_object():
     text = host_instructions(role="supervisor")
-    assert text == host_instructions(role="supervisor", code=False)      # nothing about code to leave out
     flat = " ".join(text.split())
     for part in ("`success` is true only when Revit succeeded AND the pack's validator passed",
                  "validation_failed means the model did not change as claimed",
@@ -649,6 +655,28 @@ def test_the_supervisor_reports_faithfully_and_answers_with_one_verdict_object()
     for absent in ("propose_spec(", "missing_params", "reconcile(", "## TaskSpec"):
         assert absent not in text, absent
     assert len(text) < len(host_instructions()) / 2
+
+
+@pytest.mark.parametrize("role", [None, "planner", "analyst", "supervisor"])
+def test_web_chat_role_directs_the_designer_to_the_embedded_card(role):
+    prompt = host_instructions(role=role, code=False, mentions=True)
+    flat = " ".join(prompt.split())
+    assert "确认并执行" in prompt
+    for obsolete in ("this host's interface", "wait for an explicit yes", "Revit panel", "plugin panel"):
+        assert obsolete.casefold() not in flat.casefold()
+    assert not re.search(r"\b(?:confirm|click|approve|open)\b[^.!?]{0,80}\bin Revit\b", flat, re.I)
+    if role == "supervisor":
+        assert "on the card in the chat reply" in flat and "question as a form" in flat
+    else:
+        assert '卡片在我上一条提交它的回复里' in flat and "Do not submit it again" in flat
+        if role == "analyst":
+            assert "route plain assent without changes or a question about its location to chat" in flat
+            assert flat.index("Do not submit it again") < flat.index(
+                "If the reply asks for a change, route it by what it requests: query, tool, or none.")
+        else:
+            assert "Only that click authorizes execution" in flat
+            assert "ask_designer" in flat and "options grounded in the facts you read" in flat
+            assert "Present them on the form and end the turn." in flat
 
 
 def test_an_unknown_role_is_refused():

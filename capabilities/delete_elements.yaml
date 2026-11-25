@@ -1,0 +1,273 @@
+schema_version: 1
+name: delete_elements
+display_name: Delete Elements
+description: >-
+  Delete the supplied ids (at most 100). Every supplied element is checked
+  first. Pinned elements, families, element types, views and levels stop the run. An independently
+  placeable component among the dependencies must also be supplied. Parts of a supplied
+  assembly, such as curtain panels, nested family components and stair railings, may be
+  removed with it. AlsoDeleted lists up to 100 additional ids. AlsoDeletedCount and
+  AlsoDeletedByClass count all additional removals. Unexpected removals or dependency
+  checks over the time budget roll back. The tool checks that every supplied id is gone.
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  const int MaxRequested = 100;
+
+  string idsText = "{element_ids}";
+  if (string.IsNullOrWhiteSpace(idsText))
+      throw new InvalidOperationException("REFUSED: Give the element ids to delete.");
+  string[] tokens = idsText.Split(',');
+  if (tokens.Length > MaxRequested)
+      throw new InvalidOperationException("REFUSED: Give at most 100 element ids.");
+  var inputIds = new List<ElementId>();
+  var requested = new HashSet<ElementId>();
+  foreach (string part in tokens)
+  {
+      long number;
+      if (!long.TryParse(part.Trim(), System.Globalization.NumberStyles.None, invariant, out number) || number <= 0)
+          throw new InvalidOperationException("REFUSED: Invalid element id " + part + ".");
+      var id = new ElementId(number);
+      if (!requested.Add(id))
+          throw new InvalidOperationException("REFUSED: Duplicate element id " + part + ".");
+      inputIds.Add(id);
+  }
+  var problems = new List<string>();
+  foreach (ElementId id in inputIds)
+  {
+      Element element = document.GetElement(id);
+      if (element == null) { problems.Add(idOf(id) + " no longer exists"); continue; }
+      if (element is ElementType) { problems.Add(idOf(id) + " is a type; deleting it would delete every element of that type"); continue; }
+      if (element is Family) { problems.Add(idOf(id) + " is a family; deleting it would delete its types and instances"); continue; }
+      if (element is View) { problems.Add(idOf(id) + " is a view"); continue; }
+      if (element is Level) { problems.Add(idOf(id) + " is a level; deleting it would delete everything on it"); continue; }
+      if (element.Pinned) { problems.Add(idOf(id) + " is pinned; unpin it in Revit first"); continue; }
+  }
+  if (problems.Count > 0)
+      throw new InvalidOperationException("REFUSED: Nothing was deleted: " + problems.Count + " of " + inputIds.Count + " supplied ids cannot be deleted by this tool. "
+          + string.Join("; ", problems.Take(5)) + (problems.Count > 5 ? "; and " + (problems.Count - 5) + " more." : "."));
+
+  var clock = System.Diagnostics.Stopwatch.StartNew();
+  void CheckBudget()
+  {
+      if (clock.ElapsedMilliseconds >= 250)
+          throw new InvalidOperationException("REFUSED: The dependency check exceeded its time budget.");
+  }
+  bool IsModelGroup(Element e) =>
+      e is Group && e.Category?.Id.Value == (long)BuiltInCategory.OST_IOSModelGroups;
+
+  // Only the input elements may supply candidates. Ownership can excuse a candidate,
+  // but it cannot authorize an id absent from the input dependency reports.
+  var candidates = new Dictionary<ElementId, Element>();
+  var reports = new Dictionary<ElementId, HashSet<ElementId>>();
+  foreach (ElementId rootId in inputIds)
+  {
+      CheckBudget();
+      Element root = document.GetElement(rootId);
+      var reported = new HashSet<ElementId>();
+      foreach (ElementId id in root.GetDependentElements(null))
+      {
+          CheckBudget();
+          reported.Add(id);
+          if (!candidates.ContainsKey(id)) candidates.Add(id, document.GetElement(id));
+      }
+      reports.Add(rootId, reported);
+  }
+
+  var owned = new HashSet<ElementId>(requested);
+  foreach (var report in reports)
+  {
+      CheckBudget();
+      // Keep evidence of ownership local to the input that reported these candidates.
+      var members = new HashSet<ElementId> { report.Key };
+      var pending = new Queue<ElementId>();
+      pending.Enqueue(report.Key);
+      var stairHosts = new HashSet<ElementId>();
+      var railOwners = new HashSet<ElementId>();
+      void AddParts(IEnumerable<ElementId> ids)
+      {
+          foreach (var id in ids)
+          {
+              CheckBudget();
+              if (report.Value.Contains(id) && members.Add(id))
+              {
+                  owned.Add(id);
+                  pending.Enqueue(id);
+              }
+          }
+      }
+      while (pending.Count > 0)
+      {
+          CheckBudget();
+          ElementId ownerId = pending.Dequeue();
+          if (!candidates.TryGetValue(ownerId, out Element owner)) continue;
+          if (owner is FamilyInstance family) AddParts(family.GetSubComponentIds());
+          if (owner is Autodesk.Revit.DB.Structure.AreaReinforcement area) AddParts(area.GetRebarInSystemIds());
+          if (owner is Autodesk.Revit.DB.Structure.PathReinforcement path) AddParts(path.GetRebarInSystemIds());
+          if (owner is Autodesk.Revit.DB.Structure.FabricArea fabric) AddParts(fabric.GetFabricSheetElementIds());
+          if (owner is Wall wall)
+          {
+              if (wall.IsStackedWall) AddParts(wall.GetStackedWallMemberIds());
+              CurtainGrid grid = wall.CurtainGrid;
+              if (grid != null)
+              {
+                  AddParts(grid.GetPanelIds());
+                  AddParts(grid.GetMullionIds());
+                  // Wall-type panels can be absent from GetPanelIds. Match only this input's own report.
+                  if (ownerId.Equals(report.Key))
+                  {
+                      foreach (var id in report.Value)
+                      {
+                          CheckBudget();
+                          if (candidates[id] is Wall panelWall &&
+                              panelWall.Category?.Id.Value == (long)BuiltInCategory.OST_CurtainWallPanels &&
+                              ownerId.Equals(panelWall.StackedWallOwnerId))
+                              AddParts(new[] { id });
+                      }
+                  }
+              }
+          }
+          if (IsModelGroup(owner)) AddParts(((Group)owner).GetMemberIds());
+          if (owner is Autodesk.Revit.DB.Architecture.Railing) railOwners.Add(ownerId);
+          if (owner is Autodesk.Revit.DB.Architecture.Stairs stairs)
+          {
+              railOwners.Add(ownerId);
+              stairHosts.Add(ownerId);
+              foreach (var components in new[] { stairs.GetStairsRuns(), stairs.GetStairsLandings() })
+                  foreach (var id in components)
+                  {
+                      CheckBudget();
+                      stairHosts.Add(id);
+                  }
+              AddParts(stairs.GetStairsSupports());
+          }
+      }
+      if (railOwners.Count == 0) continue;
+      foreach (var id in report.Value)
+      {
+          CheckBudget();
+          if (candidates[id] is Autodesk.Revit.DB.Architecture.Railing railing && stairHosts.Contains(railing.HostId))
+          {
+              owned.Add(id);
+              railOwners.Add(id);
+          }
+      }
+      foreach (var id in report.Value)
+      {
+          CheckBudget();
+          if (owned.Contains(id) || !(candidates[id] is FamilyInstance part)) continue;
+          // Revit represents these assembly parts as ordinary FamilyInstances. When the
+          // API exposes no parent, the evidence is the dedicated category in this
+          // input's own report and a stair or railing proved to belong to this input.
+          long? categoryId = part.Category?.Id.Value;
+          bool stairSupport = categoryId == (long)BuiltInCategory.OST_StairsSupports && stairHosts.Count > 0;
+          if (!stairSupport && categoryId != (long)BuiltInCategory.OST_StairsRailingBaluster &&
+              categoryId != (long)BuiltInCategory.OST_RailingSystemBaluster &&
+              categoryId != (long)BuiltInCategory.OST_RailingSupport) continue;
+          Element parent = part.SuperComponent ?? part.Host;
+          if (parent == null || railOwners.Contains(parent.Id) || stairHosts.Contains(parent.Id) ||
+              (parent is Autodesk.Revit.DB.Architecture.ContinuousRail rail && railOwners.Contains(rail.HostRailingId)))
+              owned.Add(id);
+      }
+  }
+
+  var classes = new Dictionary<ElementId, string>();
+  foreach (var entry in candidates)
+  {
+      CheckBudget();
+      ElementId id = entry.Key;
+      Element e = entry.Value;
+      if (e == null)
+      {
+          classes.Add(id, "Unknown");
+          continue;
+      }
+      classes.Add(id, e.GetType().Name);
+      if (owned.Contains(id) || e is Panel || e is Mullion || e is CurtainGridLine) continue;
+      if (e is FamilyInstance nested && nested.SuperComponent is Element parent && owned.Contains(parent.Id))
+          continue;
+      bool independent = e is Wall || e is Floor || e is RoofBase || e is Ceiling ||
+          e is CurtainSystem || e is WallSweep || e is SlabEdge || e is Autodesk.Revit.DB.Architecture.Fascia ||
+          e is Autodesk.Revit.DB.Architecture.Gutter || e is WallFoundation || e is MEPCurve || e is BeamSystem ||
+          e is Toposolid || e is Autodesk.Revit.DB.Architecture.TopographySurface || e is Autodesk.Revit.DB.Architecture.BuildingPad ||
+          e is FamilyInstance || IsModelGroup(e) || e is Opening ||
+          e is Autodesk.Revit.DB.Architecture.Stairs || e is Autodesk.Revit.DB.Architecture.MultistoryStairs ||
+          e is Autodesk.Revit.DB.Structure.Rebar || e is Autodesk.Revit.DB.Structure.RebarInSystem ||
+          e is Autodesk.Revit.DB.Structure.RebarContainer || e is Autodesk.Revit.DB.Structure.AreaReinforcement ||
+          e is Autodesk.Revit.DB.Structure.PathReinforcement || e is Autodesk.Revit.DB.Structure.FabricSheet ||
+          e is Autodesk.Revit.DB.Structure.FabricArea;
+      if (e is Autodesk.Revit.DB.Architecture.Railing) independent = true;
+      if (independent)
+          throw new InvalidOperationException("REFUSED: Deletion also removes " + classes[id] + " " + id + "; include its id explicitly.");
+  }
+  CheckBudget();
+  ICollection<ElementId> deleted;
+  try { deleted = document.Delete(inputIds); }
+  catch (Autodesk.Revit.Exceptions.ArgumentException ex) when (!(ex is Autodesk.Revit.Exceptions.ArgumentNullException))
+  {
+      throw new InvalidOperationException("REFUSED: Revit would not delete the supplied ids: " + ex.Message);
+  }
+  clock.Restart();
+  int extraCount = 0;
+  var also = new List<long>();
+  var byClass = new Dictionary<string, int>();
+  var missing = new HashSet<ElementId>(requested);
+  foreach (ElementId id in deleted)
+  {
+      CheckBudget();
+      if (!classes.TryGetValue(id, out string className))
+          throw new InvalidOperationException("REFUSED: Deletion returned an id outside the classified dependency set: " + id + "; rolling back.");
+      if (missing.Remove(id)) continue;
+      byClass.TryGetValue(className, out int count);
+      byClass[className] = count + 1;
+      extraCount++;
+      if (also.Count < 100) also.Add(idOf(id));
+  }
+  if (missing.Count > 0)
+      throw new InvalidOperationException("The deletion result did not contain every requested id.");
+  var survivors = inputIds.Where(id => document.GetElement(id) != null).ToList();
+  if (survivors.Count > 0)
+      throw new InvalidOperationException("Revit did not delete " + survivors.Count + " requested element(s) ("
+          + string.Join(", ", survivors.Take(5).Select(id => idOf(id))) + "); nothing was deleted.");
+  CheckBudget();
+
+  return new
+  {
+      Status = "Deleted",
+      ElementIds = inputIds.Select(id => idOf(id)).ToList(),
+      Count = inputIds.Count,
+      AlsoDeleted = also,
+      AlsoDeletedCount = extraCount,
+      AlsoDeletedByClass = byClass
+  };
+parameters:
+  - name: element_ids
+    type: string
+    description: "Comma-separated element ids."
+    source: designer
+    required: true
+preconditions:
+  - text: "give up to 100 distinct element ids; unpin pinned elements"
+not_for:
+  - "delete by category"
+  - "delete type"
+  - "purge"
+  - "delete view"
+applies_when:
+  - "delete elements by id"
+  - "delete element ids"
+  - "remove the listed element ids"
+validator: null
+fixtures:
+  - name: basic
+    params: {element_ids: "101,102"}
+    expect: {Status: "Deleted"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-23T00:00:00"
+source_query: delete the listed elements

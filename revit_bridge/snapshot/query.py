@@ -384,13 +384,15 @@ class RevitQueryExecutor:
     # that); ``strict=True`` raises RevitQueryError instead, so a failure can
     # never read as "the model has none".
 
-    async def get_family_types(self, categories: list[str], strict: bool = False) -> list[dict]:
-        """Query available family types by category via get_available_family_types command."""
-        resp = await self.client.send_command(
+    async def _family_type_response(self, categories):
+        return await self.client.send_command(
             "get_available_family_types",
             {"categoryList": categories},
         )
-        return _list_result(resp, strict)
+
+    async def get_family_types(self, categories: list[str], strict: bool = False) -> list[dict]:
+        """Query available family types by category via get_available_family_types command."""
+        return _list_result(await self._family_type_response(categories), strict)
 
     async def get_levels(self, strict: bool = False) -> list[dict]:
         """Query all levels via send_code_to_revit (no dedicated command for this)."""
@@ -622,7 +624,11 @@ class RevitQueryExecutor:
         """Categories that have types, with counts (list_model_items ``type_categories``, else
         TYPE_CATEGORIES_CODE: the categories ``get_available_family_types`` can list)."""
         data = await self._offered("type_categories")
-        return data if data is not None else parse_model_items(await self._code_dict(TYPE_CATEGORIES_CODE))
+        if data is None:
+            data = parse_model_items(await self._code_dict(TYPE_CATEGORIES_CODE))
+            if data.truncated is None:
+                data.truncated = False  # the fixed legacy query returns its entire category array
+        return data
 
     async def get_type_rows(self, category: str) -> ModelItems:
         """The types of one category, for a picker: list_model_items ``types`` (rows with
@@ -631,8 +637,10 @@ class RevitQueryExecutor:
             raise ValueError(f"invalid category {category!r}: expected an OST_* name")
         data = await self._offered("types", category=category)
         if data is None:
-            data = ModelItems(rows=[t for t in await self.get_family_types([category], strict=True)
-                                    if isinstance(t, dict)])
+            response = await self._family_type_response([category])
+            if not response.success:
+                raise RevitQueryError(response.error or "Revit returned no result")
+            data = parse_model_items({"Success": True, "Items": response.result, "Truncated": False})
         return data
 
     async def get_levels_by_id(self, ids: list[int]) -> ModelItems:

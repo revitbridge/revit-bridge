@@ -1,0 +1,176 @@
+schema_version: 1
+name: copy_elements
+display_name: "Copy Elements"
+description: >-
+  Copy located elements by a vector in mm.
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  const int MaxSelected = 100;
+  double Feet(string mm)
+  {
+      return UnitUtils.ConvertToInternalUnits(double.Parse(mm, invariant), UnitTypeId.Millimeters);
+  }
+  string idsText = "{element_ids}";
+  List<ElementId> selected;
+  if (idsText.Length == 0)
+      selected = new UIDocument(document).Selection.GetElementIds().ToList();
+  else
+  {
+      selected = new List<ElementId>();
+      string[] parts = idsText.Split(',');
+      if (parts.Length > MaxSelected)
+          throw new InvalidOperationException("REFUSED: Give at most 100 element ids.");
+      foreach (string part in parts)
+      {
+          long number;
+          if (!long.TryParse(part.Trim(), System.Globalization.NumberStyles.None, invariant, out number) || number <= 0)
+              throw new InvalidOperationException("REFUSED: Invalid element id " + part + ".");
+          #pragma warning disable 618
+          var id = new ElementId(number);
+          #pragma warning restore 618
+          if (selected.Contains(id))
+              throw new InvalidOperationException("REFUSED: Duplicate element id " + part + ".");
+          selected.Add(id);
+      }
+  }
+  if (selected.Count == 0 || selected.Count > MaxSelected)
+      throw new InvalidOperationException("REFUSED: Give or select 1 to 100 elements.");
+
+  // Sample an instance's local axes too, so an in-place rotation or reflection can be checked.
+  List<XYZ> Samples(Element element)
+  {
+      var sample = new List<XYZ>();
+      var point = element.Location as LocationPoint;
+      var curve = element.Location as LocationCurve;
+      if (point != null)
+      {
+          sample.Add(point.Point);
+          var family = element as FamilyInstance;
+          if (family != null)
+          {
+              var axes = family.GetTransform();
+              sample.Add(point.Point + axes.BasisX);
+              sample.Add(point.Point + axes.BasisY);
+          }
+      }
+      else if (curve != null && curve.Curve != null && curve.Curve.IsBound)
+      {
+          sample.Add(curve.Curve.GetEndPoint(0));
+          sample.Add(curve.Curve.Evaluate(0.5, true));
+          sample.Add(curve.Curve.GetEndPoint(1));
+      }
+      return sample;
+  }
+  var sourceTypes = new List<ElementId>();
+  var original = new List<List<XYZ>>();
+  foreach (ElementId id in selected)
+  {
+      Element element = document.GetElement(id);
+      if (element == null || element is ElementType || element is View || element is Level || element is Grid)
+          throw new InvalidOperationException("REFUSED: Missing or unsupported model instance " + id + ".");
+      var sample = Samples(element);
+      if (sample.Count == 0)
+          throw new InvalidOperationException("REFUSED: No verifiable point or curve on element " + id + ".");
+      sourceTypes.Add(element.GetTypeId());
+      original.Add(sample);
+  }
+  XYZ offset = new XYZ(Feet("{x}"), Feet("{y}"), Feet("{z}"));
+  if (offset.GetLength() < UnitUtils.ConvertToInternalUnits(0.1, UnitTypeId.Millimeters))
+      throw new InvalidOperationException("REFUSED: Give a nonzero copy vector.");
+  Transform transform = Transform.CreateTranslation(offset);
+  ICollection<ElementId> resultIds;
+  try
+  {
+      resultIds = ElementTransformUtils.CopyElements(document, selected, offset);
+  }
+  catch (Autodesk.Revit.Exceptions.ArgumentException ex) when (!(ex is Autodesk.Revit.Exceptions.ArgumentNullException))
+  {
+      throw new InvalidOperationException("REFUSED: Revit rejected the transformation: " + ex.Message);
+  }
+  catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+  {
+      throw new InvalidOperationException("REFUSED: Revit cannot transform these instances: " + ex.Message);
+  }
+
+  // Dependents copied with their host can outnumber the selected sources.
+  // Bound the number of post-operation element reads before inspecting any.
+  const int MaxResultIds = 500;
+  if (resultIds.Count > MaxResultIds)
+      throw new InvalidOperationException("REFUSED: More than 500 elements including dependents would be affected. Use a smaller batch.");
+  document.Regenerate();
+  var byType = new Dictionary<ElementId, List<(ElementId Id, List<XYZ> Points, bool IsCurve)>>();
+  var wantedTypes = new HashSet<ElementId>(sourceTypes);
+  var inputIds = new HashSet<ElementId>(selected);
+  foreach (ElementId id in resultIds)
+  {
+      if (inputIds.Contains(id)) continue;
+      Element candidate = document.GetElement(id);
+      if (candidate == null) continue;
+      ElementId type = candidate.GetTypeId();
+      if (!wantedTypes.Contains(type)) continue;
+      if (!byType.TryGetValue(type, out var group))
+          byType[type] = group = new List<(ElementId, List<XYZ>, bool)>();
+      group.Add((id, Samples(candidate), candidate.Location is LocationCurve));
+  }
+  var checkedIds = new HashSet<ElementId>();
+  double tolerance = UnitUtils.ConvertToInternalUnits(0.5, UnitTypeId.Millimeters);
+  for (int i = 0; i < selected.Count; i++)
+  {
+      var expected = original[i].Select(transform.OfPoint).ToList();
+      ElementId match = null;
+      if (!byType.TryGetValue(sourceTypes[i], out var group))
+          throw new InvalidOperationException("No result of the requested type for element " + selected[i] + "; rolling back.");
+      foreach (var candidate in group)
+      {
+          ElementId id = candidate.Id;
+          if (checkedIds.Contains(id)) continue;
+          var samples = candidate.Points;
+          if (samples.Count != expected.Count) continue;
+          bool direct = expected.Select((p, j) => p.DistanceTo(samples[j]) <= tolerance).All(v => v);
+          bool reverse = candidate.IsCurve &&
+              expected.Select((p, j) => p.DistanceTo(samples[samples.Count - 1 - j]) <= tolerance).All(v => v);
+          if (direct || reverse) { match = id; break; }
+      }
+      if (match == null)
+          throw new InvalidOperationException("REFUSED: Element " + selected[i] + " could not take the requested transformation; check its host and constraints.");
+      checkedIds.Add(match);
+  }
+  return new { Status = "Copied", ElementIds = resultIds.Select(id => id.Value).ToList(), Count = checkedIds.Count };
+parameters:
+  - name: x
+    type: double
+    description: "x (mm)."
+    unit: mm
+    source: designer
+    required: true
+  - name: y
+    type: double
+    description: "y (mm)."
+    unit: mm
+    source: designer
+    required: true
+  - name: z
+    type: double
+    description: "z (mm)."
+    unit: mm
+    source: designer
+    required: true
+  - name: element_ids
+    type: string
+    description: "Comma-separated element ids. Omit to use the current selection."
+    source: designer
+    required: false
+    default: ""
+preconditions:
+  - text: "Give up to 100 distinct instance ids or select them in Revit. Each must have a point or curve location."
+not_for: ["views, levels and element types"]
+applies_when: ["copy elements"]
+validator: null
+fixtures:
+  - name: basic
+    params: {"x":1000,"y":0,"z":0,"element_ids":"101"}
+    expect: {"Status":"Copied"}
+approved_by: null
+approved_at: null

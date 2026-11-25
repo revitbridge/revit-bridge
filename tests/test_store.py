@@ -16,6 +16,11 @@ BUILTIN_NAMES = {
     "create_level", "create_grid", "create_door", "create_window", "create_room",
     "create_roof_by_footprint", "create_ceiling", "set_parameter", "move_elements",
     "change_type", "delete_selected", "count_by_level", "list_types", "elements_in_link",
+    "create_wall_from_element", "create_walls_by_points", "set_wall_constraints",
+    "create_column", "get_element_geometry", "list_elements", "get_element_parameters",
+    "create_grids_array", "copy_elements", "rotate_elements", "mirror_elements", "delete_elements",
+    "create_floor_by_points", "create_ceiling_by_points", "create_roof_by_points",
+    "create_door_on_wall", "create_window_on_wall", "change_type_by_name",
 }
 # Demo artefacts with type, level and coordinates hard-coded in C#: kept as examples, never loaded.
 # create_room is also a built-in name now; the example of that name must still not be what loads.
@@ -50,7 +55,9 @@ def test_examples_subdirectory_and_underscore_files_are_never_loaded(tmp_path):
     examples = store.builtin_dir / "examples"
     assert {p.stem for p in examples.glob("*.yaml")} >= EXAMPLE_NAMES
     assert names_of(store).count("create_wall") == 1
-    assert not {"create_column", "create_column_2"} & set(names_of(store))
+    assert "create_column_2" not in names_of(store)
+    assert names_of(store).count("create_column") == 1
+    assert store.path_of("create_column") == store.builtin_dir / "create_column.yaml"
     example_room = yaml.safe_load((examples / "create_room.yaml").read_text(encoding="utf-8"))
     assert names_of(store).count("create_room") == 1
     assert store.path_of("create_room") == store.builtin_dir / "create_room.yaml"
@@ -351,7 +358,9 @@ def test_validate_params_enforces_sources(tmp_path):
 def test_dynamic_params_of_builtin_create_wall():
     store = ToolStore()
     dynamic = store.get_dynamic_params("create_wall")
-    assert [(d["name"], d["choices_from"]) for d in dynamic] == [("level_name", "levels")]
+    assert [(d["name"], d["choices_from"]) for d in dynamic] == [
+        ("level_name", "levels"), ("type_name", "family_types:OST_Walls"), ("top_level_name", "levels"),
+    ]
 
 
 def test_a_value_the_template_needs_is_never_left_blank(tmp_path):
@@ -529,9 +538,9 @@ def test_every_character_that_ends_a_csharp_literal_or_line_is_escaped(tmp_path)
     assert code.startswith('string levelName = "x\\r\\na\\u0085b\\u2028c\\u2029d\\0\\ud800";')
 
 
-def test_every_built_in_fixture_renders_as_before():
+def test_every_built_in_fixture_renders_as_before(tmp_path):
     """Known-good values are written as they always were: a number with str(), a plain string as is."""
-    store = ToolStore()
+    store = ToolStore(user_dir=tmp_path / "user")
     rendered = 0
     for tool in store.list_tools():
         for fixture in tool.fixtures:
@@ -543,7 +552,7 @@ def test_every_built_in_fixture_renders_as_before():
                 expected = expected.replace("{" + key + "}", str(value))
             assert code == expected, tool.name
             rendered += 1
-    assert rendered == 25                 # 6 from the earlier packs, 19 from the basic packs
+    assert rendered == 62
 
 
 def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):

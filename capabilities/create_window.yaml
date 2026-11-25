@@ -8,6 +8,7 @@ description: >-
   Refusals (no such wall, curtain or stacked wall, no such or ambiguous type, a point off the
   wall or too close to its ends, a window that would stick out of the wall) stop the run and
   change nothing.
+  The optional level_name sets the level for sill height and flip reverses the window facing.
 version: "1.0.0"
 revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
 code_template: |
@@ -56,7 +57,11 @@ code_template: |
   LocationCurve wallLocation = wall.Location as LocationCurve;
   if (wallLocation == null || wallLocation.Curve == null)
       throw new InvalidOperationException("REFUSED: Wall " + wallText + " has no location line.");
-  Level level = document.GetElement(wall.LevelId) as Level;
+  string levelName = "{level_name}";
+  Level level = levelName.Length == 0 ? document.GetElement(wall.LevelId) as Level :
+      new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>().FirstOrDefault(l => l.Name == levelName);
+  if (level == null && levelName.Length > 0)
+      throw new InvalidOperationException("REFUSED: There is no level named " + levelName + ".");
   if (level == null)
       throw new InvalidOperationException("REFUSED: Wall " + wallText + " has no base level.");
 
@@ -75,13 +80,12 @@ code_template: |
       throw new InvalidOperationException("REFUSED: Window type \"" + typeName + "\" is not a window that is placed in a wall; pick a wall-hosted window type.");
 
   // 3. The point: on the wall (within its thickness of the location line), not past its ends.
-  double x = toFeet("X", "{x}");
-  double y = toFeet("Y", "{y}");
+
   double sill = toFeet("Sill height", "{sill_height}");
   if (sill < 0)
       throw new InvalidOperationException("REFUSED: The sill height must be zero or more mm above the level.");
   Curve line = wallLocation.Curve;
-  XYZ asked = new XYZ(x, y, line.GetEndPoint(0).Z);
+  XYZ asked = new XYZ(toFeet("X", "{x}"), toFeet("Y", "{y}"), line.GetEndPoint(0).Z);
   if (!XYZ.IsWithinLengthLimits(asked))
       throw new InvalidOperationException("REFUSED: The point is outside the model's limits.");
   IntersectionResult nearest = line.Project(asked);
@@ -139,6 +143,11 @@ code_template: |
   if (!sillParameter.HasValue || Math.Abs(sillParameter.AsDouble() - sill) > ReadBackTolerance)
       throw new InvalidOperationException("Revit did not keep the sill height " + toMm(sill) + " mm; nothing was created.");
 
+  if (bool.Parse("{flip}"))
+  {
+      if (!window.CanFlipFacing || !window.flipFacing())
+          throw new InvalidOperationException("REFUSED: This family cannot flip its facing direction.");
+  }
   return new
   {
       Status = "Created",
@@ -180,16 +189,29 @@ parameters:
     required: true
   - name: sill_height
     type: double
-    description: Sill height above the wall's base level (mm)
+    description: Sill height above the placement level (mm)
     unit: mm
     source: designer
     required: true
+  - name: level_name
+    type: string
+    description: "Optional placement level."
+    source: answer
+    choices_from: levels
+    required: false
+    default: ""
+  - name: flip
+    type: bool
+    description: "Flip the facing direction."
+    source: designer
+    required: false
+    default: false
 preconditions:
   - kind: levels_min
     value: 1
   - kind: category_present
     category: OST_Windows
-  - text: "the host must be a basic wall (not curtain or stacked); the sill is measured from the wall's base level"
+  - text: "the host must be a basic wall (not curtain or stacked); the sill is measured from the placement level"
 not_for:
   - "curtain wall"
   - "window type"

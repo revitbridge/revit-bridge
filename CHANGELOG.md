@@ -6,6 +6,91 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Hosts can page through selected elements with `mention_candidates(kind="element", source="selection")`,
+  resolve the picked ids against the active document, and include them in the designer's selections.
+  Search results include category counts and support an offset.
+- Inspect model instances with `list_elements`, `get_element_geometry` and
+  `get_element_parameters`. The parameter listing includes raw and formatted values.
+- Create walls from a reference or a path with `create_wall_from_element` and
+  `create_walls_by_points`. Edit existing walls with `set_wall_constraints`.
+  Create architectural columns with `create_column` and grid arrays with
+  `create_grids_array`.
+- Create polygonal outlines with `create_floor_by_points`, `create_ceiling_by_points`
+  and `create_roof_by_points`. Place a door or window at a distance along its host
+  wall with `create_door_on_wall` and `create_window_on_wall`.
+- Transform model instances with `copy_elements`, `rotate_elements` and
+  `mirror_elements`. Use `change_type_by_name` to resolve a target type and verify
+  each instance. `delete_elements` checks the dependencies of the supplied IDs
+  before deletion. It refuses unlisted independently placeable components and
+  reports the additional elements actually removed, with counts by Revit class.
+
+### Changed
+
+- `mention_candidates(kind="type", q="...")` without a category now returns matching **types**.
+  An empty query still returns categories for navigation. Upgrade the web host to its V2 picker
+  together with this package. The previous picker only accepts category rows in this state, so
+  it displays the returned types as unselectable.
+- Mention search splits Chinese and non-Chinese text into distinct terms. It ranks exact,
+  prefix, word-start, substring and fuzzy matches in that order. Fuzzy matching uses name
+  and family words. Terms containing digits only use the first four ranks. Category aliases,
+  their plurals and English inputs of at least five letters missing one letter from an alias
+  can narrow the search before the remaining terms match names and families.
+- More than eight distinct search terms returns `invalid_args` for every kind, including
+  existing level, link and category-specific type searches. A cross-category type search
+  returns partial results, warnings and `truncated` when the read budget is reached
+  or inventory rows cannot be read.
+- A cold cross-category type search uses one fixed, bounded inventory query. Each type
+  search makes at most five bridge calls, including capability and document checks.
+  The same connection and unmodified document can reuse a complete inventory for up to
+  30 seconds. Unreadable rows, native warnings and mismatched totals prevent cache
+  reuse, so the next search retries the incomplete list. If an add-in disables fixed queries, the
+  picker reports the scope of the native category results it can still read.
+- If selection scanning reaches its time budget, `total` gives the full selection count.
+  Unfiltered pages keep their selection order. Filtered pages rank the available rows.
+  `facets_partial`, `truncated` and warnings identify incomplete results.
+- Hosts using `host_instructions(code=False)` direct designers to the confirmation
+  button on the card inside the chat reply. The planner asks outstanding questions
+  together and uses `ask_designer` for choices. For replies that request changes,
+  the analyst selects the appropriate query, tool or none route.
+- `delete_elements` includes wall-type curtain panels owned by the supplied curtain
+  wall even when its grid omits their IDs.
+- `create_door` returns the placed door's XYZ coordinates, including on curved walls.
+- `create_beam` keeps the requested `Level` and reports the actual `ReferenceLevel`
+  and the start elevation of the placed beam in `ElevationMm`.
+- `create_door` now refuses placements previously accepted when the wall bottom is
+  above the placement level or the door head exceeds the wall top. On a raised
+  wall, `create_door_on_wall` accepts an explicit `sill_height`.
+- Existing modelling tools retain their 0.9.1 required parameters and defaults.
+  The following inputs are optional:
+  - `create_wall` accepts `type_name`, `top_level_name`, `top_offset`, `base_offset`,
+    `structural` and `location_line`; `create_structural_column` accepts
+    `top_level_name`, `top_offset`, `base_offset` and `rotation`.
+  - `create_beam` accepts `start_offset`, `end_offset` and `structural_usage`.
+    `create_level` accepts `create_plan_view`.
+  - `create_floor` accepts `offset` and `structural`; `create_roof_by_footprint`
+    accepts `offset` and `slope`. Both `create_door` and `create_window` accept
+    `level_name` and `flip`.
+  - `change_type`, `move_elements` and `set_parameter` accept `element_ids` for
+    explicit targets. `change_type` also accepts 64-bit type IDs.
+- A wall's top-level constraint takes precedence over its unconnected height.
+  `create_wall` refuses a nonpositive unconnected height that previously passed
+  silently. `create_floor` refuses zero dimensions before creation, where the
+  previous version reported a failure.
+- Name-based placement refuses ambiguous types and accepts a qualified
+  `Family: Type` name. A missing level or type in wall, floor, column or beam
+  creation now produces a `REFUSED` result where those tools previously returned
+  `Status="Error"`.
+
+### Fixed
+
+- `create_door` and `create_door_on_wall` refuse openings extending below the
+  host wall or above its top. Along-wall door and window placement reports the
+  actual instance location after regeneration, including on curved walls.
+- Parameter read-back compares element IDs as 64-bit integers. Adjacent IDs
+  above the exact precision of a floating-point number are now distinguished.
+
 ## [0.9.1] - 2026-11-23
 
 Fourteen basic capability packs, and a way for any pack to refuse its input

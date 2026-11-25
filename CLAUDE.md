@@ -25,8 +25,10 @@ uvx --from . revit-bridge check   # read the open document's title through the a
   `ExecutionResult`), shared by the MCP server and the web host; `instructions.py` — the model instructions
   (`server_instructions()` / `host_instructions()` from one text; `host_instructions(role, code, mentions)`
   cuts the host text per role, without code-writing or with the selections rule).
-- `revit_bridge/mentions.py` - the designer's picks of levels, types and links: `mention_candidates`,
+- `revit_bridge/mentions.py` - the designer's picks of levels, types, links and selected elements: `mention_candidates`,
   `resolve_mentions` (checked by id against the open model), `mention_block` (the selections text).
+  `mention_elements.py` reads the selection and rechecks element ids. `mention_search.py` ranks and
+  facets results using `mention_aliases.json`. `mention_cache.py` caches type inventories per open document.
 - `revit_bridge/checking.py` — `check_code`: compile C# in Revit without running it (local `sandbox.review`
   first, then the add-in's `check_code_in_revit`); the reply adds `hints` and `guidance` lessons.
 - `revit_bridge/dry_run.py` - `dry_run_code`: run C# in Revit and always roll it back (`sandbox.review`, the
