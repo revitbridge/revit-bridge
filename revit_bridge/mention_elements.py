@@ -12,13 +12,21 @@ SELECTION_LIMIT = 50
 _READ = """
 var items = new List<object>();
 var warnings = new List<string>();
+void Warn(string text) {
+    if (warnings.Count < 100) warnings.Add(text.Length > 500 ? text.Substring(0, 500) : text);
+    else if (warnings.Count == 100) warnings.Add("Additional selection field warnings omitted.");
+}
 var categories = new Dictionary<ElementId, string[]>();
 var types = new Dictionary<ElementId, string[]>();
+int remainingChars = 1024 * 1024;
 foreach (ElementId id in ids) {
-    if (!details && timer.ElapsedMilliseconds >= 200)
-        throw new InvalidOperationException("Selection read took too long. Select fewer elements and try again.");
+    if (!details && (timer.ElapsedMilliseconds >= 200 || items.Count >= maxRows))
+        break;
     Element e = document.GetElement(id);
-    if (e == null) continue;
+    if (e == null) {
+        if (!details) throw new InvalidOperationException("The selection changed; pick the selection again.");
+        continue;
+    }
     string name = null, family = null, category = null, shown = null, level = null;
     double? length = null;
     if (names) try {
@@ -28,7 +36,7 @@ foreach (ElementId id in ids) {
             types[typeId] = pair = new string[] {type?.Name, type?.FamilyName};
         }
         name = pair[0]; family = pair[1];
-    } catch (Exception ex) { warnings.Add(id + " type: " + ex.Message); }
+    } catch (Exception ex) { Warn(id + " type: " + ex.Message); }
     try {
         Category cat = e.Category;
         if (cat != null) {
@@ -40,18 +48,22 @@ foreach (ElementId id in ids) {
             }
             category = pair[0]; shown = pair[1];
         }
-    } catch (Exception ex) { warnings.Add(id + " category: " + ex.Message); }
+    } catch (Exception ex) { Warn(id + " category: " + ex.Message); }
     if (details) try { level = document.GetElement(e.LevelId)?.Name; }
-    catch (Exception ex) { warnings.Add(id + " level: " + ex.Message); }
+    catch (Exception ex) { Warn(id + " level: " + ex.Message); }
     if (details) try {
         LocationCurve line = e.Location as LocationCurve;
         if (line?.Curve != null) length = line.Curve.Length * 304.8;
-    } catch (Exception ex) { warnings.Add(id + " length: " + ex.Message); }
+    } catch (Exception ex) { Warn(id + " length: " + ex.Message); }
+    if (!details) {
+        remainingChars -= 96 + (name?.Length ?? 0) + (family?.Length ?? 0)
+                             + (category?.Length ?? 0) + (shown?.Length ?? 0);
+        if (remainingChars < 0) break;
+    }
     if (details) items.Add(new { id = id.ToString(), name, family, category, shown, level, length });
     else if (names) items.Add(new { id = id.ToString(), name, family, category, shown });
     else items.Add(new { id = id.ToString(), category, shown });
 }
-return new { view, items, warnings };
 """
 
 _VIEW = """
@@ -60,21 +72,37 @@ if (viewId == null) throw new InvalidOperationException("No active view.");
 string view = document.GetHashCode().ToString() + ":" + viewId;
 """
 _TIMER = "var timer = System.Diagnostics.Stopwatch.StartNew();\n"
-_SELECTED_IDS = "var ids = new UIDocument(document).Selection.GetElementIds();\n"
-_MEMBERSHIP = _VIEW + _TIMER + _SELECTED_IDS + """
-var members = new List<string>(ids.Count);
+_SNAPSHOT = """
+var ids = new UIDocument(document).Selection.GetElementIds();
+int total = ids.Count;
+// A native selection is already a snapshot. Bulk-copy its handles only if
+// the collection has no indexer. Neither deep paging nor a budget expiry
+// needs model lookups for the elements preceding the requested page.
+var page = new List<string>();
+var positions = parameters.Select(p => Convert.ToInt32(p)).Where(i => i < total).ToArray();
+if (positions.Length > 0) {
+    IList<ElementId> ordered = ids as IList<ElementId>;
+    if (ordered == null) {
+        int end = positions.Max() + 1;
+        ordered = total >= 1024 && end >= total - total / 8 ? ids.ToArray() : ids.Take(end).ToArray();
+    }
+    foreach (int i in positions) page.Add(ordered[i].ToString());
+}
+var members = new List<string>();
 foreach (var id in ids) {
-    if (timer.ElapsedMilliseconds >= 200)
-        throw new InvalidOperationException("Selection read took too long. Select fewer elements and try again.");
+    if (timer.ElapsedMilliseconds >= memberBudget || members.Count >= 65536) break;
     members.Add(id.ToString());
 }
-return new { view, ids = members };
 """
 _CHANGED = "The active view or selection changed; pick the selection again."
+_PARTIAL = ("The selection read or response-size budget was reached. Category facets and text matches cover only "
+            "the verified rows; total is the full selection count.")
 
 
-async def _read(executor, prelude, parameters=()):
-    response = await executor.client.send_code(prelude + _READ, parameters=list(parameters))
+async def _read(executor, prelude, parameters=(), *, selection=False):
+    result = "view, items, warnings" + (", members, total, page" if selection else "")
+    response = await executor.client.send_code(prelude + _READ + "return new { " + result + " };",
+                                               parameters=list(parameters))
     if not response.success or not isinstance(response.result, dict) or not isinstance(response.result.get("items"), list):
         raise RevitQueryError(response.error or "Invalid element query result")
     return response.result
@@ -101,16 +129,17 @@ def _items(rows):
     return items
 
 
-async def _selection(executor):
-    response = await executor.client.send_code(_MEMBERSHIP)
-    data = response.result
-    if (not response.success or not isinstance(data, dict) or not isinstance(data.get("ids"), list)
-            or not isinstance(data.get("view"), str)):
-        raise RevitQueryError(response.error or "Invalid selection snapshot")
-    ids = [element_id_or_none(value) for value in data["ids"]]
-    if None in ids or len(set(ids)) != len(ids):
+def _snapshot(data, positions):
+    if (not isinstance(data, dict) or not isinstance(data.get("view"), str) or
+            type(data.get("total")) is not int or data["total"] < 0 or
+            not isinstance(data.get("members"), list) or not isinstance(data.get("page"), list)):
+        raise RevitQueryError("Invalid selection snapshot")
+    members = [element_id_or_none(value) for value in data["members"]]
+    page = [element_id_or_none(value) for value in data["page"]]
+    if (None in members or None in page or len(set(members)) != len(members) or
+            len(members) > data["total"] or len(page) != sum(i < data["total"] for i in positions)):
         raise RevitQueryError("Invalid ids in selection snapshot")
-    return data["view"], ids
+    return data["view"], data["total"], members, page
 
 
 async def _by_ids(executor, numbers, *, view=None):
@@ -122,21 +151,28 @@ async def _by_ids(executor, numbers, *, view=None):
 var ids = new ElementId[] {{ {constructors} }};
 #pragma warning restore 618
 bool names = true, details = true;
+int maxRows = 50;
 """, [view] if view is not None else [])
     return _items(page["items"]), page.get("warnings") or []
 
 
 async def selected_items(executor, offset, limit, terms):
     """One lightweight index, at most one detail page, then verify the live selection."""
-    prelude = _VIEW + _TIMER + _SELECTED_IDS + f"bool names = {str(bool(terms)).lower()}, details = false;\n"
-    index = await _read(executor, prelude)
-    view = index.get("view")
+    positions = [] if terms else list(range(offset, min(offset + limit, 2**31 - 1)))
+    # Reserve half of the per-callback time for model fields after copying
+    # scalar ids. A separate size cap bounds the double-encoded RPC reply.
+    prelude = (_VIEW + _TIMER + "int memberBudget = 100;\n" + _SNAPSHOT
+               + f"int maxRows = members.Count;\nbool names = {str(bool(terms)).lower()}, details = false;\n")
+    index = await _read(executor, prelude, positions, selection=True)
+    view, total, members, page_ids = _snapshot(index, positions)
     items = _items(index["items"])
-    members = {item["id"] for item in items}
-    if not isinstance(view, str) or len(members) != len(index["items"]):
+    if len(items) != len(index["items"]) or [i["id"] for i in items] != members[:len(items)]:
         raise RevitQueryError("Invalid selection index")
     ranked = await asyncio.to_thread(rank_items, items, terms) if terms else items
-    page_ids = [item["id"] for item in ranked[offset:offset + limit]]
+    if terms:
+        page_ids = [item["id"] for item in ranked[offset:offset + limit]]
+        index_of = {number: i for i, number in enumerate(members)}
+        positions = [index_of[number] for number in page_ids]
     warnings = list(index.get("warnings") or [])
     rows = []
     if page_ids:
@@ -144,11 +180,35 @@ async def selected_items(executor, offset, limit, terms):
         if [item["id"] for item in rows] != page_ids:
             raise RevitQueryError(_CHANGED)
         warnings.extend(notes)
-    last_view, last_ids = await _selection(executor)
-    if view != last_view or members != set(last_ids):
+    recheck = _VIEW + _TIMER + "int memberBudget = 200;\n" + _SNAPSHOT
+    response = await executor.client.send_code(recheck + "return new { view, total, members, page };", parameters=positions)
+    if not response.success:
+        raise RevitQueryError(response.error or "Could not recheck the selection")
+    last_view, last_total, last_members, last_page = _snapshot(response.result, positions)
+    if view != last_view or total != last_total:
         raise RevitQueryError(_CHANGED)
-    return {"kind": "element", "items": rows, "offset": offset, "total": len(ranked),
-            "truncated": len(ranked) > offset + limit, "category_matched": [], "facets": facets(ranked),
+    checked = min(len(members), len(last_members))
+    same_members = (set(members) == set(last_members) if checked == total
+                    else members[:checked] == last_members[:checked])
+    if not same_members or ((not terms or checked < total) and page_ids != last_page):
+        raise RevitQueryError(_CHANGED)
+    partial = len(items) < total or checked < total
+    if partial:
+        warnings.append(_PARTIAL)
+        if checked < total:
+            warnings.append("Selection membership beyond the checked prefix and returned page could not be verified.")
+        if checked < len(items):
+            verified = set(last_members[:checked]) | set(last_page)
+            ranked = [item for item in ranked if item["id"] in verified]
+            if terms:
+                wanted = {item["id"] for item in ranked[offset:offset + limit]}
+                rows = [item for item in rows if item["id"] in wanted]
+        if not terms:
+            indexed = {item["id"] for item in ranked}
+            ranked.extend(item for item in rows if item["id"] not in indexed)
+    return {"kind": "element", "items": rows, "offset": offset, "total": total if partial else len(ranked),
+            "truncated": partial or len(ranked) > offset + limit, "category_matched": [], "facets": facets(ranked),
+            **({"facets_partial": True} if partial else {}),
             **({"warnings": list(dict.fromkeys(warnings))} if warnings else {})}
 
 

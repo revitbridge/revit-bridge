@@ -5,6 +5,7 @@ from collections import Counter
 from importlib.resources import files
 
 ALIASES = json.loads(files(__package__).joinpath("mention_aliases.json").read_text(encoding="utf-8"))
+_ENGLISH = {alias for aliases in ALIASES.values() for alias in aliases if alias.isascii()}
 _WORDS = re.compile(r"[^\W_]+")
 _TERMS = re.compile(r"[\u3400-\u9fff]+|[^\u3400-\u9fff\s]+")
 MAX_TERMS = 8
@@ -26,8 +27,14 @@ def category_terms(terms):
     for term in terms:
         categories = set()
         if len(term) >= 3 or any("\u3400" <= c <= "\u9fff" for c in term):
-            categories = {key for key, aliases in ALIASES.items() if any(
-                a.startswith(term) or (a.isascii() and term in (a + "s", a + "es")) for a in aliases)}
+            stems = {term}
+            for suffix in ("s", "es"):
+                if term.endswith(suffix) and term[:-len(suffix)] in _ENGLISH:
+                    stems.add(term[:-len(suffix)])
+            if len(term) >= 4 and term.isascii() and term.isalpha():
+                stems.update(a for a in _ENGLISH if len(a) >= 5 and _near(term, a))
+            prefixes = tuple(stems)
+            categories = {key for key, aliases in ALIASES.items() if any(a.startswith(prefixes) for a in aliases)}
         if categories:
             matched = categories if matched is None else matched & categories
         else:
@@ -56,7 +63,7 @@ def _rank(term, fields, words, fuzzy_words):
         return 2
     if any(term in field for field in fields):
         return 3
-    if len(term) >= 3 and not term.isdecimal():
+    if len(term) >= 3 and not any(ch.isdigit() for ch in term):
         if any(_near(term, word) for word in fuzzy_words):
             return 4
         for word in fuzzy_words:

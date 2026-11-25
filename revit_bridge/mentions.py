@@ -11,8 +11,10 @@ writing a message (section 2.4 of the hostv2 plan):
     first. Text searches rank all matching types across categories, with
     bilingual aliases and unpaginated category facets. ``element`` requires
     ``source="selection"`` and returns at most 50 items in one page. ``limit``
-    and ``offset`` select a page; ``total`` counts every match and ``truncated``
-    says whether more follow. ``warnings`` (only when there are any) are the
+    and ``offset`` select a page; ``total`` counts every match on a complete
+    search. A budget-limited selection reports its full selection count,
+    ``facets_partial`` and a warning. ``truncated`` also covers incomplete
+    reads. ``warnings`` (only when there are any) are the
     add-in's lines about rows it could not read. Bad input and Revit failures
     come back as ``{"error": code, "kind": kind, ...}`` like ``run_query``; a
     transport failure (no add-in) raises.
@@ -30,7 +32,11 @@ writing a message (section 2.4 of the hostv2 plan):
     level "F2" (id 312, 3000 mm).``
 
 Levels, links and types use the query executor's supported add-in or legacy
-path. Element selection and document identity use fixed, read-only queries.
+path. Fixed read-only queries identify the active document, search unsaved
+types and read the selection. Complete type lists can be reused for up to 30
+seconds on the same connection and unmodified document. A broad type search
+returns the readable categories with warnings and truncation if another fails.
+All kinds accept up to eight distinct search terms; more return invalid_args.
 """
 from __future__ import annotations
 
@@ -218,20 +224,21 @@ async def _type_candidates(executor, scope, category, matched, searching):
         inventory = mention_cache.inventories(stamp) if stamp else {}
         additions = {}
         if stamp and stamp.modified and not category and searching:
-            data = await mention_cache.read_unsaved_types(executor, matched)
+            data = await mention_cache.read_unsaved_types(executor, matched, stamp)
             items = [item for row in data["rows"] if isinstance(row, dict) and (item := _type_item(
                 row.get("id"), row.get("family"), row.get("name"), row.get("shown"), row.get("category")))]
             reply = {"items": items, "warnings": data.get("warnings", []), "truncated": data.get("truncated", False)}
         else:
             reply = await _type_inventory(executor, category, matched, searching, inventory, additions)
-        if stamp and (additions or stamp.modified):
+        if stamp and not stamp.modified and additions:
             current = await mention_cache.document_stamp(executor.client, scope)
-            if current != stamp:
-                if current:
-                    mention_cache.inventories(current)
+            if current and current.document != stamp.document:
+                mention_cache.discard(scope)
                 raise RevitQueryError("The active document changed; pick the type again.")
-            if not stamp.modified:
-                mention_cache.publish(inventory, additions)
+            if current == stamp:
+                mention_cache.publish(stamp, additions)
+            else:
+                mention_cache.discard(scope)
         return reply
     except ValueError as exc:
         return {"error": "invalid_args", "kind": "type", "message": str(exc)}

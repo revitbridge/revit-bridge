@@ -20,8 +20,18 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   it displays the returned types as unselectable.
 - Mention search splits Chinese and non-Chinese text into distinct terms. It ranks exact,
   prefix, word-start, substring and fuzzy matches in that order. Fuzzy matching uses name
-  and family words. Decimal terms only use the first four ranks. Category aliases can
-  narrow the search before the remaining terms match names and families.
+  and family words. Terms containing digits only use the first four ranks. Category aliases,
+  their plurals and a one-edit spelling of English aliases at least five letters long
+  can narrow the search before the remaining terms match names and families.
+- More than eight distinct search terms returns `invalid_args` for every kind, including
+  existing level, link and category-specific type searches. A cross-category type search
+  returns partial results, warnings and `truncated` when one category fails.
+- Type searches send fixed read-only queries for document identity and broad searches
+  in unsaved documents. A connection can reuse a complete inventory for up to 30 seconds
+  while the same document stays unmodified.
+- If selection scanning reaches its time budget, `total` gives the full selection count.
+  Unfiltered pages keep their selection order. Filtered pages rank the available rows.
+  `facets_partial`, `truncated` and warnings identify incomplete results.
 
 ## [0.9.1] - 2026-11-23
 

@@ -221,6 +221,7 @@ class FakeModel:
         self.model = copy.deepcopy(model or DEFAULT_MODEL)
         self.document_stamp = "open document 1"
         self.document_modified = False
+        self.document_version = "save 1"
         self.list_model_items = list_model_items
         self.capabilities = capabilities
         self.advertise_only = advertise_only
@@ -331,7 +332,8 @@ class FakeModel:
     def _send_code(self, rid, code: str):
         doc = self.model
         if "Document.GetDocumentVersion(document)" in code:
-            return FakeRevit.code_result(rid, {"document": self.document_stamp, "modified": self.document_modified})
+            return FakeRevit.code_result(rid, {"document": self.document_stamp, "version": self.document_version,
+                                               "modified": self.document_modified})
         linked = re.search(r"l\.Id\.Value == (\d+)\);", code)
         if linked and "LinkError" in code:
             link_id = int(linked.group(1))
