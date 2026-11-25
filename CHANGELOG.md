@@ -8,6 +8,13 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- `link_revit_model` links RVT files by origin or shared coordinates. `link_cad`
+  links DWG and DXF files in the active view or on a named level. Both check the
+  paths of existing link types and refuse a second link to the same file.
+- `load_family` loads a new RFA and refuses same-name families. All three packs
+  take a designer-supplied path on the computer running Revit and omit it from
+  evidence parameters. They report native failures with a next step and compile
+  for Revit 2021 and 2023–2027.
 - `place_family_instance` places and rotates non-hosted point families. `create_pipe`
   and `create_duct` create sized rigid segments from model internal-origin coordinates
   in millimetres. `list_mep_types` lists loaded types, systems and nominal sizes.

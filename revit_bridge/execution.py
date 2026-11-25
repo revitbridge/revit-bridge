@@ -346,6 +346,9 @@ def _record(ledger: Ledger, *, host: str, scope: str, bypass: bool, action: str,
         "preconditions_failed": preconditions_failed,
         "warnings": list(warnings),
     }
+    if tool and tool.name in {"link_revit_model", "link_cad", "load_family"}:
+        # The confirmation binds the full projection. Read-back uses model IDs/counts only.
+        record["params"] = {k: v for k, v in record["params"].items() if k != "path"}
     if refused:
         record["refused"] = True
     try:

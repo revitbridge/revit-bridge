@@ -24,7 +24,7 @@ BUILTIN_NAMES = {
     "select_elements", "select_in_box", "select_by_filter", "clear_selection",
     "zoom_to_elements", "set_view_orientation", "set_section_box",
     "place_family_instance", "create_pipe", "create_pipes_by_points", "connect_pipes",
-    "create_duct", "list_mep_types",
+    "create_duct", "list_mep_types", "link_revit_model", "link_cad", "load_family",
 }
 # Demo artefacts with type, level and coordinates hard-coded in C#: kept as examples, never loaded.
 # create_room is also a built-in name now; the example of that name must still not be what loads.

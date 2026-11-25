@@ -1,0 +1,141 @@
+schema_version: 1
+name: link_revit_model
+display_name: Link Revit Model
+description: "Link an RVT file from the computer running Revit. Linking a large file keeps Revit busy until the native operation finishes."
+version: "1.0.0"
+revit_versions: ["2021","2023","2024","2025","2026","2027"]
+code_template: |
+  // Resolve the spelling of a drive or UNC path without opening it.
+  string PathKey(string value)
+  {
+      if (string.IsNullOrEmpty(value)) return null;
+      string text = value.Replace('/', '\\');
+      if (text.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) text = @"\\" + text.Substring(8);
+      else if (text.StartsWith(@"\\?\", StringComparison.Ordinal)) text = text.Substring(4);
+      bool drive = text.Length >= 3 && text[1] == ':' && text[2] == '\\' &&
+          ((text[0] >= 'A' && text[0] <= 'Z') || (text[0] >= 'a' && text[0] <= 'z'));
+      bool unc = text.StartsWith(@"\\", StringComparison.Ordinal);
+      if ((!drive && !unc) || text.EndsWith(@"\", StringComparison.Ordinal)) return null;
+      var parts = text.Substring(drive ? 3 : 2).Split('\\');
+      if (parts[parts.Length - 1] == "." || parts[parts.Length - 1] == "..") return null;
+      if (unc && (parts.Length < 3 || parts[0].Length == 0 || parts[1].Length == 0 ||
+                  parts[0] == "." || parts[0] == ".." || parts[0] == "?" ||
+                  parts[1] == "." || parts[1] == "..")) return null;
+      string root = drive ? text.Substring(0, 3) : @"\\" + parts[0] + @"\" + parts[1] + @"\";
+      var names = new List<string>();
+      foreach (var part in parts.Skip(drive ? 0 : 2))
+      {
+          if (part.Length == 0 || part == ".") continue;
+          if (part == "..")
+          {
+              if (names.Count > 0) names.RemoveAt(names.Count - 1);
+          }
+          else names.Add(part);
+      }
+      return root + string.Join(@"\", names);
+  }
+  string path = "{path}".Replace('/', '\\');
+  string key = PathKey(path);
+  if (key == null || !path.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase))
+      throw new InvalidOperationException("REFUSED: Expected an absolute .rvt file path. Enter its drive or UNC path on the computer running Revit.");
+  ImportPlacement placement;
+  switch ("{positioning}".Trim().ToLowerInvariant())
+  {
+      case "origin": placement = ImportPlacement.Origin; break;
+      case "shared": placement = ImportPlacement.Shared; break;
+      default: throw new InvalidOperationException("REFUSED: Unknown positioning. Choose origin or shared.");
+  }
+  const string duplicate = "REFUSED: The same file is already linked. Use its existing link type in Manage Links.";
+  int inspected = 0;
+  string failure = "Revit could not check existing RVT links";
+  string next = "Review their saved paths in Manage Links.";
+  try
+  {
+      if (document.IsFamilyDocument)
+          throw new InvalidOperationException("REFUSED: RVT links require a project. Open a project document.");
+      foreach (var type in new FilteredElementCollector(document).OfClass(typeof(RevitLinkType)))
+      {
+          if (++inspected > 5000)
+              throw new InvalidOperationException("REFUSED: More than 5000 link types to check. Review existing links and link manually in Revit.");
+          if (!type.IsExternalFileReference()) continue;
+          using (var reference = type.GetExternalFileReference())
+          using (var stored = reference?.GetAbsolutePath())
+          {
+              if (stored == null || stored.Empty)
+                  throw new InvalidOperationException("REFUSED: An existing link has no resolved path. Repair its reference in Manage Links and retry.");
+              if (stored.CloudPath || stored.ServerPath) continue;
+              var saved = PathKey(ModelPathUtils.ConvertModelPathToUserVisiblePath(stored));
+              if (saved == null)
+                  throw new InvalidOperationException("REFUSED: An existing link has no absolute file path. Check its reference in Manage Links and retry.");
+              if (string.Equals(key, saved, StringComparison.OrdinalIgnoreCase))
+                  throw new InvalidOperationException(duplicate);
+          }
+      }
+      failure = "Revit could not load the RVT";
+      next = "Check the path, file version and open models in Revit.";
+      using (var modelPath = new FilePath(path))
+      using (var options = new RevitLinkOptions(false))
+      using (var result = RevitLinkType.Create(document, modelPath, options))
+      {
+          if (result == null) throw new InvalidOperationException("REFUSED: Revit returned no link result. Check the file and Manage Links in Revit.");
+          var status = result.LoadResult;
+          if (status == LinkLoadResultType.UsedExisting || status == LinkLoadResultType.LinkExists)
+              throw new InvalidOperationException(duplicate);
+          if (status == LinkLoadResultType.LinkNotFound)
+              throw new InvalidOperationException("REFUSED: Revit could not find the linked file (LinkNotFound). Check the path on the computer running Revit.");
+          if (status == LinkLoadResultType.LinkNotOpenable)
+              throw new InvalidOperationException("REFUSED: Revit could not open the linked file (LinkNotOpenable). Check the file version and open a copy in Revit.");
+          if (status == LinkLoadResultType.SameModelAsHost || status == LinkLoadResultType.SameCentralModelAsHost)
+              throw new InvalidOperationException("REFUSED: The source is the host model or uses the same central model. Choose a different RVT.");
+          if (status == LinkLoadResultType.LinkOpenAsHost)
+              throw new InvalidOperationException("REFUSED: The source RVT is already open as a project. Close the source project when ready and retry.");
+          if (status != LinkLoadResultType.LinkLoaded)
+              throw new InvalidOperationException("REFUSED: Revit reported " + status + ". Check the source path, file version and link status in Manage Links.");
+          if (result.ElementId == null || result.ElementId == ElementId.InvalidElementId)
+              throw new InvalidOperationException("REFUSED: Revit returned no valid link type ID. Check the link in Manage Links.");
+          failure = "Revit could not place the loaded link";
+          next = placement == ImportPlacement.Shared ? "Check both models' shared coordinates or choose origin." : "Check the link type and the host project.";
+          var instance = RevitLinkInstance.Create(document, result.ElementId, placement);
+          if (instance == null || instance.GetTypeId() != result.ElementId)
+              throw new InvalidOperationException("REFUSED: Revit did not place the loaded link type. Check the link in Manage Links.");
+          return new { Status = "Linked", ElementId = long.Parse(instance.Id.ToString()), TypeId = long.Parse(result.ElementId.ToString()) };
+      }
+  }
+  catch (Autodesk.Revit.Exceptions.ApplicationException ex)
+  {
+      if (ex is Autodesk.Revit.Exceptions.FileArgumentNotFoundException || ex is Autodesk.Revit.Exceptions.FileNotFoundException)
+          throw new InvalidOperationException("REFUSED: Revit could not find the file. Check the path on the computer running Revit.");
+      if (ex is Autodesk.Revit.Exceptions.FileAccessException)
+          throw new InvalidOperationException("REFUSED: Revit could not access the file. Check read permissions and file locks.");
+      if (ex is Autodesk.Revit.Exceptions.CorruptModelException)
+          throw new InvalidOperationException("REFUSED: Revit reported a damaged model. Inspect a backup copy in Revit.");
+      if (ex is Autodesk.Revit.Exceptions.OperationCanceledException)
+          throw new InvalidOperationException("REFUSED: Revit cancelled the operation. Retry when ready.");
+      if (ex is Autodesk.Revit.Exceptions.ModificationForbiddenException || ex is Autodesk.Revit.Exceptions.ModificationOutsideTransactionException || ex is Autodesk.Revit.Exceptions.RegenerationFailedException)
+          throw new InvalidOperationException("REFUSED: Revit could not complete the model change (" + ex.GetType().Name + "). Resolve pending failures and retry in a writable project.");
+      throw new InvalidOperationException("REFUSED: " + failure + " (" + ex.GetType().Name + "). " + next);
+  }
+parameters:
+  - name: path
+    type: string
+    description: "Absolute path supplied by the designer on the computer running Revit."
+    source: designer
+    required: true
+  - name: positioning
+    type: string
+    description: "origin aligns the internal origins. shared uses shared coordinates."
+    source: default
+    required: false
+    default: origin
+preconditions:
+  - text: "Supported Revit years are 2021, 2023, 2024, 2025, 2026 and 2027."
+applies_when: ["link Revit model"]
+not_for: ["reload an existing link", "cloud or Revit Server resources"]
+validator: {kind: count_delta, category: OST_RvtLinks, expected: 1}
+fixtures:
+  - name: origin
+    params: {path: 'X:\Synthetic\Campus.rvt'}
+    expect: {Status: Linked}
+  - name: shared
+    params: {path: '\\example.invalid\synthetic\Survey.RVT', positioning: shared}
+    expect: {Status: Linked}
