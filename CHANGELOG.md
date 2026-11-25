@@ -5,12 +5,13 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
-[host_instructions]: revit_bridge/instructions.py
 
-Hosts using [host_instructions] with `code=False` now direct designers to the
-confirmation button on the card inside the chat reply. The planner asks all
-outstanding questions together and uses `ask_designer` when choices are available.
-The analyst routes requests for changes to the task even when they include assent.
+### Changed
+
+- Hosts using `host_instructions(code=False)` direct designers to the confirmation
+  button on the card inside the chat reply. The planner asks outstanding questions
+  together and uses `ask_designer` for choices. For replies that request changes,
+  the analyst selects the appropriate query, tool or none route.
 
 ## [0.9.1] - 2026-11-23
 

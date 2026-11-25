@@ -356,8 +356,8 @@ def _render_analyst(code: bool) -> str:
     none_rule = "" if code else " Never offer to write code."
     card_rule = "" if code else (
         " With a pending card, route plain assent without changes or a question about its location to chat.\n"
-        "  If the reply asks for a change, route the requested task.\n"
-        f"  {_CARD_ACTION} {_CARD_LOCATION}")
+        f"  {_CARD_ACTION} {_CARD_LOCATION}\n"
+        "  If the reply asks for a change, route it by what it requests: query, tool, or none.")
     return f"""\
 You are the analyst of a Revit host built on revit-bridge 0.9. You read one message
 from the designer and route it; you call no tools. You get the message, a

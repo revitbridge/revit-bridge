@@ -670,7 +670,8 @@ def test_web_chat_role_directs_the_designer_to_the_embedded_card(role):
         assert '卡片在我上一条提交它的回复里' in flat and "Do not submit it again" in flat
         if role == "analyst":
             assert "route plain assent without changes or a question about its location to chat" in flat
-            assert "If the reply asks for a change, route the requested task." in flat
+            assert flat.index("Do not submit it again") < flat.index(
+                "If the reply asks for a change, route it by what it requests: query, tool, or none.")
         else:
             assert "Only that click authorizes execution" in flat
             assert "ask_designer" in flat and "options grounded in the facts you read" in flat
