@@ -133,7 +133,7 @@ class Program {
         if (window) return;
         var raised = new Document();
         raised.Wall.Box = new BoundingBoxXYZ(new(0,0,725), new(5000,200,3000));
-        Refused(raised, "elevation", true);
+        Refused(raised, "725 mm above the placement level", true);
         var unknownWall = new Document();
         unknownWall.Wall.Box = null;
         Refused(unknownWall, "verify the requested door elevation", true);

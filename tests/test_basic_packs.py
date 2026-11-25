@@ -586,8 +586,10 @@ def test_point_and_distance_placement_have_separate_required_inputs(store, eleme
 @pytest.mark.parametrize("tool", ["create_door", "create_door_on_wall"])
 def test_requested_door_elevation_must_be_within_host_wall_before_placement(tool):
     code = code_of(tool)
-    assert code.index("bottom < wallBox.Min.Z - tolerance || bottom >= wallBox.Max.Z - tolerance") < code.index("NewFamilyInstance(")
-    assert 'throw new InvalidOperationException("REFUSED: The requested door elevation is outside' in code
+    creation = code.index("NewFamilyInstance(")
+    assert code.index("bottom < wallBox.Min.Z - tolerance") < creation
+    assert code.index("bottom >= wallBox.Max.Z - tolerance") < creation
+    assert "toMm(wallBox.Min.Z - level.ProjectElevation)" in code
 
 
 def test_a_refusal_is_refused_not_failed_and_leaves_the_counters_alone(tmp_path):

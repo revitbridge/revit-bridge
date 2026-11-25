@@ -163,11 +163,22 @@ static class Scenarios
         Run("Revit cannot delete a stair", Rendered.One, [stairs], [], [10], [10], [],
             "REFUSED: Revit would not delete the supplied ids: Simulated refusal for this stair.", setup: d => d.CannotDelete = true);
         foreach (var independent in new Element[] { new Wall(11, null), new Floor(11, null), new RoofBase(11, null), new Ceiling(11, null),
+                 new CurtainSystem(11, Model), new WallSweep(11, Model), new SlabEdge(11, Model),
+                 new Fascia(11, Model), new Gutter(11, Model), new WallFoundation(11, Model), new MEPCurve(11, Model),
+                 new TopographySurface(11, Model), new Toposolid(11, Model), new BuildingPad(11, Model), new BeamSystem(11, Model),
                  door, new Railing(11, Model, 10), new Stairs(11, null), new MultistoryStairs(11, null),
                  new Group(11, GroupCategory), new Opening(11, null), new Rebar(11, null), new RebarInSystem(11, null),
                  new RebarContainer(11, null), new AreaReinforcement(11, null), new PathReinforcement(11, null),
                  new FabricSheet(11, null), new FabricArea(11, null) })
             Run("protect dependent " + independent.GetType().Name, Rendered.One, [floor, independent], [11], [10, 11], [10], [],
                 "REFUSED: Deletion also removes " + independent.GetType().Name + " 11", calls: 0);
+        Run("loaded family", Rendered.One, [new Family(10, null)], [], [10], [10], [],
+            "REFUSED: Nothing was deleted: 1 of 1 supplied ids cannot be deleted by this tool. 10 is a family", calls: 0);
+        foreach (var system in new Element[] { new AreaReinforcement(10, Model) { Bars = Ids(11) },
+                                               new PathReinforcement(10, Model) { Bars = Ids(11) } })
+            Run("system bars of " + system.GetType().Name, Rendered.One, [system, new RebarInSystem(11, Model)],
+                [11], [], [10], [11]);
+        Run("sheets belonging to fabric area", Rendered.One, [new FabricArea(10, Model) { Sheets = Ids(11) },
+            new FabricSheet(11, Model)], [11], [], [10], [11]);
     }
 }

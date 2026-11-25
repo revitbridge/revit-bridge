@@ -10,7 +10,8 @@ def test_wall_constraint_results_and_commit(tmp_path):
         "BaseOnly": dict(base_offset=200),
         "Height": dict(height=2000),
         "Invalid": dict(base_level_name="L3", top_level_name="L2"),
-        "LowerTop": dict(base_level_name="L2", base_offset=1000, top_level_name="L3"),
+        "LowerTop": dict(base_level_name="L2", base_offset=1000, top_level_name="L3", top_offset=0),
+        "RepeatTop": dict(base_offset=200, top_level_name="L2"),
         "RaiseBase": dict(base_level_name="L2", base_offset=-1000),
     }
     cases = {name: {"element_id": 101, **values} for name, values in params.items()}

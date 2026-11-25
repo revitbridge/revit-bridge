@@ -82,7 +82,8 @@ class Program {
         Console.WriteLine("PASS " + name);
     }
     public static void Main() {
-        Check("raise base past old top", Rendered.Raise, true, "L4", 0, 3000, true);
+        Check("raise base past old top", Rendered.Raise, true, "L4", 180, 3180, true);
+        Check("repeating top level keeps its offset", Rendered.RepeatTop, true, "L2", 180, 2980);
         Check("bind previously unconnected wall and clear stale offset", Rendered.Bind, false, "L3", 0, 6000);
         Check("explicit top offset", Rendered.Offset, true, "L3", 125, 6125);
         Check("base only keeps top offset", Rendered.BaseOnly, true, "L2", 180, 2980);

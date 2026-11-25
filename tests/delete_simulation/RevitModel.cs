@@ -61,6 +61,14 @@ class HostObject(long id, Category c) : Element(id, c) { }
 class Floor(long id, Category c) : HostObject(id, c) { }
 class RoofBase(long id, Category c) : HostObject(id, c) { }
 class Ceiling(long id, Category c) : HostObject(id, c) { }
+class CurtainSystem(long id, Category c) : Element(id, c) { }
+class WallSweep(long id, Category c) : Element(id, c) { }
+class SlabEdge(long id, Category c) : Element(id, c) { }
+class WallFoundation(long id, Category c) : Element(id, c) { }
+class MEPCurve(long id, Category c) : Element(id, c) { }
+class BeamSystem(long id, Category c) : Element(id, c) { }
+class Toposolid(long id, Category c) : Element(id, c) { }
+class Family(long id, Category c) : Element(id, c) { }
 class Opening(long id, Category c) : Element(id, c) { }
 class Panel(long id, Category c) : FamilyInstance(id, c) { }
 class Mullion(long id, Category c) : FamilyInstance(id, c) { }
@@ -77,6 +85,10 @@ class FamilyInstance(long id, Category c) : Element(id, c)
 
 namespace Autodesk.Revit.DB.Architecture
 {
+    class Fascia(long id, Category c) : Element(id, c) { }
+    class Gutter(long id, Category c) : Element(id, c) { }
+    class TopographySurface(long id, Category c) : Element(id, c) { }
+    class BuildingPad(long id, Category c) : Element(id, c) { }
     class Stairs(long id, Category c) : Element(id, c)
     {
         public List<ElementId> Runs = new(), Landings = new(), Supports = new();
@@ -102,10 +114,19 @@ namespace Autodesk.Revit.DB.Structure
     class Rebar(long id, Category c) : Element(id, c) { }
     class RebarInSystem(long id, Category c) : Element(id, c) { }
     class RebarContainer(long id, Category c) : Element(id, c) { }
-    class AreaReinforcement(long id, Category c) : Element(id, c) { }
-    class PathReinforcement(long id, Category c) : Element(id, c) { }
+    class AreaReinforcement(long id, Category c) : Element(id, c) {
+        public List<ElementId> Bars = new();
+        public ICollection<ElementId> GetRebarInSystemIds() => Bars;
+    }
+    class PathReinforcement(long id, Category c) : Element(id, c) {
+        public List<ElementId> Bars = new();
+        public ICollection<ElementId> GetRebarInSystemIds() => Bars;
+    }
     class FabricSheet(long id, Category c) : Element(id, c) { }
-    class FabricArea(long id, Category c) : Element(id, c) { }
+    class FabricArea(long id, Category c) : Element(id, c) {
+        public List<ElementId> Sheets = new();
+        public ICollection<ElementId> GetFabricSheetElementIds() => Sheets;
+    }
 }
 class CurtainGrid
 {
