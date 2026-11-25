@@ -478,6 +478,66 @@ def test_reconnected_device_during_inventory_cannot_publish_another_devices_rows
     assert out["total"] == 2 and "list_model_items" in methods
 
 
+@pytest.mark.parametrize("remote", [False, True], ids=["local-disconnect", "remote-eof"])
+def test_warm_tcp_result_discarded_if_connection_closes_during_ranking(monkeypatch, remote):
+    from revit_bridge import mentions
+    from revit_bridge.mention_cache import DOCUMENT_STAMP
+
+    class Server(FakeRevit):
+        async def _serve(self, reader, writer):
+            self.peer = writer
+            await super()._serve(reader, writer)
+
+    async def go():
+        async with Server(FakeModel()) as fake:
+            client = RevitClient(host="127.0.0.1", port=fake.port, timeout=2)
+            executor = RevitQueryExecutor(client)
+            try:
+                assert (await mention_candidates(executor, "type", category="OST_Walls", q="basic"))["total"] == 2
+                before = len(fake.requests)
+                generation = client.connection_generation
+                to_thread = asyncio.to_thread
+                async def close_after_ranking(fn, *args, **kwargs):
+                    result = await to_thread(fn, *args, **kwargs)
+                    if fn is mentions.rank_items:
+                        if remote:
+                            fake.peer.close()
+                            await fake.peer.wait_closed()
+                            async def wait_for_eof():
+                                while client.connected:
+                                    await asyncio.sleep(0.001)
+                            await asyncio.wait_for(wait_for_eof(), timeout=2)
+                        else:
+                            await client.disconnect()
+                    return result
+                monkeypatch.setattr(asyncio, "to_thread", close_after_ranking)
+                out = await mention_candidates(executor, "type", category="OST_Walls", q="basic")
+                assert not client.connected and generation == client.connection_generation
+                assert out["error"] == "revit_error" and "device connection changed" in out["message"]
+                assert [r["params"]["code"] for r in fake.requests[before:]] == [DOCUMENT_STAMP]
+            finally:
+                await client.disconnect()
+    asyncio.run(go())
+
+
+def test_concurrent_tcp_clients_at_one_endpoint_do_not_share_inventory():
+    async def go():
+        model = FakeModel()
+        async with FakeRevit(model) as fake:
+            a, b = [RevitClient(host="127.0.0.1", port=fake.port, timeout=2) for _ in range(2)]
+            try:
+                await mention_candidates(RevitQueryExecutor(a), "type", category="OST_Walls")
+                model.model["types"]["OST_Walls"][0]["TypeName"] = "Seen on second connection"
+                out = await mention_candidates(RevitQueryExecutor(b), "type", category="OST_Walls")
+                assert a.connected and b.connected and a.connection_generation == b.connection_generation
+                assert "Seen on second connection" in {item["name"] for item in out["items"]}
+                assert sum(r["method"] == "list_model_items" for r in fake.requests) == 2
+            finally:
+                await a.disconnect()
+                await b.disconnect()
+    asyncio.run(go())
+
+
 def test_list_model_items_works_uncached_when_fixed_code_queries_are_disabled():
     model = FakeModel()
     def handler(request):

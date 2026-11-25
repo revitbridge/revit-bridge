@@ -3,6 +3,7 @@ from collections import OrderedDict
 from threading import Lock
 from time import monotonic
 from typing import NamedTuple
+from weakref import ref
 
 from revit_bridge.revit.client import RevitClient
 from revit_bridge.snapshot.query import RevitQueryError
@@ -81,8 +82,10 @@ def device_scope(client):
     scope = getattr(client, "mention_cache_scope", None)
     if scope is not None:
         return "host", scope
-    if isinstance(client, RevitClient):
-        return "tcp", client.host, client.port, client.connection_generation
+    if isinstance(client, RevitClient) and client.connected:
+        # Generations count connects per client. Different clients may share
+        # an endpoint and generation; a weak key keeps their sockets separate.
+        return "tcp", ref(client), client.connection_generation
     return None
 
 
