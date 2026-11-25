@@ -1,0 +1,142 @@
+schema_version: 1
+name: place_family_instance
+display_name: Place Family Instance
+description: "Place a non-hosted, single-level point family at model internal-origin coordinates in millimetres and rotate it about model Z."
+version: "1.0.0"
+revit_versions: ["2021","2023","2024","2025","2026","2027"]
+code_template: |
+  var timer = System.Diagnostics.Stopwatch.StartNew();
+  void CheckTime()
+  {
+      if (timer.ElapsedMilliseconds > 250)
+          throw new InvalidOperationException("REFUSED: Model lookup exceeded its time budget. Retry in an idle model.");
+  }
+
+  double Number(string text)
+  {
+      double value;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float,
+              System.Globalization.CultureInfo.InvariantCulture, out value) || double.IsNaN(value) || double.IsInfinity(value))
+          throw new InvalidOperationException("REFUSED: Invalid number. Enter finite numeric values.");
+      return value;
+  }
+  double Feet(string text) => UnitUtils.ConvertToInternalUnits(Number(text), UnitTypeId.Millimeters);
+
+  XYZ Point(string text)
+  {
+      var parts = text.Split(',');
+      if (parts.Length != 3)
+          throw new InvalidOperationException("REFUSED: A point needs three coordinates. Enter X,Y,Z in millimetres.");
+      var point = new XYZ(Feet(parts[0]), Feet(parts[1]), Feet(parts[2]));
+      if (!XYZ.IsWithinLengthLimits(point))
+          throw new InvalidOperationException("REFUSED: Point exceeds Revit's model limits. Use coordinates nearer the internal origin.");
+      return point;
+  }
+
+  string levelName = "{level_name}";
+  var level = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+      .FirstOrDefault(l => { CheckTime(); return l.Name == levelName; });
+  if (level == null)
+      throw new InvalidOperationException("REFUSED: Unknown level. Select a level from the active document.");
+
+  string typeName = "{type_name}";
+  XYZ target = Point("{point_mm}");
+  double angle = (Number("{rotation_degrees}") % 360) * Math.PI / 180;
+  var symbols = new FilteredElementCollector(document).OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>();
+  var matches = symbols.Where(s =>
+  {
+      CheckTime();
+      return s.Name == typeName || s.FamilyName + ": " + s.Name == typeName;
+  }).Take(2).ToList();
+  if (matches.Count != 1)
+      throw new InvalidOperationException("REFUSED: The family type is missing or ambiguous. Use list_types for its category and give a unique Family: Type.");
+  var symbol = matches[0];
+  var family = symbol.Family;
+  if (family == null)
+      throw new InvalidOperationException("REFUSED: The type has no loadable family. Choose a point-based family type.");
+  bool InCategory(BuiltInCategory key) => symbol.Category != null && symbol.Category.Id == Category.GetCategory(document, key)?.Id;
+  if (family.FamilyPlacementType != FamilyPlacementType.OneLevelBased || AdaptiveComponentFamilyUtils.IsAdaptiveComponentFamily(family))
+  {
+      string next = "Choose a non-hosted, level-based point family or use the family's native Revit placement command.";
+      if (family.FamilyPlacementType == FamilyPlacementType.OneLevelBasedHosted)
+      {
+          if (InCategory(BuiltInCategory.OST_Doors)) next = "Use create_door_on_wall for a wall-hosted door.";
+          if (InCategory(BuiltInCategory.OST_Windows)) next = "Use create_window_on_wall for a wall-hosted window.";
+      }
+      if (family.FamilyPlacementType == FamilyPlacementType.CurveDrivenStructural && InCategory(BuiltInCategory.OST_StructuralFraming))
+          next = "Use create_beam for a structural beam.";
+      if (family.FamilyPlacementType == FamilyPlacementType.TwoLevelsBased)
+      {
+          if (InCategory(BuiltInCategory.OST_Columns)) next = "Use create_column for an architectural column.";
+          if (InCategory(BuiltInCategory.OST_StructuralColumns)) next = "Use create_structural_column for a structural column.";
+      }
+      throw new InvalidOperationException("REFUSED: Family requires " + family.FamilyPlacementType + " placement. " + next);
+  }
+  try
+  {
+      if (!symbol.IsActive) { symbol.Activate(); document.Regenerate(); }
+      var instance = document.Create.NewFamilyInstance(target, symbol, level, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+      document.Regenerate();
+      var location = instance?.Location as LocationPoint;
+      if (location == null || instance.LevelId != level.Id)
+          throw new InvalidOperationException("REFUSED: Revit did not place a point instance on the requested level. Choose a single-level point family.");
+      double expectedRotation = angle == 0 ? 0 : location.Rotation + angle;
+      // Some families interpret Z relative to their level. Verify the insertion point in model space.
+      if (!location.Point.IsAlmostEqualTo(target))
+          ElementTransformUtils.MoveElement(document, instance.Id, target - location.Point);
+      if (angle != 0)
+          ElementTransformUtils.RotateElement(document, instance.Id, Line.CreateUnbound(target, XYZ.BasisZ), angle);
+      document.Regenerate();
+      if (!(instance.Location is LocationPoint placed) || !placed.Point.IsAlmostEqualTo(target) || instance.LevelId != level.Id)
+          throw new InvalidOperationException("REFUSED: Family constraints moved the insertion point or changed the level. Check the family constraints.");
+      if (angle != 0)
+      {
+          double difference = placed.Rotation - expectedRotation;
+          if (Math.Abs(Math.Atan2(Math.Sin(difference), Math.Cos(difference))) > document.Application.AngleTolerance)
+              throw new InvalidOperationException("REFUSED: The instance did not retain the requested rotation. Check its rotation constraints.");
+      }
+      return new { Status = "Created", ElementId = long.Parse(instance.Id.ToString()), Family = symbol.FamilyName, Type = symbol.Name };
+  }
+  catch (Exception ex) when (ex is Autodesk.Revit.Exceptions.ArgumentException || ex.GetType() == typeof(Autodesk.Revit.Exceptions.InvalidOperationException))
+  {
+      throw new InvalidOperationException("REFUSED: Revit could not place or rotate the family. Check the family's constraints and level. " + ex.Message);
+  }
+parameters:
+  - name: type_name
+    type: string
+    description: "Exact type name or Family: Type from the existing family type query for its category."
+    source: answer
+    required: true
+  - name: level_name
+    type: string
+    description: "Reference level in the active project. Coordinates use the model internal origin."
+    source: tool:levels
+    required: true
+    choices_from: "levels"
+  - name: point_mm
+    type: string
+    description: "Insertion X,Y,Z in millimetres from the model internal origin."
+    source: designer
+    required: true
+  - name: rotation_degrees
+    type: double
+    description: "Counterclockwise rotation about model Z from the family's initial orientation, in degrees."
+    source: default
+    required: false
+    default: 0
+preconditions:
+  - text: "Supported Revit years are 2021, 2023, 2024, 2025, 2026 and 2027."
+  - kind: levels_min
+    value: 1
+applies_when:
+  - "place family instance"
+not_for:
+  - "hosted, work-plane, line, adaptive, view-specific or two-level placement"
+validator: null
+fixtures:
+  - name: furniture
+    params: {"type_name":"Sample Desk: Wide","level_name":"L1","point_mm":"500,850,0"}
+    expect: {Status: Created}
+  - name: equipment
+    params: {"type_name":"Sample Pump: Small","level_name":"L2","point_mm":"100,200,3500","rotation_degrees":90}
+    expect: {Status: Created}

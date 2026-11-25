@@ -17,7 +17,7 @@ from revit_bridge.spec.rules import missing_params, validate_spec
 
 
 READERS = {"count_by_level", "elements_in_link", "list_types", "query_levels", "query_model_stats",
-           "list_elements", "get_element_geometry", "get_element_parameters"}
+           "list_elements", "get_element_geometry", "get_element_parameters", "list_mep_types"}
 READ_CALLS = set("""
     Add AsDouble AsElementId AsInteger AsString AsValueString Cast ComputeDerivatives Contains
     ConvertFromInternalUnits Count CreateEqualsRule CrossProduct Equals Evaluate Except FirstOrDefault
@@ -25,7 +25,7 @@ READ_CALLS = set("""
     GetLength GetLinkDocument GetName GetTypeId GroupBy IsDefined Join Min MoveNext Normalize OfCategory
     OfClass OfType OrderBy OrderByDescending Parse Round Select Split StartsWith Sum Take ThenBy ToList
     ToString Trim TryGetValue TryParse Where WhereElementIsElementType WhereElementIsNotElementType
-    WherePasses get_Parameter
+    WherePasses get_Parameter Any Empty GetDuctSizeSettings GetSizeCount GetSizes StartNew
 """.split())
 READ_CONSTRUCTORS = set("""
     Dictionary ElementId ElementLevelFilter ElementParameterFilter FilteredElementCollector HashSet
@@ -133,6 +133,8 @@ def test_catalogue_and_details_declare_exactly_the_instance_id_parameters(tmp_pa
         **{(name, "element_id"): "elements" for name in ("get_element_parameters", "get_element_geometry")},
         ("create_wall_from_element", "reference_id"): "elements",
         ("elements_in_link", "link_id"): "elements:OST_RvtLinks",
+        ("connect_pipes", "first_pipe_id"): "elements:OST_PipeCurves",
+        ("connect_pipes", "second_pipe_id"): "elements:OST_PipeCurves",
     }
     link = store.load("elements_in_link").parameters[0]
     assert (link["name"], link["source"]) == ("link_id", "tool:elements")

@@ -62,12 +62,15 @@ WITHOUT_VALIDATOR = {
     # model-count, created-id and element-parameter validators cannot verify them.
     "select_elements", "select_in_box", "select_by_filter", "clear_selection",
     "zoom_to_elements", "set_view_orientation", "set_section_box",
+    # The placement category varies, the route may partially succeed, and
+    # connecting pipes is verified against the fitting's physical connectors.
+    "place_family_instance", "create_pipes_by_points", "connect_pipes", "list_mep_types",
 }
 
 
 def test_every_builtin_pack_is_valid_v1_with_a_validator():
     files = sorted(builtin_capabilities_dir().glob("*.yaml"))
-    assert len(files) == 47
+    assert len(files) == 53
     assert WITHOUT_VALIDATOR <= {path.stem for path in files}
     for path in files:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))

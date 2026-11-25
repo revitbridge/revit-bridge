@@ -1,0 +1,147 @@
+schema_version: 1
+name: create_pipe
+display_name: Create Pipe
+description: "Create a straight rigid pipe between model internal-origin coordinates in millimetres."
+version: "1.0.0"
+revit_versions: ["2021","2023","2024","2025","2026","2027"]
+code_template: |
+  var timer = System.Diagnostics.Stopwatch.StartNew();
+  void CheckTime()
+  {
+      if (timer.ElapsedMilliseconds > 250)
+          throw new InvalidOperationException("REFUSED: Model lookup exceeded its time budget. Retry in an idle model.");
+  }
+
+  double Number(string text)
+  {
+      double value;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float,
+              System.Globalization.CultureInfo.InvariantCulture, out value) || double.IsNaN(value) || double.IsInfinity(value))
+          throw new InvalidOperationException("REFUSED: Invalid number. Enter finite numeric values.");
+      return value;
+  }
+  double Feet(string text) => UnitUtils.ConvertToInternalUnits(Number(text), UnitTypeId.Millimeters);
+
+  XYZ Point(string text)
+  {
+      var parts = text.Split(',');
+      if (parts.Length != 3)
+          throw new InvalidOperationException("REFUSED: A point needs three coordinates. Enter X,Y,Z in millimetres.");
+      var point = new XYZ(Feet(parts[0]), Feet(parts[1]), Feet(parts[2]));
+      if (!XYZ.IsWithinLengthLimits(point))
+          throw new InvalidOperationException("REFUSED: Point exceeds Revit's model limits. Use coordinates nearer the internal origin.");
+      return point;
+  }
+
+  T Named<T>(string name, string kind) where T : ElementType
+  {
+      var available = new List<string>();
+      T match = null;
+      bool foundAny = false;
+      foreach (T type in new FilteredElementCollector(document).OfClass(typeof(T)).Cast<T>())
+      {
+          CheckTime();
+          foundAny = true;
+          if (available.Count < 12) available.Add(type.Name);
+          if (type.Name != name) continue;
+          if (match != null)
+              throw new InvalidOperationException("REFUSED: Ambiguous " + kind + " name. Give the types distinct names and retry.");
+          match = type;
+      }
+      if (!foundAny)
+          throw new InvalidOperationException("REFUSED: The model has no MEP types loaded for " + kind + ". Load the relevant MEP types or open an MEP project.");
+      if (match == null)
+          throw new InvalidOperationException("REFUSED: Unknown " + kind + " '" + name + "'. Choose a name from list_mep_types. Available (up to 12): " + string.Join(", ", available));
+      return match;
+  }
+
+  void SetSize(Element curve, BuiltInParameter key, double size)
+  {
+      // Revit stores lengths in feet. Allow only floating-point read-back error.
+      const double sizeTolerance = 1e-8;
+      var parameter = curve.get_Parameter(key);
+      bool Matches() => parameter != null && parameter.StorageType == StorageType.Double && parameter.HasValue
+          && Math.Abs(parameter.AsDouble() - size) <= sizeTolerance;
+      if (Matches()) return;
+      if (parameter == null || parameter.StorageType != StorageType.Double || parameter.IsReadOnly || !parameter.Set(size) || !Matches())
+          throw new InvalidOperationException("REFUSED: The type did not accept the requested size. Choose a compatible size in the model.");
+  }
+
+  var pipeType = Named<Autodesk.Revit.DB.Plumbing.PipeType>("{pipe_type_name}", "pipe type");
+  var systemType = Named<Autodesk.Revit.DB.Plumbing.PipingSystemType>("{system_type_name}", "piping system type");
+  double diameter = Feet("{diameter_mm}");
+  if (diameter <= 0)
+      throw new InvalidOperationException("REFUSED: Pipe diameter must be positive. Enter a nominal diameter in millimetres.");
+
+  string levelName = "{level_name}";
+  var level = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+      .FirstOrDefault(l => { CheckTime(); return l.Name == levelName; });
+  if (level == null)
+      throw new InvalidOperationException("REFUSED: Unknown level. Select a level from the active document.");
+
+  // Revit requires MEP curves to span at least 1/10 inch (2.54 mm).
+  double minLength = Math.Max(document.Application.ShortCurveTolerance,
+      UnitUtils.ConvertToInternalUnits(2.54, UnitTypeId.Millimeters));
+
+  XYZ start = Point("{start_mm}"), end = Point("{end_mm}");
+  if (start.DistanceTo(end) < minLength)
+      throw new InvalidOperationException("REFUSED: Pipe endpoints are too close. Separate them by at least 2.54 mm and the model short-curve tolerance.");
+  try
+  {
+      var pipe = Autodesk.Revit.DB.Plumbing.Pipe.Create(document, systemType.Id, pipeType.Id, level.Id, start, end);
+      if (pipe == null)
+          throw new InvalidOperationException("REFUSED: Revit returned no pipe. Check the selected type and endpoints.");
+      SetSize(pipe, BuiltInParameter.RBS_PIPE_DIAMETER_PARAM, diameter);
+      return new { Status = "Created", ElementId = long.Parse(pipe.Id.ToString()) };
+  }
+  catch (Exception ex) when (ex is Autodesk.Revit.Exceptions.ArgumentException || ex.GetType() == typeof(Autodesk.Revit.Exceptions.InvalidOperationException))
+  {
+      throw new InvalidOperationException("REFUSED: Revit could not create or size the pipe. Check the type, size and endpoints. " + ex.Message);
+  }
+parameters:
+  - name: pipe_type_name
+    type: string
+    description: "Exact pipe type name from list_mep_types."
+    source: answer
+    required: true
+  - name: system_type_name
+    type: string
+    description: "Exact piping system type name from list_mep_types."
+    source: answer
+    required: true
+  - name: diameter_mm
+    type: double
+    description: "Nominal pipe diameter in millimetres."
+    source: designer
+    required: true
+    unit: "mm"
+  - name: level_name
+    type: string
+    description: "Reference level in the active project. Coordinates use the model internal origin."
+    source: tool:levels
+    required: true
+    choices_from: "levels"
+  - name: start_mm
+    type: string
+    description: "Start X,Y,Z in millimetres from the model internal origin."
+    source: designer
+    required: true
+  - name: end_mm
+    type: string
+    description: "End X,Y,Z in millimetres from the model internal origin."
+    source: designer
+    required: true
+preconditions:
+  - text: "Supported Revit years are 2021, 2023, 2024, 2025, 2026 and 2027."
+applies_when:
+  - "create pipe"
+not_for:
+  - "flexible pipe or polyline"
+validator: {kind: count_delta, category: OST_PipeCurves, expected: 1}
+fixtures:
+  - name: horizontal
+    params: {"pipe_type_name":"Sample Pipe","system_type_name":"Sample Supply","diameter_mm":25,"level_name":"L1","start_mm":"0,0,250","end_mm":"1500,0,250"}
+    expect: {Status: Created}
+  - name: riser
+    params: {"pipe_type_name":"Sample Pipe","system_type_name":"Sample Supply","diameter_mm":50,"level_name":"L1","start_mm":"200,0,500","end_mm":"200,0,4500"}
+    expect: {Status: Created}

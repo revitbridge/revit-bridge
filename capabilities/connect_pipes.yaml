@@ -1,0 +1,147 @@
+schema_version: 1
+name: connect_pipes
+display_name: Connect Pipes
+description: "Connect two straight pipes at coincident free ends or extend them to a common point in 3D. Use a union, transition or elbow according to the joint."
+version: "1.0.0"
+revit_versions: ["2021","2023","2024","2025","2026","2027"]
+code_template: |
+  if (new FilteredElementCollector(document).OfClass(typeof(Autodesk.Revit.DB.Plumbing.PipeType)).FirstElementId() == ElementId.InvalidElementId)
+      throw new InvalidOperationException("REFUSED: The model has no MEP types loaded for pipes. Load pipe types or open an MEP project.");
+
+  Autodesk.Revit.DB.Plumbing.Pipe Pipe(string text)
+  {
+      if (!long.TryParse(text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long number) || number <= 0)
+          throw new InvalidOperationException("REFUSED: Invalid pipe id. Select two pipe instances in the active model.");
+      // Revit 2024 widened both the BuiltInCategory backing type and the ElementId constructor.
+      var native = (BuiltInCategory)number - (BuiltInCategory)0;
+      if ((long)native != number)
+          throw new InvalidOperationException("REFUSED: This id is too large for this Revit year. Pick a pipe in the active model.");
+      var pipe = document.GetElement(new ElementId(native)) as Autodesk.Revit.DB.Plumbing.Pipe;
+      if (pipe == null || pipe.IsPlaceholder || pipe.ConnectorManager == null || !((pipe.Location as LocationCurve)?.Curve is Line))
+          throw new InvalidOperationException("REFUSED: The selected element is not a straight rigid pipe. Pick a straight pipe instance.");
+      if (pipe.Pinned || pipe.GroupId != ElementId.InvalidElementId)
+          throw new InvalidOperationException("REFUSED: A pipe is pinned or grouped. Choose editable pipe instances.");
+      return pipe;
+  }
+  var first = Pipe("{first_pipe_id}");
+  var second = Pipe("{second_pipe_id}");
+  if (first.Id == second.Id)
+      throw new InvalidOperationException("REFUSED: The same pipe was selected twice. Pick two distinct pipes.");
+  ElementId SystemType(MEPCurve pipe)
+  {
+      var parameter = pipe.get_Parameter(BuiltInParameter.RBS_PIPING_SYSTEM_TYPE_PARAM);
+      return parameter != null && parameter.HasValue && parameter.StorageType == StorageType.ElementId
+          ? parameter.AsElementId() : ElementId.InvalidElementId;
+  }
+  var system = SystemType(first);
+  if (system == ElementId.InvalidElementId || system != SystemType(second))
+      throw new InvalidOperationException("REFUSED: The pipes need the same piping system type. Check both system assignments.");
+
+  var aLine = (Line)((LocationCurve)first.Location).Curve;
+  var bLine = (Line)((LocationCurve)second.Location).Curve;
+  double tolerance = document.Application.VertexTolerance;
+  Connector FreeEnd(MEPCurve pipe, XYZ point) => pipe.ConnectorManager.Connectors.Cast<Connector>()
+      .FirstOrDefault(c => c.ConnectorType == ConnectorType.End && !c.IsConnected && c.Origin.DistanceTo(point) <= tolerance);
+
+  // Intersect outward rays in 3D. Skew axes and intersections requiring a cut do not qualify.
+  XYZ Joint(XYZ a, XYZ u, XYZ b, XYZ v)
+  {
+      var gap = b - a;
+      if (u.IsAlmostEqualTo(v)) return null;
+      if (gap.GetLength() <= tolerance) return a;
+      if (u.IsAlmostEqualTo(-v))
+          return gap.DotProduct(u) > 0 && gap.CrossProduct(u).GetLength() <= tolerance ? b : null;
+
+      var normal = u.CrossProduct(v);
+      double squared = normal.DotProduct(normal);
+      double alongA = gap.CrossProduct(v).DotProduct(normal) / squared;
+      double alongB = gap.CrossProduct(u).DotProduct(normal) / squared;
+      if (alongA < -tolerance || alongB < -tolerance) return null;
+      var onA = a + alongA * u;
+      var onB = b + alongB * v;
+      return onA.DistanceTo(onB) <= tolerance && XYZ.IsWithinLengthLimits(onA) ? onA : null;
+  }
+  int aIndex = -1, bIndex = -1;
+  XYZ target = null;
+  for (int i = 0; i < 2; i++)
+  {
+      var a = aLine.GetEndPoint(i);
+      if (FreeEnd(first, a) == null) continue;
+      for (int j = 0; j < 2; j++)
+      {
+          var b = bLine.GetEndPoint(j);
+          if (FreeEnd(second, b) == null) continue;
+          var point = Joint(a, (a - aLine.GetEndPoint(1 - i)).Normalize(), b, (b - bLine.GetEndPoint(1 - j)).Normalize());
+          if (point == null) continue;
+          if (target != null)
+              throw new InvalidOperationException("REFUSED: More than one endpoint pair qualifies. Adjust the pipes to identify one joint.");
+          target = point;
+          aIndex = i;
+          bIndex = j;
+      }
+  }
+  if (target == null)
+      throw new InvalidOperationException("REFUSED: No free ends coincide or extend to a common point. Check connectivity and align the endpoints in 3D.");
+
+  void Extend(MEPCurve pipe, Line line, int index)
+  {
+      if (line.GetEndPoint(index).DistanceTo(target) <= tolerance) return;
+      ((LocationCurve)pipe.Location).Curve = index == 0
+          ? Line.CreateBound(target, line.GetEndPoint(1)) : Line.CreateBound(line.GetEndPoint(0), target);
+  }
+  try
+  {
+      Extend(first, aLine, aIndex);
+      Extend(second, bLine, bIndex);
+      document.Regenerate();
+      var a = FreeEnd(first, target);
+      var b = FreeEnd(second, target);
+      if (a == null || b == null)
+          throw new InvalidOperationException("REFUSED: Both extended ends must be free at the joint. Check pipe constraints.");
+      FamilyInstance fitting;
+      if (!a.CoordinateSystem.BasisZ.IsAlmostEqualTo(-b.CoordinateSystem.BasisZ))
+          fitting = document.Create.NewElbowFitting(a, b);
+      else if (Math.Abs(a.Radius - b.Radius) > 1e-8) // floating-point length comparison in feet
+          fitting = document.Create.NewTransitionFitting(a, b);
+      else
+          fitting = document.Create.NewUnionFitting(a, b);
+      document.Regenerate();
+      var manager = fitting?.MEPModel?.ConnectorManager;
+      bool Joins(Element pipe) => manager != null && manager.Connectors.Cast<Connector>()
+          .Any(c => c.ConnectorType == ConnectorType.End && c.IsConnected && c.AllRefs.Cast<Connector>()
+              .Any(r => r.ConnectorType == ConnectorType.End && r.Owner.Id == pipe.Id && c.IsConnectedTo(r)));
+      if (!Joins(first) || !Joins(second))
+          throw new InvalidOperationException("REFUSED: Fitting did not join both pipes. Check the routing preferences and geometry.");
+      return new { Status = "Connected", FittingId = long.Parse(fitting.Id.ToString()) };
+  }
+  catch (Exception ex) when (ex is Autodesk.Revit.Exceptions.ArgumentException || ex.GetType() == typeof(Autodesk.Revit.Exceptions.InvalidOperationException))
+  {
+      throw new InvalidOperationException("REFUSED: Revit could not make the joint. Check routing preferences, diameter and available straight length. " + ex.Message);
+  }
+parameters:
+  - name: first_pipe_id
+    type: string
+    description: "First straight pipe instance in the active model."
+    source: tool:elements
+    required: true
+    choices_from: "elements:OST_PipeCurves"
+  - name: second_pipe_id
+    type: string
+    description: "Second straight pipe instance in the same system type."
+    source: tool:elements
+    required: true
+    choices_from: "elements:OST_PipeCurves"
+preconditions:
+  - text: "Supported Revit years are 2021, 2023, 2024, 2025, 2026 and 2027."
+applies_when:
+  - "connect pipes"
+not_for:
+  - "tees, crosses, flexible pipes or intersections requiring trimming"
+validator: null
+fixtures:
+  - name: coincident
+    params: {"first_pipe_id":"101","second_pipe_id":"102"}
+    expect: {Status: Connected}
+  - name: extension
+    params: {"first_pipe_id":"103","second_pipe_id":"104"}
+    expect: {Status: Connected}
