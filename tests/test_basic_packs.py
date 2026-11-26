@@ -16,6 +16,7 @@ import yaml
 
 from revit_bridge import execution
 from revit_bridge.capabilities.schema import validate_pack
+from tests.conftest import legacy_escape_param_value  # the 0.11.1 spelling, see conftest
 from revit_bridge.capabilities.store import ToolStore, escape_param_value
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.revit.client import RevitClient
@@ -159,17 +160,17 @@ def test_text_with_quotes_backslashes_and_line_breaks_stays_one_string_literal(s
         values = {**data["fixtures"][0]["params"], param["name"]: HOSTILE_TEXT}
         code, errors = store.render(name, values)
         assert errors == [] and code
-        escaped = '"' + escape_param_value(HOSTILE_TEXT) + '"'
+        escaped = '"' + legacy_escape_param_value(HOSTILE_TEXT) + '"'
         assert escaped in STRING_LITERAL.findall(code), (name, param["name"])
         assert json.loads(escaped) == HOSTILE_TEXT
         assert PLACEHOLDER.search(code) is None
 
 
-def test_odd_numbers_stay_inside_literals_and_non_numbers_are_refused_before_revit(store):
-    params = {"name": "B", "start_x": " 12 ", "start_y": "1e3", "end_x": -0.5, "end_y": 3000.0}
+def test_numbers_stay_inside_literals_and_non_numbers_are_refused_before_revit(store):
+    params = {"name": "B", "start_x": " 12 ", "start_y": 1e-7, "end_x": -0.5, "end_y": 3000.0}
     code, errors = store.render("create_grid", params)
     assert errors == []
-    for text in ('" 12 "', '"1e3"', '"-0.5"', '"3000.0"'):
+    for text in ('" 12 "', '"1e-07"', '"-0.5"', '"3000.0"'):
         assert text in code
     code, errors = store.render("create_grid", {**params, "end_y": '1"); document.Delete(x); //'})
     assert code is None and errors

@@ -6,6 +6,54 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Capability packs check the entire C# template before save and render. A
+  top-level colon starts interpolation format text, including the first colon
+  in `::`. Uncertain lexical boundaries invalidate the pack, even after the
+  final placeholder. Existing invalid packs expose the reason in
+  `validation_errors` when listed.
+- A value written into a string literal can no longer form code in any context:
+  every character other than an ASCII letter, an ASCII digit, an underscore or a
+  space is written as a C# unicode escape. Inside an ordinary literal the compiler
+  reads the original text back, so tools behave as before; the rendered text, and
+  with it the code hash in the ledger, differs from 0.11.1 for values that hold
+  other characters.
+- The code review reads unicode escapes and format characters in identifiers the way
+  the compiler does, so a blocked name written with an escape is refused.
+- An allowed directive line holds nothing but `#pragma warning disable|restore
+  <ids>` or `#nullable enable|disable|restore [annotations|warnings]` and an
+  optional comment without quotes. A string literal that directly touches another
+  literal invalidates the template.
+
+### Changed
+
+- Tool packs accepted by 0.11.1 can now fail validation for the following reasons.
+  - Unsafe placeholder contexts. Substitution requires ordinary string content
+    or a bare numeric or boolean operand of the declared type. This excludes
+    comments, directives, character literals, other string forms, incomplete
+    escapes, and templates whose lexical boundaries cannot be established.
+    A bare numeric site requires a numeric declared default if one is present.
+    Quoted numeric defaults retain their original spelling. Boolean parameters
+    accept only booleans or ASCII-case variants of "true" and "false", including
+    when filling a default.
+  - Physical lines beginning with a preprocessor directive other than
+    `#pragma` or `#nullable`, including after C# whitespace.
+  - Numeric inputs outside the strict decimal grammar. Numeric strings allow
+    up to 256 characters including surrounding ASCII whitespace, an optional
+    sign, ASCII digits and an optional fraction with digits on both sides of
+    the point. Exponents, separators and non-ASCII padding are refused.
+    Integer parameters also refuse fractional values and strings with a point.
+- Hosts can call `revit_bridge.capabilities.schema.placeholders(code_template, parameters)`
+  to get declared substitution sites in order. Each site has a `name`, a
+  `context` and half-open `start` and `end` offsets in the Python string.
+  Native interpolation locals such as `$"{local}"` pass through. A declared
+  parameter in an interpolated literal raises `ValueError`, as does any other
+  invalid template. `schema.PLACEHOLDER_RE` remains importable for raw text matching.
+- Quoted scalars keep their 0.11.1 spelling. Bare booleans use lowercase C#
+  keywords and bare numbers use plain decimal. Element pickers retain their
+  0.11.1 ID types, and rendering again calls the host's `validate_params` hook.
+
 ## [0.11.1] - 2026-11-25
 
 The two tools added in this release were verified by compiling against the Revit API for every supported year and by simulation, not yet in a running Revit.

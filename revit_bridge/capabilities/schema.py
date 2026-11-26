@@ -8,9 +8,12 @@ must not run against the model the snapshot describes.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 import re
 from typing import Any
 
+from revit_bridge.capabilities.scalars import NUMERIC_TYPES
+from revit_bridge.capabilities.template import PLACEHOLDER_RE, Slot, template_slots
 from revit_bridge.snapshot.project import ProjectSnapshot
 
 PACK_SCHEMA_VERSION = 1
@@ -18,7 +21,6 @@ PACK_SCHEMA_VERSION = 1
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
 CATEGORY_RE = re.compile(r"^OST_[A-Za-z]+$")
-PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_]\w*)\}")
 ELEMENT_CHOICES = r"elements(?::OST_[A-Za-z]+)?"
 CHOICES_FROM_RE = re.compile(rf"^(levels|floor_types|family_types:OST_[A-Za-z]+|{ELEMENT_CHOICES})$")
 PARAM_REF_RE = re.compile(r"^\{([A-Za-z_]\w*)\}$")
@@ -32,11 +34,23 @@ TOP_LEVEL_FIELDS = frozenset({
 })
 PARAM_FIELDS = frozenset({"name", "type", "description", "source", "choices_from", "unit", "required", "default"})
 PARAM_TYPES = frozenset({"string", "double", "number", "float", "int", "integer", "bool", "boolean"})
-NUMERIC_TYPES = frozenset({"double", "number", "float", "int", "integer"})
 PARAM_SOURCES = frozenset({"designer", "answer", "default"})     # plus "tool:<query>"
 UNITS = frozenset({"mm", "m", "feet"})
 PRECONDITION_KINDS = frozenset({"levels_min", "category_present"})
 VALIDATOR_KINDS = frozenset({"created_ids", "count_delta", "param_equals"})
+
+
+def placeholders(code_template: str, parameters: Iterable[dict] | Mapping[str, dict]) -> list[Slot]:
+    """Return declared substitution sites in source order, with half-open Python str offsets.
+
+    Pass pack parameter definitions or a mapping keyed by parameter name.
+    Native C# locals are omitted. An unsafe or ambiguous template raises ValueError.
+    """
+    declared = parameters if isinstance(parameters, Mapping) else {p["name"]: p for p in parameters}
+    slots, errors = template_slots(code_template, declared)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return slots
 
 
 def validate_pack(data: Any) -> list[str]:
@@ -85,8 +99,8 @@ def validate_pack(data: Any) -> list[str]:
     for index, param in enumerate(params):
         errors.extend(_validate_param(index, param, declared))
 
-    for placeholder in sorted(set(PLACEHOLDER_RE.findall(code)) - set(declared)):
-        errors.append(f"code_template: placeholder {{{placeholder}}} is not a declared parameter")
+    _, template_errors = template_slots(code, declared)
+    errors.extend(template_errors)
 
     preconditions = data.get("preconditions", [])
     if not isinstance(preconditions, list):

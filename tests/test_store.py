@@ -1,11 +1,14 @@
 """Capability store: two directories, v0 compatibility, usage.json, solidify."""
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
 
 import pytest
 import yaml
 
+from tests.conftest import legacy_escape_param_value  # the 0.11.1 spelling, see conftest
 from revit_bridge.capabilities.store import ToolStore, default_capabilities_dir, escape_param_value, normalize_pack
 from revit_bridge.paths import builtin_capabilities_dir, user_capabilities_dir
 
@@ -336,7 +339,7 @@ def test_validate_params_enforces_sources(tmp_path):
         == ["level_name", "type_name", "x"]        # defaults fill themselves
 
     valid, errors, filled = store.validate_params(
-        "probe", {"level_name": "L1", "type_name": "Basic", "x": "12.5"})
+        "probe", {"level_name": "L1", "type_name": "Basic", "x": 12.5})
     assert valid, errors
     assert filled["h"] == 3000 and filled["note"] == ""
 
@@ -396,10 +399,8 @@ def test_render_refuses_code_with_a_leftover_placeholder(tmp_path):
         encoding="utf-8")
     code, errors = store.render("leaky", {"label": "x"})
     assert code is None
-    assert errors == [
-        "Template still contains placeholder(s) ['count']: "
-        "declare them as parameters or remove them from the code"
-    ]
+    assert len(errors) == 2
+    assert all("placeholder {count} is not a declared parameter" in error for error in errors)
     assert store.render_code("leaky", {"label": "x"}) is None
     assert store.render("missing", {}) == (None, ["Tool 'missing' not found"])
 
@@ -461,20 +462,19 @@ def test_a_list_or_an_object_never_reaches_the_code(tmp_path):
             assert store.render("probe", params) == (None, errors)
 
 
-def test_render_refuses_what_it_cannot_write_without_validation(tmp_path):
-    """Defence in depth: a hand-written pack whose placeholder is not declared gets no type check,
-    so render itself refuses a value escape_param_value cannot write - a result, never a raise."""
+def test_hand_written_undeclared_placeholder_cannot_be_filled_by_an_extra_param(tmp_path):
     store = ToolStore(user_dir=tmp_path / "user")
     store.user_dir.mkdir(parents=True)
     (store.user_dir / "handmade.yaml").write_text(
         "name: handmade\ncode_template: 'string levelName = \"{name}\"; return levelName;'\n", encoding="utf-8")
     for value, kind in (*NOT_SCALARS, (None, "null")):
-        assert store.render("handmade", {"name": value}) == (
-            None, [f"Parameter 'name' must be a single value, got {kind}"])
+        code, errors = store.render("handmade", {"name": value})
+        assert code is None and "placeholder {name} is not a declared parameter" in errors[0]
         with pytest.raises(TypeError, match=f"must be a single value, got {kind}"):
             escape_param_value(value)
-    assert store.render("handmade", {"name": 'L1"'}) == ('string levelName = "L1\\""; return levelName;', [])
-    # a value no placeholder asks for is written nowhere and refused nowhere, as before
+    assert store.render_code("handmade", {"name": 'L1"'}) is None
+    store.update("handmade", {"parameters": [{"name": "name", "type": "string"}]})
+    # A value no placeholder asks for is written nowhere.
     assert store.render("handmade", {"name": "L1", "extra": [1], "other": None})[1] == []
 
 
@@ -500,17 +500,18 @@ def test_a_number_is_a_finite_number_and_never_a_boolean(tmp_path):
     store = ToolStore(user_dir=tmp_path / "user")
     _typed_probe(store)
     for value in (True, False, float("nan"), float("inf"), float("-inf"), "nan", "inf", "-Infinity",
-                  10 ** 400, "twelve"):
+                  10 ** 400, "twelve", "1e3"):
         valid, errors, _ = store.validate_params("probe", {"name": "L1", "h": value})
         assert not valid and len(errors) == 1, (value, errors)
         assert errors[0].startswith("Parameter 'h' expects double, got "), errors
-    for value, text in ((3000, "3000"), (12.5, "12.5"), ("3000", "3000"), (" 42 ", " 42 "), ("1e3", "1e3"),
-                        (-0.5, "-0.5"), (3000.0, "3000.0")):
+    for value, text in ((3000, "3000"), ("3000", "3000"), (" 42 ", "42"),
+                        (12.5, "12.5"), (1e20, "100000000000000000000.0"),
+                        (1e-7, "0.0000001"), (-0.5, "-0.5"), (3000.0, "3000.0")):
         code, errors = store.render("probe", {"name": "L1", "h": value})
         assert errors == [] and f"double h = {text};" in code, (value, errors)
 
 
-def test_a_boolean_is_true_or_false_and_a_string_takes_any_single_value(tmp_path):
+def test_quoted_booleans_and_string_parameters_keep_scalar_spelling(tmp_path):
     store = ToolStore(user_dir=tmp_path / "user")
     _typed_probe(store)
     for value, text in ((True, "True"), (False, "False"), ("true", "true"), ("False", "False")):
@@ -518,22 +519,23 @@ def test_a_boolean_is_true_or_false_and_a_string_takes_any_single_value(tmp_path
         assert errors == [] and f'bool.Parse("{text}")' in code, (value, errors)
     for value in (1, 0, 1.0, "yes", ""):
         assert store.validate_params("probe", {"name": "L1", "flag": value})[1] == [
-            f"Parameter 'flag' expects bool (true or false), got {value!r}"]
-    for value, text in ((2, "2"), (2.5, "2.5"), (True, "True"), ("", "")):       # as before
+            f"Parameter 'flag' expects bool (true or false), got {type(value).__name__}"]
+    for value in (2, 2.5, True):
         code, errors = store.render("probe", {"name": value})
-        assert errors == [] and f'string levelName = "{text}";' in code, (value, errors)
+        assert errors == [] and f'string levelName = "{value}";' in code
+    assert store.render("probe", {"name": ""})[1] == []
 
 
 def test_every_character_that_ends_a_csharp_literal_or_line_is_escaped(tmp_path):
     """C# ends a regular string literal at CR, LF, U+0085, U+2028 and U+2029; NUL and a lone
     surrogate are escaped too. Everything else is written as given."""
     ends = "a\x85b\N{LINE SEPARATOR}c\N{PARAGRAPH SEPARATOR}d"
-    assert escape_param_value(ends) == "a\\u0085b\\u2028c\\u2029d"
-    assert escape_param_value("a\x00b\ud800c\udfff") == "a\\0b\\ud800c\\udfff"
-    assert escape_param_value('a"b\\c\r\nd') == 'a\\"b\\\\c\\r\\nd'                       # as before
+    assert legacy_escape_param_value(ends) == "a\\u0085b\\u2028c\\u2029d"
+    assert legacy_escape_param_value("a\x00b\ud800c\udfff") == "a\\0b\\ud800c\\udfff"
+    assert legacy_escape_param_value('a"b\\c\r\nd') == 'a\\"b\\\\c\\r\\nd'                       # as before
     plain = "tab\there \N{CJK UNIFIED IDEOGRAPH-6807} \N{GRINNING FACE} {x} $@'"
-    assert escape_param_value(plain) == plain
-    assert (escape_param_value(True), escape_param_value(3000.0), escape_param_value(-7)) == ("True", "3000.0", "-7")
+    assert legacy_escape_param_value(plain) == plain
+    assert (legacy_escape_param_value(True), legacy_escape_param_value(3000.0), legacy_escape_param_value(-7)) == ("True", "3000.0", "-7")
 
     store = ToolStore(user_dir=tmp_path / "user")
     _typed_probe(store)
@@ -543,22 +545,23 @@ def test_every_character_that_ends_a_csharp_literal_or_line_is_escaped(tmp_path)
     assert code.startswith('string levelName = "x\\r\\na\\u0085b\\u2028c\\u2029d\\0\\ud800";')
 
 
-def test_every_built_in_fixture_renders_as_before(tmp_path):
-    """Check the rendered text, including C# literal escaping for the Windows path fixtures."""
+def test_every_built_in_fixture_matches_0_11_1_bytes(tmp_path):
+    """UTF-8 SHA-256 goldens from ToolStore.render in git revision 7d67c27."""
+    golden = json.loads(Path(__file__).with_name("fixture_renders_0.11.1.json").read_text(encoding="utf-8"))
     store = ToolStore(user_dir=tmp_path / "user")
-    rendered = 0
+    seen = set()
     for tool in store.list_tools():
+        numeric = {p["name"] for p in tool.parameters if p["type"] in {"int", "integer", "float", "double", "number"}}
         for fixture in tool.fixtures:
             params = dict(fixture.get("params") or {})
-            code, errors = store.render(tool.name, params)
-            assert errors == [], (tool.name, errors)
-            expected = tool.code_template
-            for key, value in store.validate_params(tool.name, params)[2].items():
-                text = json.dumps(value, ensure_ascii=False)[1:-1] if isinstance(value, str) else str(value)
-                expected = expected.replace("{" + key + "}", text)
-            assert code == expected, tool.name
-            rendered += 1
-    assert rendered == 101
+            key = f"{tool.name}/{fixture['name']}"
+            seen.add(key)
+            host = {k: str(v) if k in numeric else v for k, v in params.items()}
+            for values in (params, host):
+                code, errors = store.render(tool.name, values)
+                assert errors == [], (key, errors)
+                assert hashlib.sha256(code.encode("utf-8")).hexdigest() == golden[key], key
+    assert seen == golden.keys() and len(seen) == 101
 
 
 def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):
