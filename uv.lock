@@ -638,7 +638,7 @@ wheels = [
 
 [[package]]
 name = "revit-bridge"
-version = "0.11.1"
+version = "0.11.2"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
