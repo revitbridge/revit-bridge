@@ -108,6 +108,19 @@ def test_instance_choices_use_selected_ids_and_link_choice_keeps_legacy_values(t
     ]
 
 
+def test_pipe_picker_returns_the_string_ids_its_pack_can_render(tmp_path):
+    store = ToolStore(user_dir=tmp_path)
+    def handler(request):
+        assert "BuiltInCategory.OST_PipeCurves" in request["params"]["code"]
+        return FakeRevit.code_result(request["id"], [{"Id": 101}, {"Id": 102}])
+
+    choices = _run(handler, lambda ex, fake: ex.get_tool_choices(store.get_dynamic_params("connect_pipes")))
+    params = {"first_pipe_id": choices["first_pipe_id"][0]["value"],
+              "second_pipe_id": choices["second_pipe_id"][1]["value"]}
+    assert params == {"first_pipe_id": "101", "second_pipe_id": "102"}
+    assert store.render("connect_pipes", params)[1] == []
+
+
 def test_rendered_parameters_cannot_break_out_of_string_literals(tmp_path):
     assert escape_param_value('a"b\\c\nd') == 'a\\"b\\\\c\\nd'
     assert escape_param_value(3000) == "3000"

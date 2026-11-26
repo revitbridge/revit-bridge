@@ -513,6 +513,7 @@ def list_tools(include_host_functions: bool = False) -> str:
             "preconditions": t.preconditions,
             "validator": (t.validator or {}).get("kind"),
             "used": t.execution_count,
+            **({"validation_errors": t.validation_errors} if t.validation_errors else {}),
         }
         for t in tools
     ]

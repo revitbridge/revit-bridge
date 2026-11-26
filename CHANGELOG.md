@@ -6,6 +6,14 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Capability packs now check each parameter's C# context before saving or rendering.
+  String values can fill ordinary string literals. Bare parameters require a finite
+  number or a boolean of the declared type. Existing packs with unsafe placeholders
+  remain listed with a location and repair hint in `validation_errors`, and execution
+  is blocked until fixed.
+
 ## [0.11.1] - 2026-11-25
 
 The two tools added in this release were verified by compiling against the Revit API for every supported year and by simulation, not yet in a running Revit.

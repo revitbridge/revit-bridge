@@ -156,7 +156,8 @@ def test_validate_pack_checks_sources_choices_defaults_and_units():
 
 def test_validate_pack_checks_template_version_and_preconditions():
     assert validate_pack(variant(code_template="return {missing};")) == [
-        "code_template: placeholder {missing} is not a declared parameter"]
+        "code_template: placeholder {missing} is not a declared parameter at line 1, column 8 (code). "
+        'Move it into an ordinary string literal: string x = "{missing}";']
     assert any("non-empty string" in e for e in validate_pack(variant(code_template="  ")))
     assert any("semver" in e for e in validate_pack(variant(version="1.0")))
     assert any("revit_versions" in e for e in validate_pack(variant(revit_versions="2026")))

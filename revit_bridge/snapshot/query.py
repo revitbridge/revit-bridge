@@ -708,6 +708,7 @@ class RevitQueryExecutor:
         choices: dict[str, list[dict]] = {}
         for param in dynamic_params:
             source = str(param.get("choices_from", ""))
+            text_id = str(param.get("type", "")).lower() == "string"
             items: list[dict] = []
 
             if source == "levels":
@@ -735,7 +736,7 @@ class RevitQueryExecutor:
                     items = [{"label": _type_name(ft), "value": _type_name(ft)} for ft in data]
             elif source == "elements":
                 response = await self.client.send_code(_SELECTED_CHOICES)
-                items = _element_choices(response, as_text=param.get("type") == "string")
+                items = _element_choices(response, as_text=text_id)
             elif source.startswith("elements:"):
                 category = source.split(":", 1)[1]
                 if not CATEGORY_RE.fullmatch(category):
@@ -757,7 +758,7 @@ class RevitQueryExecutor:
                     '}\n'
                     'return rows;'
                 )
-                items = _element_choices(await self.client.send_code(code))
+                items = _element_choices(await self.client.send_code(code), as_text=text_id)
             else:
                 _log.warning(f"[get_tool_choices] unknown choices_from {source!r}")
 

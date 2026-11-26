@@ -33,6 +33,7 @@ import math
 import re
 from dataclasses import dataclass, field, fields
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import yaml
@@ -42,7 +43,8 @@ from revit_bridge.paths import (
     builtin_capabilities_dir,
     user_capabilities_dir,
 )
-from revit_bridge.capabilities.schema import NUMERIC_TYPES, PACK_SCHEMA_VERSION, optional_element_pick, validate_pack
+from revit_bridge.capabilities.schema import PACK_SCHEMA_VERSION, optional_element_pick, validate_pack
+from revit_bridge.capabilities.template import BOOLEAN_TYPES, CODE, NUMERIC_TYPES, template_slots
 from revit_bridge.capabilities.usage import USAGE_FILE, UsageStore, empty_usage
 
 __all__ = [
@@ -59,10 +61,6 @@ __all__ = [
 _log = logging.getLogger("revit_bridge.capabilities.store")
 
 DISABLED_SUFFIX = ".disabled"
-
-# A ``{name}`` token in a code template; substituted by ``render``.
-PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_]\w*)\}")
-_BOOLEAN_TYPES = frozenset({"bool", "boolean"})
 
 # Fields of a v1 pack file, in the order they are written. Parameter ``source``
 # values are "designer", "tool:<kind>", "answer" or "default".
@@ -111,50 +109,41 @@ def _value_kind(value) -> str:
 
 
 def escape_param_value(value) -> str:
-    """Make a parameter value safe inside a C# string literal (P0-3).
-
-    Placeholders in code templates sit between double quotes; a value carrying
-    a quote, backslash or line end would otherwise terminate the literal and
-    inject code. Only a single value is written: a string escaped, a number as
-    Python writes it, a boolean as ``True`` / ``False``. Anything else (a list,
-    an object, None) raises TypeError: its text would reach the code unescaped.
-    """
+    """Escape ordinary string content or spell a typed scalar as invariant C#."""
     if isinstance(value, str):
         return _CS_ESCAPE_RE.sub(_cs_escape, value)
     if isinstance(value, bool):
-        return "True" if value else "False"
+        return "true" if value else "false"
     if isinstance(value, int):
         return int.__repr__(value)
     if isinstance(value, float):
-        return float.__repr__(value)
+        if not math.isfinite(value):
+            raise ValueError("expected a finite number")
+        text = format(Decimal(float.__repr__(value)), "f")
+        # A large float expanded from exponent notation still needs to be a
+        # real literal. An integer literal of that magnitude may not compile.
+        return text if "." in text else text + ".0"
     raise TypeError(f"must be a single value, got {_value_kind(value)}")
 
 
 def _value_problem(value, ptype: str) -> str | None:
-    """Why ``value`` cannot fill a parameter of type ``ptype``; None when it can.
-
-    Every type takes one value: a string, a number or a boolean, never a list,
-    an object or anything else. A numeric type takes a finite number, or a
-    string that reads as one, and no boolean; a boolean type takes true / false
-    or the strings "true" / "false". Other types (string, unknown) take any of
-    the three, as before.
-    """
+    """Require the JSON scalar type declared by the pack, including for defaults."""
     if not isinstance(value, (str, int, float)):          # bool is an int
         return f"must be a single value, got {_value_kind(value)}"
     if ptype in NUMERIC_TYPES:
-        if isinstance(value, bool):
-            return f"expects {ptype}, got {value!r}"
+        if type(value) not in (int, float) or (ptype in ("int", "integer") and type(value) is not int):
+            return f"expects {ptype}, got {type(value).__name__}"
         try:
             number = float(value)
         except OverflowError:
             return f"expects {ptype}, got a number out of range"
-        except ValueError:
-            return f"expects {ptype}, got {value!r}"
         if not math.isfinite(number):
             return f"expects {ptype}, got {value!r} (not a finite number)"
-    elif ptype in _BOOLEAN_TYPES:
-        if not (isinstance(value, bool) or (isinstance(value, str) and value.lower() in ("true", "false"))):
-            return f"expects {ptype} (true or false), got {value!r}"
+    elif ptype in BOOLEAN_TYPES:
+        if not isinstance(value, bool):
+            return f"expects {ptype} (true or false), got {type(value).__name__}"
+    elif ptype != "string" or not isinstance(value, str):
+        return f"expects {ptype}, got {type(value).__name__}"
     return None
 
 
@@ -192,6 +181,7 @@ class SolidifiedTool:
     failure_count: int = 0              # consecutive failures, from usage.json
     read_only: bool = False             # pack declaration; user overrides are still user packs
     ui_only: bool = False
+    validation_errors: list[str] = field(default_factory=list)  # computed on load, never persisted
 
 
 KNOWN_FIELDS = {f.name for f in fields(SolidifiedTool)}
@@ -435,6 +425,8 @@ class ToolStore:
         usage = usage or self.usage.get(data["name"])
         filtered = {k: data[k] for k in KNOWN_FIELDS if k in data}
         filtered.update(usage)
+        declared = {p["name"]: p for p in data["parameters"]}
+        _, filtered["validation_errors"] = template_slots(data["code_template"], declared)
         return SolidifiedTool(**filtered)
 
     def load(self, name: str) -> SolidifiedTool | None:
@@ -603,12 +595,15 @@ class ToolStore:
         """Check if a tool is healthy or should fall back to writing fresh code.
 
         Returns:
-            {"status": "healthy"|"stale"|"failing"|"not_found",
+            {"status": "healthy"|"stale"|"failing"|"invalid"|"not_found",
              "issues": [...], "recommendation": "use_tool"|"write_new_code"}
         """
         tool = self.load(name)
         if not tool:
             return {"status": "not_found", "issues": [], "recommendation": "write_new_code"}
+
+        if errors := tool.validation_errors:
+            return {"status": "invalid", "issues": errors, "recommendation": "write_new_code"}
 
         issues: list[str] = []
 
@@ -675,7 +670,14 @@ class ToolStore:
         tool = self.load(name)
         if not tool:
             return False, [f"Tool '{name}' not found"], {}
+        if errors := tool.validation_errors:
+            return False, errors, {}
+        return self._fill_params(tool, params, resolved_atoms)
 
+    @staticmethod
+    def _fill_params(
+        tool: SolidifiedTool, params: dict | None, resolved_atoms: dict | None = None,
+    ) -> tuple[bool, list[str], dict]:
         params = dict(params or {})
         resolved_atoms = resolved_atoms or {}
         errors: list[str] = []
@@ -704,20 +706,21 @@ class ToolStore:
                             f"(source: {source}) - call get_tool_choices first"
                         )
                     continue
-                if source == "default":
-                    if has_default:
-                        params[pname] = pdef["default"]
-                    else:
-                        errors.append(f"Parameter '{pname}' has source=default but no default value")
-                    continue
                 # designer / answer / legacy ask_user: provided or defaulted.
                 # ``required: false`` never means "leave the placeholder empty":
                 # a value the template needs must come from somewhere.
                 if has_default:
                     params[pname] = pdef["default"]
+                    # Optional dimensions/ids use a quoted empty default to
+                    # signal absence. template_slots rejects it at bare sites.
+                    if ptype in NUMERIC_TYPES and pdef["default"] == "":
+                        continue
+                elif source == "default":
+                    errors.append(f"Parameter '{pname}' has source=default but no default value")
+                    continue
                 else:
                     errors.append(f"Missing required parameter: {pname}")
-                continue
+                    continue
 
             problem = _value_problem(params[pname], ptype)
             if problem:
@@ -728,43 +731,34 @@ class ToolStore:
     # -- Render ----------------------------------------------------------------
 
     def render(self, name: str, params: dict | None = None) -> tuple[str | None, list[str]]:
-        """Fill the template's ``{placeholders}``; ``(code, [])`` or ``(None, errors)``.
-
-        Validates the parameters first. Code in which a ``{identifier}`` token
-        survives substitution is refused too: a leftover placeholder would
-        otherwise be shipped to Revit as C#. Templates therefore cannot use
-        ``$"{x}"`` interpolation with a bare identifier unless ``x`` is a
-        declared parameter. A value that cannot be written into the code
-        (``escape_param_value``: a list, an object, None - possible only for a
-        placeholder the pack does not declare) is refused the same way.
-        """
+        """Validate one snapshot of the pack and fill only its original parameter sites."""
         tool = self.load(name)
         if not tool:
             return None, [f"Tool '{name}' not found"]
 
-        valid, errors, filled = self.validate_params(name, params)
+        code = tool.code_template
+        slots, errors = template_slots(code, {p["name"]: p for p in tool.parameters})
+        if errors:
+            return None, errors
+        valid, errors, filled = self._fill_params(tool, params)
         if not valid:
             return None, errors
 
-        code = tool.code_template
-        for k, v in filled.items():
-            token = f"{{{k}}}"
-            if token not in code:
-                continue
-            try:
-                text = escape_param_value(v)
-            except TypeError as exc:
-                return None, [f"Parameter '{k}' {exc}"]
-            except ValueError as exc:              # an int too long to write out
-                return None, [f"Parameter '{k}' cannot be written into the code: {exc}"]
-            code = code.replace(token, text)
-        leftover = sorted(set(PLACEHOLDER_RE.findall(code)))
-        if leftover:
-            return None, [
-                f"Template still contains placeholder(s) {leftover}: "
-                "declare them as parameters or remove them from the code"
-            ]
-        return code, []
+        parts = []
+        pos = 0
+        for slot in slots:
+            value = filled[slot.name]
+            if slot.context == CODE and type(value) not in (int, float, bool):
+                return None, [f"Parameter '{slot.name}' requires a number or boolean in bare code"]
+            parts.append(code[pos:slot.start])
+            text = escape_param_value(value)
+            # Keep a subtraction before a negative operand from becoming '--'.
+            if slot.context == CODE and code[slot.start - 1:slot.start] == "-" and text.startswith("-"):
+                parts.append(" ")
+            parts.append(text)
+            pos = slot.end
+        parts.append(code[pos:])
+        return "".join(parts), []
 
     def render_code(self, name: str, params: dict | None = None) -> str | None:
         """0.1 form of ``render``: the code, or None when it must not run."""
@@ -785,7 +779,7 @@ class ToolStore:
                 "name": p["name"],
                 "choices_from": p["choices_from"],
                 "description": p.get("description", ""),
-                **({"type": p["type"]} if p["choices_from"] == "elements" else {}),
+                **({"type": p["type"]} if str(p["choices_from"]).split(":", 1)[0] == "elements" else {}),
                 **({"source": p["source"]} if optional_element_pick(p) else {}),
             }
             for p in tool.parameters
@@ -818,8 +812,8 @@ class ToolStore:
 
         scored: list[tuple[float, SolidifiedTool]] = []
         for tool in self.list_tools():
-            # Hard-skip only actively failing tools (consecutive failures)
-            if tool.failure_count >= 2:
+            # An invalid or repeatedly failing pack cannot satisfy the request.
+            if tool.failure_count >= 2 or tool.validation_errors:
                 continue
 
             # Check not_for exclusions first

@@ -390,7 +390,8 @@ def test_run_tool_never_ships_a_leftover_placeholder(monkeypatch, isolated_store
     token = confirm(spec_for("leaky"))["token"]
     out = _call("run_tool", name="leaky", params="{}", token=token)
     assert out["success"] is False
-    assert "placeholder(s) ['count']" in out["error"]
+    assert "placeholder {count} is not a declared parameter" in out["error"]
+    assert out["health"]["status"] == "invalid"
 
 
 def test_run_tool_executes_confirmed_tool(monkeypatch, isolated_store, revit_env):
