@@ -6,6 +6,10 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-25
+
+The two tools added in this release were verified by compiling against the Revit API for every supported year and by simulation, not yet in a running Revit.
+
 ### Added
 
 - `set_view_detail_level` and `set_view_display_style` change the active view or a
@@ -1525,7 +1529,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/revitbridge/revit-bridge/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/revitbridge/revit-bridge/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/revitbridge/revit-bridge/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/revitbridge/revit-bridge/compare/v0.9.1...v0.10.0
