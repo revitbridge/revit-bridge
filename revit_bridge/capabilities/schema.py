@@ -8,10 +8,12 @@ must not run against the model the snapshot describes.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 import re
 from typing import Any
 
-from revit_bridge.capabilities.template import NUMERIC_TYPES, PLACEHOLDER_RE, template_slots
+from revit_bridge.capabilities.scalars import NUMERIC_TYPES
+from revit_bridge.capabilities.template import PLACEHOLDER_RE, Slot, template_slots
 from revit_bridge.snapshot.project import ProjectSnapshot
 
 PACK_SCHEMA_VERSION = 1
@@ -36,6 +38,19 @@ PARAM_SOURCES = frozenset({"designer", "answer", "default"})     # plus "tool:<q
 UNITS = frozenset({"mm", "m", "feet"})
 PRECONDITION_KINDS = frozenset({"levels_min", "category_present"})
 VALIDATOR_KINDS = frozenset({"created_ids", "count_delta", "param_equals"})
+
+
+def placeholders(code_template: str, parameters: Iterable[dict] | Mapping[str, dict]) -> list[Slot]:
+    """Return declared substitution sites in source order, with half-open Python str offsets.
+
+    Pass pack parameter definitions or a mapping keyed by parameter name.
+    Native C# locals are omitted. An unsafe or ambiguous template raises ValueError.
+    """
+    declared = parameters if isinstance(parameters, Mapping) else {p["name"]: p for p in parameters}
+    slots, errors = template_slots(code_template, declared)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return slots
 
 
 def validate_pack(data: Any) -> list[str]:

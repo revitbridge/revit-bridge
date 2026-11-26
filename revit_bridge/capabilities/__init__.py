@@ -9,7 +9,7 @@ from revit_bridge.capabilities.store import (
     escape_param_value,
     normalize_pack,
 )
-from revit_bridge.capabilities.schema import evaluate_preconditions, precondition_categories, validate_pack
+from revit_bridge.capabilities.schema import evaluate_preconditions, placeholders, precondition_categories, validate_pack
 from revit_bridge.capabilities.usage import USAGE_FILE, UsageStore
 from revit_bridge.paths import builtin_capabilities_dir, user_capabilities_dir
 
@@ -26,6 +26,7 @@ __all__ = [
     "escape_param_value",
     "evaluate_preconditions",
     "normalize_pack",
+    "placeholders",
     "precondition_categories",
     "user_capabilities_dir",
     "validate_pack",

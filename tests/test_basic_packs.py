@@ -166,10 +166,10 @@ def test_text_with_quotes_backslashes_and_line_breaks_stays_one_string_literal(s
 
 
 def test_numbers_stay_inside_literals_and_non_numbers_are_refused_before_revit(store):
-    params = {"name": "B", "start_x": 12, "start_y": 1e-7, "end_x": -0.5, "end_y": 3000.0}
+    params = {"name": "B", "start_x": " 12 ", "start_y": 1e-7, "end_x": -0.5, "end_y": 3000.0}
     code, errors = store.render("create_grid", params)
     assert errors == []
-    for text in ('"12"', '"0.0000001"', '"-0.5"', '"3000.0"'):
+    for text in ('" 12 "', '"1e-07"', '"-0.5"', '"3000.0"'):
         assert text in code
     code, errors = store.render("create_grid", {**params, "end_y": '1"); document.Delete(x); //'})
     assert code is None and errors

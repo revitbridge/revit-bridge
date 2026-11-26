@@ -29,11 +29,10 @@ the v1 layout.
 from __future__ import annotations
 
 import logging
-import math
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from datetime import datetime
-from decimal import Decimal
 from pathlib import Path
 
 import yaml
@@ -44,7 +43,8 @@ from revit_bridge.paths import (
     user_capabilities_dir,
 )
 from revit_bridge.capabilities.schema import PACK_SCHEMA_VERSION, optional_element_pick, validate_pack
-from revit_bridge.capabilities.template import BOOLEAN_TYPES, CODE, NUMERIC_TYPES, template_slots
+from revit_bridge.capabilities.scalars import BARE_TYPES, NUMERIC_TYPES, bare_literal
+from revit_bridge.capabilities.template import CODE, PLACEHOLDER_RE, template_slots
 from revit_bridge.capabilities.usage import USAGE_FILE, UsageStore, empty_usage
 
 __all__ = [
@@ -90,6 +90,9 @@ _CS_ESCAPES = {
     "\x85": "\\u0085", "\N{LINE SEPARATOR}": "\\u2028", "\N{PARAGRAPH SEPARATOR}": "\\u2029",
 }
 _CS_ESCAPE_RE = re.compile('[\\\\"\r\n\x00\x85\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}\ud800-\udfff]')
+# A bare scalar can join an identifier (including an escaped/Unicode one) or
+# a neighboring numeric token. Insert trivia only at a potentially shared edge.
+_SCALAR_EDGE = re.compile(r"[\w.@\\]|[^\x00-\x7f]")
 
 
 def _cs_escape(match: re.Match) -> str:
@@ -109,40 +112,28 @@ def _value_kind(value) -> str:
 
 
 def escape_param_value(value) -> str:
-    """Escape ordinary string content or spell a typed scalar as invariant C#."""
+    """Escape ordinary C# string content, preserving a scalar's 0.11.1 spelling."""
     if isinstance(value, str):
         return _CS_ESCAPE_RE.sub(_cs_escape, value)
     if isinstance(value, bool):
-        return "true" if value else "false"
+        return "True" if value else "False"
     if isinstance(value, int):
         return int.__repr__(value)
     if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("expected a finite number")
-        text = format(Decimal(float.__repr__(value)), "f")
-        # A large float expanded from exponent notation still needs to be a
-        # real literal. An integer literal of that magnitude may not compile.
-        return text if "." in text else text + ".0"
+        return float.__repr__(value)
     raise TypeError(f"must be a single value, got {_value_kind(value)}")
 
 
 def _value_problem(value, ptype: str) -> str | None:
-    """Require the JSON scalar type declared by the pack, including for defaults."""
+    """Check a supplied scalar without losing its spelling inside a C# string."""
     if not isinstance(value, (str, int, float)):          # bool is an int
         return f"must be a single value, got {_value_kind(value)}"
-    if ptype in NUMERIC_TYPES:
-        if type(value) not in (int, float) or (ptype in ("int", "integer") and type(value) is not int):
-            return f"expects {ptype}, got {type(value).__name__}"
+    if ptype in BARE_TYPES:
         try:
-            number = float(value)
-        except OverflowError:
-            return f"expects {ptype}, got a number out of range"
-        if not math.isfinite(number):
-            return f"expects {ptype}, got {value!r} (not a finite number)"
-    elif ptype in BOOLEAN_TYPES:
-        if not isinstance(value, bool):
-            return f"expects {ptype} (true or false), got {type(value).__name__}"
-    elif ptype != "string" or not isinstance(value, str):
+            bare_literal(value, ptype)
+        except ValueError as exc:
+            return str(exc)
+    elif ptype != "string":
         return f"expects {ptype}, got {type(value).__name__}"
     return None
 
@@ -185,6 +176,9 @@ class SolidifiedTool:
 
 
 KNOWN_FIELDS = {f.name for f in fields(SolidifiedTool)}
+# A host override calling super() must validate the same pack that render read.
+_render_snapshot: ContextVar[tuple[ToolStore, str, SolidifiedTool] | None] = ContextVar(
+    "render_snapshot", default=None)
 
 
 # -- normalisation -------------------------------------------------------------
@@ -667,7 +661,8 @@ class ToolStore:
         is refused for every type, a boolean or a non-finite number for a
         numeric one.
         """
-        tool = self.load(name)
+        snapshot = _render_snapshot.get()
+        tool = snapshot[2] if snapshot and snapshot[0] is self and snapshot[1] == name else self.load(name)
         if not tool:
             return False, [f"Tool '{name}' not found"], {}
         if errors := tool.validation_errors:
@@ -711,9 +706,9 @@ class ToolStore:
                 # a value the template needs must come from somewhere.
                 if has_default:
                     params[pname] = pdef["default"]
-                    # Optional dimensions/ids use a quoted empty default to
-                    # signal absence. template_slots rejects it at bare sites.
-                    if ptype in NUMERIC_TYPES and pdef["default"] == "":
+                    # Legacy packs may use text as a quoted numeric default.
+                    # Bare defaults were checked while validating the template.
+                    if ptype in NUMERIC_TYPES and isinstance(pdef["default"], (str, int, float)):
                         continue
                 elif source == "default":
                     errors.append(f"Parameter '{pname}' has source=default but no default value")
@@ -731,30 +726,44 @@ class ToolStore:
     # -- Render ----------------------------------------------------------------
 
     def render(self, name: str, params: dict | None = None) -> tuple[str | None, list[str]]:
-        """Validate one snapshot of the pack and fill only its original parameter sites."""
+        """Apply host parameter validation, then fill only the template's original sites."""
         tool = self.load(name)
         if not tool:
             return None, [f"Tool '{name}' not found"]
 
         code = tool.code_template
-        slots, errors = template_slots(code, {p["name"]: p for p in tool.parameters})
+        declared = {p["name"]: p for p in tool.parameters}
+        slots, errors = template_slots(code, declared)
         if errors:
             return None, errors
-        valid, errors, filled = self._fill_params(tool, params)
+        binding = _render_snapshot.set((self, name, tool))
+        try:
+            valid, errors, filled = self.validate_params(name, params)
+        finally:
+            _render_snapshot.reset(binding)
         if not valid:
             return None, errors
 
         parts = []
         pos = 0
         for slot in slots:
+            if slot.name not in filled:
+                return None, [f"Missing required parameter: {slot.name}"]
             value = filled[slot.name]
-            if slot.context == CODE and type(value) not in (int, float, bool):
-                return None, [f"Parameter '{slot.name}' requires a number or boolean in bare code"]
+            try:
+                if slot.context == CODE:
+                    text = bare_literal(value, str(declared[slot.name]["type"]).lower())
+                    left = code[slot.start - 1:slot.start]
+                    if (_SCALAR_EDGE.fullmatch(left) or (left == "-" and text.startswith("-"))
+                            or (pos > 0 and pos == slot.start)):
+                        text = " " + text
+                    if _SCALAR_EDGE.match(code, slot.end):
+                        text += " "
+                else:
+                    text = escape_param_value(value)
+            except (TypeError, ValueError) as exc:
+                return None, [f"Parameter '{slot.name}' {exc}"]
             parts.append(code[pos:slot.start])
-            text = escape_param_value(value)
-            # Keep a subtraction before a negative operand from becoming '--'.
-            if slot.context == CODE and code[slot.start - 1:slot.start] == "-" and text.startswith("-"):
-                parts.append(" ")
             parts.append(text)
             pos = slot.end
         parts.append(code[pos:])
@@ -779,7 +788,7 @@ class ToolStore:
                 "name": p["name"],
                 "choices_from": p["choices_from"],
                 "description": p.get("description", ""),
-                **({"type": p["type"]} if str(p["choices_from"]).split(":", 1)[0] == "elements" else {}),
+                **({"type": p["type"]} if p["choices_from"] == "elements" else {}),
                 **({"source": p["source"]} if optional_element_pick(p) else {}),
             }
             for p in tool.parameters

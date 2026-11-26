@@ -108,7 +108,7 @@ def test_instance_choices_use_selected_ids_and_link_choice_keeps_legacy_values(t
     ]
 
 
-def test_pipe_picker_returns_the_string_ids_its_pack_can_render(tmp_path):
+def test_pipe_picker_keeps_0_11_1_integer_ids_for_string_parameters(tmp_path):
     store = ToolStore(user_dir=tmp_path)
     def handler(request):
         assert "BuiltInCategory.OST_PipeCurves" in request["params"]["code"]
@@ -117,7 +117,7 @@ def test_pipe_picker_returns_the_string_ids_its_pack_can_render(tmp_path):
     choices = _run(handler, lambda ex, fake: ex.get_tool_choices(store.get_dynamic_params("connect_pipes")))
     params = {"first_pipe_id": choices["first_pipe_id"][0]["value"],
               "second_pipe_id": choices["second_pipe_id"][1]["value"]}
-    assert params == {"first_pipe_id": "101", "second_pipe_id": "102"}
+    assert params == {"first_pipe_id": 101, "second_pipe_id": 102}
     assert store.render("connect_pipes", params)[1] == []
 
 

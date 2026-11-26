@@ -8,11 +8,39 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Security
 
-- Capability packs now check each parameter's C# context before saving or rendering.
-  String values can fill ordinary string literals. Bare parameters require a finite
-  number or a boolean of the declared type. Existing packs with unsafe placeholders
-  remain listed with a location and repair hint in `validation_errors`, and execution
-  is blocked until fixed.
+- Capability packs check the entire C# template before save and render. A
+  top-level colon starts interpolation format text, including the first colon
+  in `::`. Uncertain lexical boundaries invalidate the pack, even after the
+  final placeholder. Existing invalid packs expose the reason in
+  `validation_errors` when listed.
+
+### Changed
+
+- Tool packs accepted by 0.11.1 can now fail validation for the following reasons.
+  - Unsafe placeholder contexts. Substitution requires ordinary string content
+    or a bare numeric or boolean operand of the declared type. This excludes
+    comments, directives, character literals, other string forms, incomplete
+    escapes, and templates whose lexical boundaries cannot be established.
+    A bare numeric site requires a numeric declared default if one is present.
+    Quoted numeric defaults retain their original spelling. Boolean parameters
+    accept only booleans or ASCII-case variants of "true" and "false", including
+    when filling a default.
+  - Physical lines beginning with a preprocessor directive other than
+    `#pragma` or `#nullable`, including after C# whitespace.
+  - Numeric inputs outside the strict decimal grammar. Numeric strings allow
+    up to 256 characters including surrounding ASCII whitespace, an optional
+    sign, ASCII digits and an optional fraction with digits on both sides of
+    the point. Exponents, separators and non-ASCII padding are refused.
+    Integer parameters also refuse fractional values and strings with a point.
+- Hosts can call `revit_bridge.capabilities.schema.placeholders(code_template, parameters)`
+  to get declared substitution sites in order. Each site has a `name`, a
+  `context` and half-open `start` and `end` offsets in the Python string.
+  Native interpolation locals such as `$"{local}"` pass through. A declared
+  parameter in an interpolated literal raises `ValueError`, as does any other
+  invalid template. `schema.PLACEHOLDER_RE` remains importable for raw text matching.
+- Quoted scalars keep their 0.11.1 spelling. Bare booleans use lowercase C#
+  keywords and bare numbers use plain decimal. Element pickers retain their
+  0.11.1 ID types, and rendering again calls the host's `validate_params` hook.
 
 ## [0.11.1] - 2026-11-25
 
