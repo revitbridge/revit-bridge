@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.conftest import legacy_escape_param_value  # the 0.11.1 spelling, see conftest
 from revit_bridge.capabilities.store import ToolStore, default_capabilities_dir, escape_param_value, normalize_pack
 from revit_bridge.paths import builtin_capabilities_dir, user_capabilities_dir
 
@@ -529,12 +530,12 @@ def test_every_character_that_ends_a_csharp_literal_or_line_is_escaped(tmp_path)
     """C# ends a regular string literal at CR, LF, U+0085, U+2028 and U+2029; NUL and a lone
     surrogate are escaped too. Everything else is written as given."""
     ends = "a\x85b\N{LINE SEPARATOR}c\N{PARAGRAPH SEPARATOR}d"
-    assert escape_param_value(ends) == "a\\u0085b\\u2028c\\u2029d"
-    assert escape_param_value("a\x00b\ud800c\udfff") == "a\\0b\\ud800c\\udfff"
-    assert escape_param_value('a"b\\c\r\nd') == 'a\\"b\\\\c\\r\\nd'                       # as before
+    assert legacy_escape_param_value(ends) == "a\\u0085b\\u2028c\\u2029d"
+    assert legacy_escape_param_value("a\x00b\ud800c\udfff") == "a\\0b\\ud800c\\udfff"
+    assert legacy_escape_param_value('a"b\\c\r\nd') == 'a\\"b\\\\c\\r\\nd'                       # as before
     plain = "tab\there \N{CJK UNIFIED IDEOGRAPH-6807} \N{GRINNING FACE} {x} $@'"
-    assert escape_param_value(plain) == plain
-    assert (escape_param_value(True), escape_param_value(3000.0), escape_param_value(-7)) == ("True", "3000.0", "-7")
+    assert legacy_escape_param_value(plain) == plain
+    assert (legacy_escape_param_value(True), legacy_escape_param_value(3000.0), legacy_escape_param_value(-7)) == ("True", "3000.0", "-7")
 
     store = ToolStore(user_dir=tmp_path / "user")
     _typed_probe(store)

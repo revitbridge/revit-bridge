@@ -23,8 +23,20 @@ _TOKEN = re.compile(_OPEN)
 _SPACE = r" \t\v\f\x1a\ufeff\xa0\u1680\u2000-\u200a\u202f\u205f\u3000"
 _DIRECTIVE_SPACE = re.compile(f"[{_SPACE}]")
 _ALLOWED_DIRECTIVE = re.compile(rf"#[{_SPACE}]*(?:pragma|nullable)(?=[{_SPACE}\r\n\x85\u2028\u2029]|//|/\*|\Z)")
+# The only directive shapes accepted. Roslyn lexes the rest of a directive line with its
+# own rules (a run of quotes there opens a raw string that swallows the following lines),
+# so anything else on the line, and any quote character at all, refuses the template.
+_DIRECTIVE_LINE = re.compile(
+    rf"#[{_SPACE}]*(?:"
+    rf"pragma[{_SPACE}]+warning[{_SPACE}]+(?:disable|restore)"
+    rf"(?:[{_SPACE}]+[A-Za-z0-9_]+(?:[{_SPACE}]*,[{_SPACE}]*[A-Za-z0-9_]+)*)?"
+    rf"|nullable[{_SPACE}]+(?:enable|disable|restore)(?:[{_SPACE}]+(?:annotations|warnings))?"
+    rf")[{_SPACE}]*(?://[^\"']*)?"
+)
+_LITERAL_OPEN = re.compile(r'(?:\$@|@\$|@|\$+)?"')
 _RAW_FIRST_LINE = re.compile(rf"[{_SPACE}]*(?:{_NEWLINE.pattern})")
-_ESCAPE = re.compile(r"""\\(?:['"\\0abefnrtv]|x[0-9a-fA-F]{1,4}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})""")
+# The escapes of C# 12, the language of the Roslyn the add-in ships (no \e).
+_ESCAPE = re.compile(r"""\\(?:['"\\0abfnrtv]|x[0-9a-fA-F]{1,4}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})""")
 _EXPRESSION = re.compile(
     rf"[{_SPACE}\r\n\x85\u2028\u2029]+|@?[A-Za-z_]\w*|[0-9]+|[.,?+*/%&|^!~=<>-]"
 )
@@ -70,7 +82,11 @@ def _directive_end(code: str, pos: int) -> int | None:
         raise _LexError(pos, "conditional compilation and other directives are not allowed "
                              "in tool code (only #pragma and #nullable are supported)")
     newline = _NEWLINE.search(code, pos)
-    return newline.start() if newline else len(code)
+    end = newline.start() if newline else len(code)
+    if not _DIRECTIVE_LINE.fullmatch(code, pos, end):
+        raise _LexError(pos, "only '#pragma warning disable|restore <ids>' and "
+                             "'#nullable enable|disable|restore' are supported, with no quotes on the line")
+    return end
 
 
 class Lexer:
@@ -128,6 +144,10 @@ class Lexer:
             else:
                 kind = "verbatim string literal" if verbatim else STRING if quotes else "char literal"
             end = self._literal_end(pos, opening[-1], quotes, verbatim, dollars)
+            # Two literals that touch are never valid C#, and a value that renders as
+            # nothing would let their quotes merge into a longer (raw) delimiter.
+            if _LITERAL_OPEN.match(code, end):
+                raise _LexError(end, "a string literal directly follows another literal")
         return Token(kind, match.start(), end)
 
     def _literal_end(self, pos: int, quote: str, quotes: int, verbatim: bool, dollars: int) -> int:

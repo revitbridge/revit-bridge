@@ -111,17 +111,38 @@ def _value_kind(value) -> str:
     return f"a value of type {type(value).__name__}"
 
 
+_PLAIN_CHAR_RE = re.compile(r"[^A-Za-z0-9_ ]")
+
+
+def _unicode_escape(match: re.Match) -> str:
+    """One character as C# unicode escapes (an astral character as its two UTF-16 units)."""
+    point = ord(match.group())
+    if point > 0xFFFF:
+        point -= 0x10000
+        return f"\\u{0xD800 + (point >> 10):04x}\\u{0xDC00 + (point & 0x3FF):04x}"
+    return f"\\u{point:04x}"
+
+
 def escape_param_value(value) -> str:
-    """Escape ordinary C# string content, preserving a scalar's 0.11.1 spelling."""
+    """Text for an ordinary C# string literal that cannot form code in any other context.
+
+    A scalar keeps its 0.11.1 spelling. Then every character other than an ASCII letter,
+    an ASCII digit or a space is written as a unicode escape. Inside an ordinary literal the
+    compiler reads the original text back. Anywhere else the text holds no quote, bracket,
+    operator, dot, semicolon or line end, so a wrong guess about the placeholder's context
+    cannot turn a value into a call or a member access.
+    """
     if isinstance(value, str):
-        return _CS_ESCAPE_RE.sub(_cs_escape, value)
-    if isinstance(value, bool):
-        return "True" if value else "False"
-    if isinstance(value, int):
-        return int.__repr__(value)
-    if isinstance(value, float):
-        return float.__repr__(value)
-    raise TypeError(f"must be a single value, got {_value_kind(value)}")
+        text = value
+    elif isinstance(value, bool):
+        text = "True" if value else "False"
+    elif isinstance(value, int):
+        text = int.__repr__(value)
+    elif isinstance(value, float):
+        text = float.__repr__(value)
+    else:
+        raise TypeError(f"must be a single value, got {_value_kind(value)}")
+    return _PLAIN_CHAR_RE.sub(_unicode_escape, text)
 
 
 def _value_problem(value, ptype: str) -> str | None:

@@ -13,6 +13,16 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   in `::`. Uncertain lexical boundaries invalidate the pack, even after the
   final placeholder. Existing invalid packs expose the reason in
   `validation_errors` when listed.
+- A value written into a string literal can no longer form code in any context:
+  every character other than an ASCII letter, an ASCII digit, an underscore or a
+  space is written as a C# unicode escape. Inside an ordinary literal the compiler
+  reads the original text back, so tools behave as before; the rendered text, and
+  with it the code hash in the ledger, differs from 0.11.1 for values that hold
+  other characters.
+- An allowed directive line holds nothing but `#pragma warning disable|restore
+  <ids>` or `#nullable enable|disable|restore [annotations|warnings]` and an
+  optional comment without quotes. A string literal that directly touches another
+  literal invalidates the template.
 
 ### Changed
 

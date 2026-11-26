@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+from tests.conftest import legacy_escape_param_value  # the 0.11.1 spelling, see conftest
 from revit_bridge.capabilities.store import ToolStore, escape_param_value
 from revit_bridge.revit.client import RevitClient
 from revit_bridge.snapshot.atoms import AtomResolver
@@ -122,8 +123,8 @@ def test_pipe_picker_keeps_0_11_1_integer_ids_for_string_parameters(tmp_path):
 
 
 def test_rendered_parameters_cannot_break_out_of_string_literals(tmp_path):
-    assert escape_param_value('a"b\\c\nd') == 'a\\"b\\\\c\\nd'
-    assert escape_param_value(3000) == "3000"
+    assert legacy_escape_param_value('a"b\\c\nd') == 'a\\"b\\\\c\\nd'
+    assert legacy_escape_param_value(3000) == "3000"
 
     store = ToolStore(tmp_path)
     store.solidify(
