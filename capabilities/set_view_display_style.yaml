@@ -1,0 +1,111 @@
+schema_version: 1
+name: set_view_display_style
+display_name: Set View Display Style
+description: "Set the display style of the active or named view. This changes the view and can be undone in Revit."
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  string viewName = "{view_name}";
+  View view = document.ActiveView;
+  if (viewName.Length != 0)
+  {
+      const int limit = 8;
+      var timer = System.Diagnostics.Stopwatch.StartNew();
+      var available = new List<string>();
+      var matches = new List<string>();
+      using (var views = new FilteredElementCollector(document).OfClass(typeof(View)))
+      {
+          foreach (View candidate in views)
+          {
+              if (timer.ElapsedMilliseconds > 200)
+                  throw new InvalidOperationException("REFUSED: View lookup took too long. Open the intended view and omit view_name.");
+              string name = candidate.Name;
+              bool match = string.Equals(name, viewName, StringComparison.OrdinalIgnoreCase);
+              if (!match && available.Count == limit) continue;
+              string label = name + " (" + candidate.ViewType + ")";
+              if (available.Count < limit) available.Add(label);
+              if (!match) continue;
+              matches.Add(label);
+              view = candidate;
+              if (matches.Count > limit) break;
+          }
+      }
+      if (matches.Count == 0)
+          throw new InvalidOperationException("REFUSED: No view named '" + viewName + "'. Check the exact name. Available views (up to 8): "
+              + (available.Count == 0 ? "none" : string.Join(", ", available)) + ".");
+      if (matches.Count > 1)
+          throw new InvalidOperationException("REFUSED: Ambiguous view name '" + viewName + "'. Open the intended view and omit view_name. Matches: "
+              + string.Join(", ", matches.Take(limit)) + (matches.Count > limit ? ", ..." : "."));
+  }
+  if (view == null)
+      throw new InvalidOperationException("REFUSED: No active view. Open a view or supply its exact name.");
+  if (view.IsTemplate)
+      throw new InvalidOperationException("REFUSED: '" + view.Name + "' is a view template. Choose a project view.");
+
+  var template = document.GetElement(view.ViewTemplateId) as View;
+  if (template != null)
+  {
+      var included = template.GetTemplateParameterIds();
+      var excluded = template.GetNonControlledTemplateParameterIds();
+      // Templates expose the visual style directly or in Graphics Display Options / Model Display.
+      var styleParameters = new[] { BuiltInParameter.MODEL_GRAPHICS_STYLE, BuiltInParameter.MODEL_GRAPHICS_STYLE_ANON_DRAFT,
+                                    BuiltInParameter.GRAPHIC_DISPLAY_OPTIONS_MODEL };
+      foreach (var parameter in styleParameters)
+      {
+          var id = new ElementId(parameter);
+          if (included.Contains(id) && !excluded.Contains(id))
+              throw new InvalidOperationException("REFUSED: View template '" + template.Name + "' controls the display style. Change it there or detach the template in Revit.");
+      }
+  }
+  string target = "'" + view.Name + "' (" + view.ViewType + ")";
+  if (view.ViewType == ViewType.Schedule || view.ViewType == ViewType.DrawingSheet || view.ViewType == ViewType.Legend
+      || !view.HasDisplayStyle() || !view.CanModifyDisplayStyle())
+      throw new InvalidOperationException("REFUSED: Cannot change the display style of " + target + ". Supported styles: none. Choose a model or drafting view.");
+
+  var styles = new Dictionary<string, DisplayStyle> {
+      { "wireframe", DisplayStyle.Wireframe }, { "hidden_line", DisplayStyle.HLR }, { "shaded", DisplayStyle.Shading },
+      { "consistent_colors", DisplayStyle.FlatColors }, { "realistic", DisplayStyle.Realistic }
+  };
+  string requested = "{display_style}";
+  bool drafting = view.ViewType == ViewType.DraftingView;
+  DisplayStyle style;
+  if (!styles.TryGetValue(requested, out style) || (drafting && style != DisplayStyle.Wireframe && style != DisplayStyle.HLR))
+      throw new InvalidOperationException("REFUSED: Choose a supported display style for " + target + ". Supported styles: "
+          + (drafting ? "wireframe, hidden_line" : string.Join(", ", styles.Keys)) + ".");
+
+  string StyleName(DisplayStyle value)
+  {
+      foreach (var pair in styles)
+          if (pair.Value == value) return pair.Key;
+      return value.ToString(); // Preserve previous Revit styles outside this tool's vocabulary.
+  }
+  var previous = view.DisplayStyle;
+  view.DisplayStyle = style;
+  var current = view.DisplayStyle;
+  if (current != style)
+      throw new InvalidOperationException("REFUSED: Revit did not apply the display style. Check the view properties in Revit.");
+  return new { View = view.Name, PreviousStyle = StyleName(previous), NewStyle = StyleName(current) };
+parameters:
+  - name: display_style
+    type: string
+    description: "Choose wireframe, hidden_line, shaded, consistent_colors or realistic. Drafting views accept wireframe and hidden_line."
+    source: designer
+    required: true
+  - name: view_name
+    type: string
+    description: "Exact view name in the current document, matched without case sensitivity. Omit to use the active view."
+    source: designer
+    required: false
+    default: ""
+preconditions:
+  - text: "Choose a model or drafting view whose display style can be edited."
+applies_when:
+  - "set view display style"
+validator: null
+fixtures:
+  - name: active_hidden_line
+    params: {"display_style":"hidden_line"}
+    expect: {"NewStyle":"hidden_line"}
+  - name: named_realistic
+    params: {"display_style":"realistic","view_name":"Named"}
+    expect: {"View":"Named","NewStyle":"realistic"}

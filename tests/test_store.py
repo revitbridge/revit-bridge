@@ -23,6 +23,7 @@ BUILTIN_NAMES = {
     "create_door_on_wall", "create_window_on_wall", "change_type_by_name",
     "select_elements", "select_in_box", "select_by_filter", "clear_selection",
     "zoom_to_elements", "set_view_orientation", "set_section_box",
+    "set_view_detail_level", "set_view_display_style",
     "place_family_instance", "create_pipe", "create_pipes_by_points", "connect_pipes",
     "create_duct", "list_mep_types", "link_revit_model", "link_cad", "load_family",
 }
@@ -557,7 +558,7 @@ def test_every_built_in_fixture_renders_as_before(tmp_path):
                 expected = expected.replace("{" + key + "}", text)
             assert code == expected, tool.name
             rendered += 1
-    assert rendered == 97
+    assert rendered == 101
 
 
 def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):

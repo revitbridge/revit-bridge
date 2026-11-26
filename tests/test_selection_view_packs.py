@@ -20,6 +20,7 @@ from tests.csharp_simulation import simulate_packs
 
 UI_PACKS = {"select_elements", "select_in_box", "select_by_filter", "clear_selection",
             "zoom_to_elements"}
+VIEW_SETTINGS = {"set_view_detail_level", "set_view_display_style"}
 YEARS = ["2021", "2023", "2024", "2025", "2026", "2027"]
 
 
@@ -122,13 +123,15 @@ def test_corner_parameters_give_origin_and_units(tmp_path, name):
     assert all("internal origin" in d and "millimetres" in d for d in corners)
 
 
-@pytest.mark.parametrize("name", sorted(UI_PACKS | {"set_section_box", "set_view_orientation"}))
+@pytest.mark.parametrize("name", sorted(UI_PACKS | VIEW_SETTINGS | {"set_section_box", "set_view_orientation"}))
 def test_reviewed_templates_and_years(tmp_path, name):
     store = ToolStore(user_dir=tmp_path)
     pack = store.load(name)
     assert pack and pack.ui_only == (name in UI_PACKS) and not pack.read_only
     assert pack.revit_versions == YEARS
     assert pack.description.startswith("View only. ") == pack.ui_only
+    if name in VIEW_SETTINGS:
+        assert pack.description.startswith("Set ") and "undo" in pack.description.lower()
     assert "temporarily" not in pack.description.lower()
     assert len(pack.fixtures) >= 2
     assert not validate_pack(yaml.safe_load(store.path_of(name).read_bytes()))
@@ -168,3 +171,25 @@ def test_rendered_selection_geometry_and_atomic_refusals(tmp_path):
         "zoom_to_elements": {"ZoomSelection": {}, "ZoomPair": {"element_ids": "101,102"}},
     })
     assert "PASS selection, filters, section box, camera, zoom and limits" in output
+
+
+def test_view_settings_results_and_refusals(tmp_path):
+    store = ToolStore(user_dir=tmp_path / "user")
+    packs = {}
+    for name, parameter, values in (
+        ("set_view_detail_level", "detail_level", ["coarse", "medium", "fine"]),
+        ("set_view_display_style", "display_style",
+         ["wireframe", "hidden_line", "shaded", "consistent_colors", "realistic"]),
+    ):
+        pack = store.load(name)
+        assert pack and [p["name"] for p in pack.parameters] == [parameter, "view_name"]
+        assert not pack.parameters[1]["required"] and pack.parameters[1]["default"] == ""
+        assert store.render(name, {})[1] == [f"Missing required parameter: {parameter}"]
+        cases = {value.title().replace("_", ""): {parameter: value} for value in values}
+        prefix = "Level" if parameter == "detail_level" else "Style"
+        for target in ("Named", "Missing", "Duplicate", "Template"):
+            cases[prefix + target] = {parameter: values[-1], "view_name": target}
+        cases[prefix + "Invalid"] = {parameter: "other"}
+        packs[name] = cases
+    output = simulate_packs(tmp_path, "view_settings_simulation", packs)
+    assert "PASS view settings" in output

@@ -6,6 +6,13 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `set_view_detail_level` and `set_view_display_style` change the active view or a
+  uniquely named view and report its previous and new setting. Both changes can
+  be undone in Revit. When a view template controls the setting, the tool names
+  the template. If a style is unsupported, the tool lists the choices for that view.
+
 ## [0.11.0] - 2026-11-25
 
 The tools added in this release were verified by compiling against the Revit API for every supported year and by simulation. They have not yet been exercised in a running Revit; the tools that existed in 0.10.1 are unchanged.
