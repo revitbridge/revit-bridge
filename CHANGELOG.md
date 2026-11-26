@@ -6,6 +6,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-26
+
 ### Security
 
 - Capability packs check the entire C# template before save and render. A
@@ -1577,7 +1579,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/revitbridge/revit-bridge/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/revitbridge/revit-bridge/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/revitbridge/revit-bridge/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/revitbridge/revit-bridge/compare/v0.10.0...v0.10.1
