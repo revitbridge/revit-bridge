@@ -17,7 +17,7 @@ code_template: |
       {
           foreach (View candidate in views)
           {
-              if (timer.ElapsedMilliseconds > 200)
+              if (timer.ElapsedMilliseconds > 1500)
                   throw new InvalidOperationException("REFUSED: View lookup took too long. Open the intended view and omit view_name.");
               string name = candidate.Name;
               bool match = string.Equals(name, viewName, StringComparison.OrdinalIgnoreCase);
