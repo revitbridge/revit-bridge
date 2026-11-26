@@ -19,6 +19,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   reads the original text back, so tools behave as before; the rendered text, and
   with it the code hash in the ledger, differs from 0.11.1 for values that hold
   other characters.
+- The code review reads unicode escapes and format characters in identifiers the way
+  the compiler does, so a blocked name written with an escape is refused.
 - An allowed directive line holds nothing but `#pragma warning disable|restore
   <ids>` or `#nullable enable|disable|restore [annotations|warnings]` and an
   optional comment without quotes. A string literal that directly touches another

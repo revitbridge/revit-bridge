@@ -149,3 +149,20 @@ def test_a_rendered_pack_carries_the_value_only_as_plain_text(tmp_path, value):
     assert not errors
     assert code == f'string text = "{escape_param_value(value)}";\nreturn text;'
     assert code.count('"') == 2 and code.count(";") == 2 and "\n" in code and code.count("\n") == 1
+
+
+def test_the_code_review_reads_text_as_the_compiler_does():
+    """A unicode escape or a format character inside a blocked name does not hide it, and a
+    blocked name in a rendered (escaped) value is still seen."""
+    from revit_bridge.revit.sandbox import review
+
+    backslash = chr(92)
+    for code in ("dynamic x = 1;",
+                 backslash + "u0064ynamic x = 1;",
+                 "typeof(object)." + backslash + "u0041ssembly",
+                 "System." + backslash + "u0049O.File.Exists(path)",
+                 "Environment." + backslash + "u0045xit(0)",
+                 "Regis" + chr(0xAD) + "try.CurrentUser",
+                 'var name = "' + escape_param_value("System.IO.File") + '";'):
+        assert review(code)[0] is False, code
+    assert review('var name = "' + escape_param_value("Level 1 - core") + '"; return name;') == (True, [])
