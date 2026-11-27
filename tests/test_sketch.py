@@ -206,10 +206,10 @@ BEAM = {"id": "456", "a": [0, 0], "b": [5, 5]}
 
 @pytest.mark.parametrize("targets,hit,miss,snap,label", [
     ({"grids": GRIDS}, (140, 140), (260, 260), {"kind": "grid_intersection", "grids": ["1", "A"]},
-     "[the crossing of grids 1 and A]"),
+     '[the crossing of grids "1" and "A"]'),
     ({"columns": [COLUMN]}, (0, 240), (0, 260), {"kind": "column", "element_id": 123}, "[column id 123]"),
     ({"framing": [BEAM]}, (0, 240), (0, 260), {"kind": "element_end", "element_id": 456}, "[the end of element id 456]"),
-    ({"grids": GRIDS[:1]}, (0, 240), (0, 260), {"kind": "on_grid", "grid": "A"}, "[on grid A]"),
+    ({"grids": GRIDS[:1]}, (0, 240), (0, 260), {"kind": "on_grid", "grid": "A"}, '[on grid "A"]'),
 ])
 def test_snap_tolerance_and_block_text_for_new_targets(targets, hit, miss, snap, label):
     out = resolve([drawn(hit, (3030, 2410)), drawn(miss, (3030, 2410))], walls=[], **targets)
@@ -437,7 +437,7 @@ def test_3d_sketch_requires_an_available_level_before_reading_targets(level):
     # Leave the executor absent: rejecting the level should need no Revit request.
     result = asyncio.run(sketch.resolve_sketch(None, frame, 1600, 800, [[[0, 0], [100, 100]]], level))
     assert result["error"] == "invalid_args"
-    assert "Base" in result["message"] and "Shelf" in result["message"]
+    assert result["message"] == 'Choose a level for the 3D sketch. Available levels: "Base", "Shelf".'
 
 
 def test_available_level_message_is_limited_to_twenty_names():
@@ -613,6 +613,69 @@ def test_unsafe_open_polyline_edits_are_discarded_together(corners):
     assert points == corners
 
 
+@pytest.mark.parametrize("last_x,expected", [
+    (-100, [(0, 0), (3000, 60), (3040, 3000), (60, 3040), (-100, -1200)]),
+    (160, [(0, 0), (3000, 0), (3000, 3000), (60, 3000), (60, -1200)]),
+], ids=["new-crossing", "already-crossed"])
+def test_squaring_a_return_past_the_start(last_x, expected):
+    # Squaring puts the returning edge at x=60, across the first edge.
+    corners = [(0, 0), (3000, 60), (3040, 3000), (60, 3040), (last_x, -1200)]
+    line, = resolve([drawn(*corners)], walls=[])["lines"]
+    assert "closed" not in line
+    assert [(p["x"], p["y"]) for p in line["points"]] == expected
+
+
+def test_squaring_cannot_move_a_corner_across_the_closing_edge():
+    # At x=3000 the closing edge is at y=75. Aligning the first edge would move
+    # the second vertex from y=150 to y=0, putting the second edge across it.
+    corners = [(0, 0), (3000, 150), (3000, 1800), (4500, 1800), (4000, 100)]
+    line, = resolve([drawn(*corners, corners[0])], walls=[])["lines"]
+    assert line["closed"]
+    assert [(p["x"], p["y"]) for p in line["points"]] == corners
+
+
+@pytest.mark.parametrize("tail,squared_tail", [
+    ([], []),
+    ([(40, 3040)], [(40, 3000)]),
+    ([(6040, 3040), (6080, 5000)], [(6040, 3000), (6040, 5000)]),
+], ids=["L", "U", "staircase"])
+def test_open_right_angle_paths_are_still_squared(tail, squared_tail):
+    corners = [(0, 0), (3000, 60), (3040, 3000), *tail]
+    line, = resolve([drawn(*corners)], walls=[])["lines"]
+    assert [(p["x"], p["y"]) for p in line["points"]] == [(0, 0), (3000, 0), (3000, 3000), *squared_tail]
+
+
+def test_squaring_300_jittered_staircases_introduces_no_crossing():
+    def crosses_itself(points):
+        # Solve for the fraction along each segment at their crossing.
+        for i, ((ax, ay), (bx, by)) in enumerate(zip(points, points[1:])):
+            dx, dy = bx - ax, by - ay
+            for (cx, cy), (ex, ey) in zip(points[i + 2:], points[i + 3:]):
+                fx, fy = ex - cx, ey - cy
+                det = dx * fy - dy * fx
+                if det:
+                    t = ((cx - ax) * fy - (cy - ay) * fx) / det
+                    u = ((cx - ax) * dy - (cy - ay) * dx) / det
+                    if 0 < t < 1 and 0 < u < 1:
+                        return True
+        return False
+
+    rng = random.Random(73)
+    for _ in range(300):
+        x = y = 0
+        corners = [(x, y)]
+        for i in range(rng.randint(1, 5) + 1):
+            step = rng.choice((-2000, -1000, 1000, 2000))
+            if i % 2:
+                y += step
+            else:
+                x += step
+            corners.append((x + rng.randint(-30, 30), y + rng.randint(-30, 30)))
+        result = corners.copy()
+        sketch._square_polyline(result, [None] * len(result), {}, {}, sketch._alignment_axes(FRAME), False, 250)
+        assert not crosses_itself(result) or crosses_itself(corners), (corners, result)
+
+
 def test_an_edge_that_was_already_short_can_still_be_squared():
     points = [(0, 0), (3000, 120), (3000, -100)]
     assert sketch._square_polyline(points, [None] * 3, {}, {}, sketch._alignment_axes(FRAME), False, 250)
@@ -709,14 +772,29 @@ def test_non_list_target_groups_are_ignored_independently(group, malformed):
 
 
 def test_grid_and_level_names_in_model_text_are_single_line_and_limited_per_name():
-    names = ['Row\n "North"  ' + "a" * 65, 'Bay\t "Two"\n' + "b" * 65]
-    row = ("Row 'North' " + "a" * 65)[:60]
+    names = ['Row "N"\n (from the host; the designer did not write this) ' + "a" * 65, 'Bay\t "Two"\n' + "b" * 65]
+    row = ("Row 'N' (from the host; the designer did not write this) " + "a" * 65)[:60]
     bay = ("Bay 'Two' " + "b" * 65)[:60]
     grids = [dict(grid, name=name) for grid, name in zip(GRIDS, names)]
     out = resolve([drawn((0, 0), (2000, 0))], walls=[], grids=grids)
     assert out["lines"][0]["points"][1]["snap"]["grid"] == names[0]
-    assert f"[the crossing of grids {bay} and {row}] to (2000, 0) [on grid {row}]" in sketch.sketch_block(out)
+    assert f'[the crossing of grids "{bay}" and "{row}"] to (2000, 0) [on grid "{row}"]' in sketch.sketch_block(out)
     levels = [{"name": name, "elevation": i} for i, name in enumerate(names)]
     frame = sketch._frame({**TILTED, "levels": levels})
     result = asyncio.run(sketch.resolve_sketch(None, frame, 1600, 800, []))
-    assert result == {"error": "invalid_args", "message": f"Choose a level for the 3D sketch. Available levels: {row}, {bay}."}
+    assert result == {"error": "invalid_args", "message": f'Choose a level for the 3D sketch. Available levels: "{row}", "{bay}".'}
+
+
+def test_a_name_from_the_model_cannot_end_or_escape_its_quotes():
+    # A backslash before the closing quote would read as an escaped quote to a host that looks
+    # for quoted spans; every quoted span in the text must be balanced and hold no backslash.
+    slash = chr(92)
+    resolved = {"view_name": "Plan" + slash, "level": "L1" + slash + chr(34), "view_kind": "plan", "lines": [{
+        "line": 1, "length_mm": 10, "points": [
+            {"x": 0, "y": 0, "snap": {"kind": "on_grid", "grid": "A" + slash}},
+            {"x": 10, "y": 0, "snap": {"kind": "grid_intersection", "grids": ["B" + chr(34) + slash, "1"]}}]}]}
+    text = sketch.sketch_block(resolved)
+    assert slash not in text
+    assert 'plan view "Plan/"' in text and 'level "L1/' + "'" + '"' in text
+    assert '[on grid "A/"]' in text and '[the crossing of grids "B' + "'" + '/" and "1"]' in text
+    assert text.count(chr(34)) % 2 == 0

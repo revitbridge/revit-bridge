@@ -6,6 +6,13 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Sketch text now quotes each grid name, and 3D sketch errors quote each available level name.
+  Hosts can now recognize and escape instruction-like text inside those names.
+- Squaring an open or closed sketch keeps the original corners if the adjustment would
+  make a previously uncrossed line cross itself.
+
 ## [0.13.0] - 2026-11-27
 
 ### Added
