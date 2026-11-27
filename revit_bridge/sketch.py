@@ -20,11 +20,12 @@ being guessed from the image by a model.
     within tolerance. Otherwise a point can snap to a straight wall's centre line
     (``on_wall``) or a straight grid (``on_grid``). A segment from a point target to a wall
     or grid meets it at a right angle when that is what was nearly drawn. A free segment
-    nearly parallel to the view's axes is made parallel. Polylines that return within
-    tolerance of their start are closed. Nearly square corners are squared with snapped
-    vertices fixed. In 3D the designer names a level for projection and element snapping;
-    grids apply on every level. Reads the model once; raises RevitQueryError when the view
-    of the frame is no longer there. ``{view_name, view_kind, level, lines: [{line, points: [{x, y, snap?}],
+    nearly parallel to a plan's axes or the model axes in 3D is made parallel. Polylines
+    that return within tolerance of their start are closed. Nearly square corners can be
+    squared. A closed outline must qualify at every corner. In 3D the designer names a
+    level for projection and element snapping. Grids apply on every level. Reads the model
+    once and raises RevitQueryError when the view of the frame is no longer there.
+    ``{view_name, view_kind, level, lines: [{line, points: [{x, y, snap?}],
     length_mm, pixels, closed?}], tolerance_mm, warnings}``; model and pixel points list
     each corner once, and the length includes the closing edge of a closed line.
 ``sketch_block(resolved)``
@@ -49,7 +50,7 @@ STRAIGHT_RATIO = 0.12          # a stroke this thin for its length is one straig
 MIN_STROKE_PX = 6              # shorter than this is a click, not a line
 SNAP_PX = 14                   # the snap tolerance, in pixels of the capture ...
 SNAP_MIN_MM = 250              # ... and never less than this in the model
-AXIS_DEGREES = 6               # a free segment this close to an axis of the view is made parallel
+AXIS_DEGREES = 6               # a free segment this close to an alignment axis is made parallel
 RIGHT_ANGLE_DEGREES = 8
 FEET_MM = 304.8
 
@@ -362,9 +363,13 @@ def _xy(row, key):
 
 def _targets(data):
     """Point targets (wall ends first for ties), straight wall segments and infinite grid lines."""
+    def rows(group):
+        value = data.get(group)
+        return value if isinstance(value, list) else []
+
     ends, walls, grids = [], {}, {}
     for group, kind, id_key in (("walls", "wall_end", "wall_id"), ("framing", "element_end", "element_id")):
-        for row in data.get(group, []):
+        for row in rows(group):
             number = element_id_or_none(row.get("id")) if isinstance(row, dict) else None
             if number is None:
                 continue
@@ -374,11 +379,11 @@ def _targets(data):
                 ends.extend(((a, snap), (b, snap)))
                 if group == "walls" and row.get("straight") is True:
                     walls[number] = (a, b)
-    for row in data.get("columns", []):
+    for row in rows("columns"):
         number = element_id_or_none(row.get("id")) if isinstance(row, dict) else None
         if number is not None and (point := _xy(row, "point")) is not None:
             ends.append((point, {"kind": "column", "element_id": number}))
-    for row in data.get("grids", []):
+    for row in rows("grids"):
         if isinstance(row, dict) and isinstance(row.get("name"), str):
             a, b = _xy(row, "a"), _xy(row, "b")
             if a is not None and b is not None and a != b:
@@ -445,27 +450,19 @@ def _snap(point, ends, walls, grids, tolerance):
 
 
 def _alignment_axes(frame):
-    """Each horizontal alignment axis and the normal used to measure a stroke's deviation."""
-    right, up = frame["right"], frame["up"]
-    if frame.get("kind") != "axonometric":
-        return ((right, up), (up, right))
-    rx, ry = right[:2]
-    ux, uy = up[:2]
-    if math.hypot(rx, ry) < 1e-6:
-        rx, ry = uy, -ux
-    if math.hypot(ux, uy) < 1e-6:
-        ux, uy = -ry, rx
-    r, u = math.hypot(rx, ry), math.hypot(ux, uy)
-    return [((x, y), (-y, x)) for x, y in ((rx / r, ry / r), (ux / u, uy / u))]
+    """On the level plane, align to the model in 3D and to the view in plan."""
+    if frame.get("kind") == "axonometric":
+        return (1, 0), (0, 1)
+    return frame["right"], frame["up"]
 
 
 def _axis_end(anchor, end, axes):
     limit = math.tan(math.radians(AXIS_DEGREES))
     dx, dy = end[0] - anchor[0], end[1] - anchor[1]
-    # For oblique projected axes both can be within tolerance. Prefer the nearer direction.
+    right, up = axes
     closest = 0.0
     result = end
-    for (ax, ay), (nx, ny) in axes:
+    for (ax, ay), (nx, ny) in ((right, up), (up, right)):
         along, across = dx * ax + dy * ay, dx * nx + dy * ny
         if abs(along) > closest and abs(across / along) <= limit:
             closest = abs(along)
@@ -474,91 +471,120 @@ def _axis_end(anchor, end, axes):
 
 
 def _square_up(points, snaps, walls, grids, axes, tolerance):
-    """Align a single segment to the view or to the wall or grid at its loose end."""
+    """Align a single segment to an axis or to the wall or grid at its loose end."""
     if None in snaps:
         moving = 1 if snaps[1] is None else 0
         points[moving] = _axis_end(points[1 - moving], points[moving], axes)
-        return
-    for fixed, loose in ((0, 1), (1, 0)):
+    elif adjustment := _perpendicular_snap(points, snaps, 0, 1, walls, grids, tolerance):
+        loose, foot = adjustment
+        points[loose] = foot
+
+
+def _perpendicular_snap(points, snaps, a, b, walls, grids, tolerance):
+    """Return the loose vertex and its perpendicular foot from the opposite point snap."""
+    if snaps[a] is None or snaps[b] is None:
+        return None
+    for fixed, loose in ((a, b), (b, a)):
         if snaps[fixed]["kind"] not in ("wall_end", "grid_intersection", "column", "element_end"):
             continue
         snap = snaps[loose]
         if snap["kind"] == "on_wall":
-            if snaps[fixed].get("wall_id") == snap["wall_id"]:
-                continue                       # along the wall it starts from: no perpendicular to drop
-            foot, _ = _foot(points[fixed], *walls[snap["wall_id"]])
+            foot, distance = _foot(points[fixed], *walls[snap["wall_id"]])
         elif snap["kind"] == "on_grid":
-            foot, _ = _foot(points[fixed], *grids[snap["grid"]], infinite=True)
+            foot, distance = _foot(points[fixed], *grids[snap["grid"]], infinite=True)
         else:
             continue
-        if math.dist(foot, points[loose]) <= 2 * tolerance:
-            points[loose] = foot
+        if distance > 1 and math.dist(foot, points[loose]) <= 2 * tolerance:
+            return loose, foot
+    return None
 
 
-def _nearly_square(incoming, outgoing):
+def _nearly_square(incoming, outgoing, degrees=RIGHT_ANGLE_DEGREES):
     dx, dy = incoming
     ex, ey = outgoing
     lengths = math.hypot(dx, dy) * math.hypot(ex, ey)
-    return lengths > 0 and abs(dx * ex + dy * ey) <= lengths * math.sin(math.radians(RIGHT_ANGLE_DEGREES))
+    return lengths > 0 and abs(dx * ex + dy * ey) <= lengths * math.sin(math.radians(degrees))
 
 
-def _square_polyline(points, snaps, axes, closed):
-    """Use the angles before any edits to decide which corners to square."""
-    edge_ends = list(range(1, len(points)))
-    if closed:
-        edge_ends.append(0)
-    directions = [(points[j][0] - a[0], points[j][1] - a[1]) for a, j in zip(points, edge_ends)]
-    square = [_nearly_square(directions[i - 1], direction) for i, direction in enumerate(directions)]
-    square[0] = closed and square[0]
-    if not any(square):
-        return False
+def _edge_vectors(points, closed):
+    ends = points[1:] + (points[:1] if closed else [])
+    return [(bx - ax, by - ay) for (ax, ay), (bx, by) in zip(points, ends)]
 
-    if snaps[0] is None and snaps[1] is None:
-        points[1] = _axis_end(points[0], points[1], axes)
-        directions[0] = (points[1][0] - points[0][0], points[1][1] - points[0][1])
-    if not closed:
-        # Walk in drawing order. If a snap fixes the next vertex, its actual incoming
-        # direction becomes the reference for the following corner.
-        for i in range(1, len(directions)):
-            if square[i] and snaps[i + 1] is None:
-                x, y = points[i]
-                dx, dy = x - points[i - 1][0], y - points[i - 1][1]
-                if dx or dy:
-                    points[i + 1], _ = _foot(points[i + 1], (x, y), (x - dy, y + dx), infinite=True)
-        return True
 
-    # A closed path must fit both sides of the join. Carry the first edge's direction
-    # through each run of square corners, including the run that leads back to the start.
-    for i in range(1, len(directions)):
-        if square[i]:
-            dx, dy = directions[i - 1]
-            directions[i] = (-dy, dx)
-    for i in reversed(range(1, len(directions))):
-        j = edge_ends[i]
-        if not square[j]:
-            break
-        dx, dy = directions[j]
-        directions[i] = (-dy, dx)
-
+def _square_closed(points, snaps):
+    # Every corner qualifies. Alternate between the first edge and its perpendicular,
+    # anchoring each edge at a snapped end or the start of the stroke when possible.
+    dx, dy = points[1][0] - points[0][0], points[1][1] - points[0][1]
     edges = []
-    for i, (dx, dy) in enumerate(directions):
-        j = edge_ends[i]
+    for i in range(len(points)):
+        j = (i + 1) % len(points)
         anchor = points[j] if j == 0 or snaps[j] is not None else points[i]
         edges.append((anchor, (anchor[0] + dx, anchor[1] + dy)))
+        dx, dy = -dy, dx
     for i in range(1, len(points)):
         if snaps[i] is not None:
             continue
         corner = _crossing(*edges[i - 1], *edges[i])
-        if corner is not None:
-            points[i] = corner
+        if corner is None:
+            return False
+        points[i] = corner
     return True
 
 
-def _whole_mm(point, frame):
-    if frame.get("kind") == "axonometric":
-        # Round on the level plane. The projected screen axes need not be an orthonormal basis.
-        return round(point[0]), round(point[1])
-    right, up = frame["right"], frame["up"]
+def _valid_square(points, candidate, original_edges, square, closed, tolerance):
+    if not all(math.isfinite(v) for point in candidate for v in point):
+        return False
+    edges = _edge_vectors(candidate, closed)
+    lengths = [math.hypot(*edge) for edge in original_edges]
+    if any(math.hypot(*edge) < tolerance <= length for edge, length in zip(edges, lengths)):
+        return False
+    for i, (before, after) in enumerate(zip(points, candidate)):
+        incoming = lengths[i - 1] if i or closed else 0
+        outgoing = lengths[i] if i < len(lengths) else 0
+        if math.dist(before, after) > max(2 * tolerance, 0.25 * max(incoming, outgoing)):
+            return False
+    return all(_nearly_square(edges[i - 1], edges[i], degrees=1) for i in square)
+
+
+def _square_polyline(points, snaps, walls, grids, axes, closed, tolerance):
+    """Use the snapped angles to select corners. Commit the edits only if the whole line fits."""
+    edges = _edge_vectors(points, closed)
+    square = [i for i in range(0 if closed else 1, len(edges)) if _nearly_square(edges[i - 1], edges[i])]
+    mixed_outline = closed and len(square) != len(points)
+    if mixed_outline:
+        square = []
+
+    candidate = points.copy()
+    if snaps[1] is None and (not mixed_outline or snaps[0] is None):
+        candidate[1] = _axis_end(points[0], points[1], axes)
+    if not closed:
+        first = _perpendicular_snap(points, snaps, 0, 1, walls, grids, tolerance)
+        last = _perpendicular_snap(points, snaps, len(points) - 2, len(points) - 1, walls, grids, tolerance)
+        # A two-segment stroke can ask for different feet at the same middle vertex.
+        if first and last and first[0] == last[0] and first[1] != last[1]:
+            return False
+        for adjustment in (first, last):
+            if adjustment:
+                loose, foot = adjustment
+                candidate[loose] = foot
+        for i in square:
+            if snaps[i + 1] is None:
+                x, y = candidate[i]
+                dx, dy = x - candidate[i - 1][0], y - candidate[i - 1][1]
+                candidate[i + 1], _ = _foot(candidate[i + 1], (x, y), (x - dy, y + dx), infinite=True)
+    elif square and not _square_closed(candidate, snaps):
+        return False
+
+    if not square and candidate == points:
+        return False
+    if not _valid_square(points, candidate, edges, square, closed, tolerance):
+        return False
+    points[:] = candidate
+    return True
+
+
+def _whole_mm(point, axes):
+    right, up = axes
     u = round(point[0] * right[0] + point[1] * right[1])
     v = round(point[0] * up[0] + point[1] * up[1])
     return right[0] * u + up[0] * v, right[1] * u + up[1] * v
@@ -583,7 +609,7 @@ async def resolve_sketch(executor: RevitQueryExecutor, frame: dict, width: int, 
         levels = frame["levels"]
         chosen = next((row for row in levels if row["name"] == level), None)
         if chosen is None:
-            names = ", ".join(row["name"] for row in levels[:20]) or "(none)"
+            names = ", ".join(_display_name(row["name"], 60) for row in levels[:20]) or "(none)"
             return {"error": "invalid_args", "message": f"Choose a level for the 3D sketch. Available levels: {names}."}
         elevation_mm = chosen["elevation_mm"]
     else:
@@ -595,7 +621,7 @@ async def resolve_sketch(executor: RevitQueryExecutor, frame: dict, width: int, 
     response = await executor.client.send_code(_TARGETS, parameters=[frame["view_uid"], frame["document_id"],
                                                                     level if kind == "axonometric" else ""])
     data = response.result
-    if not response.success or not isinstance(data, dict) or not isinstance(data.get("walls"), list):
+    if not response.success or not isinstance(data, dict):
         raise RevitQueryError(response.error or "Could not read the walls of the view")
     ends, walls, grids = _targets(data)
     per_pixel = (frame["u"][1] - frame["u"][0]) / width
@@ -608,13 +634,13 @@ async def resolve_sketch(executor: RevitQueryExecutor, frame: dict, width: int, 
         for point in (line[:-1] if closed else line):
             snapped, snap = _snap(point, ends, walls, grids, tolerance)
             # Round only free points. Snapped geometry keeps its model coordinates.
-            points.append(snapped if snap else _whole_mm(snapped, frame))
+            points.append(snapped if snap else _whole_mm(snapped, axes))
             snaps.append(snap)
         squared = False
         if len(points) == 2:
             _square_up(points, snaps, walls, grids, axes, tolerance)
         else:
-            squared = _square_polyline(points, snaps, axes, closed)
+            squared = _square_polyline(points, snaps, walls, grids, axes, closed, tolerance)
         length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
         if closed:
             length += math.dist(points[-1], points[0])
@@ -632,6 +658,10 @@ async def resolve_sketch(executor: RevitQueryExecutor, frame: dict, width: int, 
 
 # -- the text for the model ---------------------------------------------------------------------
 
+def _display_name(name, limit):
+    return " ".join(str(name or "").split()).replace('"', "'")[:limit]
+
+
 def _where(point) -> str:
     text = f"({point['x']}, {point['y']})"
     snap = point.get("snap")
@@ -642,13 +672,14 @@ def _where(point) -> str:
         if kind == "on_wall":
             return f"{text} [on wall id {snap['wall_id']}]"
         if kind == "grid_intersection":
-            return f"{text} [the crossing of grids {' and '.join(snap['grids'])}]"
+            names = " and ".join(_display_name(name, 60) for name in snap["grids"])
+            return f"{text} [the crossing of grids {names}]"
         if kind == "column":
             return f"{text} [column id {snap['element_id']}]"
         if kind == "element_end":
             return f"{text} [the end of element id {snap['element_id']}]"
         if kind == "on_grid":
-            return f"{text} [on grid {snap['grid']}]"
+            return f"{text} [on grid {_display_name(snap['grid'], 60)}]"
     return text
 
 
@@ -657,8 +688,8 @@ def sketch_block(resolved: dict) -> str:
     lines = resolved.get("lines") or []
     if not lines:
         return ""
-    name = " ".join(str(resolved.get("view_name") or "").split()).replace('"', "'")[:200]
-    level = " ".join(str(resolved.get("level") or "").split()).replace('"', "'")[:200]
+    name = _display_name(resolved.get("view_name"), 200)
+    level = _display_name(resolved.get("level"), 200)
     parts = []
     for line in lines:
         points = line["points"]

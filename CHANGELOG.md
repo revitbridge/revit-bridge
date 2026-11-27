@@ -12,13 +12,18 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   projects onto that level and snaps to its walls, columns and framing, and to visible grids.
 - `revit_bridge.sketch`: a line end also snaps to a crossing of two grids,
   a column and an end of a structural framing element, and to a point on a
-  grid; point targets are taken before lines, and a line from a point
-  target to a wall or grid meets it at a right angle. One bounded read of
-  the view gives all targets.
+  grid. Point targets take priority over lines. A single segment or either
+  end segment of an open polyline can meet a wall or grid at a right angle
+  when the perpendicular foot is nearby. A stroke along the same wall or
+  grid keeps its length. One bounded read of the view gives all targets.
 - `revit_bridge.sketch`: a polyline whose ends nearly meet is closed
-  (`closed: true`, each corner once, the closing edge in `length_mm`);
-  corners within 8 degrees of a right angle are made right angles around
-  snapped corners, so a hand-drawn box is an exact rectangle. `sketch_block`
+  (`closed: true`, each corner once, the closing edge in `length_mm`).
+  A nearly axis-aligned first segment follows the view axes in plan and
+  the model axes in 3D when its far end is free. Squaring a closed outline
+  requires every corner to be within 8 degrees of a right angle. An outline
+  with an oblique corner can align its first edge only when both ends are
+  free. If squaring would move a corner too far, make a new short edge or
+  miss a right angle, the sketch keeps its snapped coordinates. `sketch_block`
   says how to pass a polyline to `create_walls_by_points`.
 
 ### Fixed

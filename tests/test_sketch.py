@@ -472,18 +472,17 @@ def test_3d_wall_snaps_square_on_the_chosen_level_and_project_back_to_the_captur
     assert sketch.sketch_block(out) == sketch.sketch_block({**out, "view_type": "FloorPlan"})
 
 
-def test_free_3d_lines_align_with_each_projected_axis_even_when_the_view_is_rolled():
-    # Roll the 3-4-5 view so screen right and up project along (1, .6) and (-.6, .64).
+def test_free_3d_lines_align_with_model_axes_even_when_the_view_is_rolled():
+    # Screen right and up project along (1, .6) and (-.6, .64). Those slopes stay as drawn.
     raw = oriented_view(0, math.degrees(math.asin(.8)), math.degrees(math.asin(.6)))
     frame = sketch._frame(raw)
     strokes = [[sketch.pixel_of(frame, 1600, 800, x, y, 0) for x, y in [(0, 0), end]]
-               for end in ((2000, 1260), (-1500, 1700))]
+               for end in ((2000, 1260), (-1500, 1700), (2000, 70), (-60, 1700))]
     out = resolve(strokes, frame=frame, level="Base", expected_level="Base", walls=[])
-    for line, axis, end in zip(out["lines"], ((1, .6), (-.6, .64)), ((2000, 1260), (-1500, 1700))):
+    for line, expected in zip(out["lines"], ((2000, 1260), (-1500, 1700), (2000, 0), (0, 1700)), strict=True):
         a, b = line["points"]
         assert a == {"x": 0, "y": 0}
-        distance = sum(p * d for p, d in zip(end, axis)) / sum(d * d for d in axis)
-        assert (b["x"], b["y"]) == pytest.approx([d * distance for d in axis], abs=2)
+        assert (b["x"], b["y"]) == pytest.approx(expected, abs=2)
 
 
 def test_capture_for_sketch_returns_the_3d_frame_and_detects_a_changed_level(tmp_path):
@@ -525,3 +524,166 @@ def test_a_wobble_on_an_edge_of_a_box_is_not_a_corner():
     (line,) = resolve([stroke], walls=[])["lines"]
     assert line.get("closed") is True and len(line["points"]) == 4
     assert len({p["x"] for p in line["points"]}) == 2 and len({p["y"] for p in line["points"]}) == 2
+
+
+WALL_AT_START = {"id": "31", "straight": True, "a": [-3000 / FEET, 0], "b": [-3000 / FEET, 2000 / FEET]}
+
+
+def test_polyline_from_a_wall_end_aligns_the_first_free_edge_with_or_without_a_square_corner():
+    start, corner = (-3000, 2000), (-4, 2157)
+    square, oblique = resolve([drawn(start, corner, (100, 162)), drawn(start, corner, (1400, 4000))],
+                              walls=[WALL_AT_START])["lines"]
+    first = {"x": -3000, "y": 2000, "snap": {"kind": "wall_end", "wall_id": 31}}
+    assert square["points"] == [first, {"x": -4, "y": 2000}, {"x": -4, "y": 162}]
+    assert oblique["points"] == [first, {"x": -4, "y": 2000}, {"x": 1400, "y": 4000}]
+
+
+@pytest.mark.parametrize("targets,loose", [
+    ({"walls": [WALL_AT_START, WALLS[1]]}, {"kind": "on_wall", "wall_id": 12}),
+    ({"walls": [WALL_AT_START], "grids": GRIDS[1:]}, {"kind": "on_grid", "grid": "1"}),
+])
+def test_first_and_last_polyline_segments_drop_a_perpendicular_to_the_loose_snap(targets, loose):
+    stroke = drawn((-3000, 2000), (0, 2150), (0, 162))
+    forward, backward = resolve([stroke, stroke[::-1]], **targets)["lines"]
+    expected = [{"x": -3000, "y": 2000, "snap": {"kind": "wall_end", "wall_id": 31}},
+                {"x": 0, "y": 2000, "snap": loose}, {"x": 0, "y": 162, "snap": loose}]
+    assert forward["points"] == expected
+    assert backward["points"] == expected[::-1]
+
+
+def test_two_point_snaps_competing_for_the_same_loose_corner_keep_the_drawn_position():
+    columns = [{"id": "35", "point": [-400 / FEET, 0]}, {"id": "36", "point": [-400 / FEET, 600 / FEET]}]
+    stroke = drawn((-400, 0), (0, 300), (-400, 600))
+    lines = resolve([stroke, stroke[::-1]], walls=[], grids=GRIDS[1:], columns=columns)["lines"]
+    for line in lines:
+        assert line["points"][1] == {"x": 0, "y": 300, "snap": {"kind": "on_grid", "grid": "1"}}
+
+
+def test_closed_pentagon_keeps_its_ridge_and_all_four_other_corners():
+    corners = [(0, 0), (4000, 0), (4366, 2978), (2000, 3600), (0, 3000)]
+    line, = resolve([drawn(*corners, corners[0])], walls=[])["lines"]
+    assert line["closed"]
+    assert [(p["x"], p["y"]) for p in line["points"]] == corners
+
+
+@pytest.mark.parametrize("columns,first_edge_y", [([], 0), ([COLUMN], 70)])
+def test_only_a_free_first_edge_can_align_on_a_mixed_closed_outline(columns, first_edge_y):
+    corners = [(0, 0), (4000, 70), (4366, 2978), (2000, 3600), (0, 3000)]
+    line, = resolve([drawn(*corners, corners[0])], walls=[], columns=columns)["lines"]
+    assert [(p["x"], p["y"]) for p in line["points"]] == [corners[0], (4000, first_edge_y), *corners[2:]]
+
+
+def test_all_six_corners_of_a_jittered_closed_l_are_squared():
+    corners = [(0, 0), (4000, 75), (3960, 1500), (2000, 1550), (2050, 3120), (-30, 3100)]
+    outline, = resolve([drawn(*corners, corners[0])], walls=[])["lines"]
+    assert outline["closed"]
+    assert [(p["x"], p["y"]) for p in outline["points"]] == [
+        (0, 0), (4000, 0), (4000, 1500), (2000, 1500), (2000, 3120), (0, 3120)]
+
+
+@pytest.mark.parametrize("outline", [
+    [(0, 0), (4000, 0), (4366, 2978), (2000, 3400), (0, 3000)],
+    [(0, 0), (4000, 0), (4000, 3000), (0, 3000)],
+], ids=["pentagon", "rectangle"])
+def test_300_jittered_outlines_keep_corners_near_the_stroke(outline):
+    rng = random.Random(7056)
+    for _ in range(50):
+        strokes = [[(x + rng.randint(-70, 70), y + rng.randint(-70, 70)) for x, y in outline] for _ in range(6)]
+        out = resolve([drawn(*corners, corners[0]) for corners in strokes], walls=[])
+        for line, corners in zip(out["lines"], strokes, strict=True):
+            result = [(p["x"], p["y"]) for p in line["points"]]
+            assert line["closed"] and len(result) == len(outline)
+            for i, point in enumerate(result):
+                incoming = math.dist(corners[i], corners[i - 1])
+                outgoing = math.dist(corners[i], corners[(i + 1) % len(corners)])
+                assert math.dist(point, corners[i]) <= max(2 * out["tolerance_mm"], 0.25 * max(incoming, outgoing))
+            if len(outline) == 4:
+                assert len({x for x, y in result}) == len({y for x, y in result}) == 2
+
+
+@pytest.mark.parametrize("corners", [
+    [(0, 0), (2993, 209), (2421, 3154), (5274, 4081)],  # squaring would move the last point by 927 mm
+    [(0, 0), (3000, 240), (3000, -100)],                # squaring would shorten a 340 mm edge to 100 mm
+], ids=["excessive-displacement", "new-short-edge"])
+def test_unsafe_open_polyline_edits_are_discarded_together(corners):
+    points = corners.copy()
+    assert not sketch._square_polyline(points, [None] * len(points), {}, {}, sketch._alignment_axes(FRAME), False, 250)
+    assert points == corners
+
+
+def test_an_edge_that_was_already_short_can_still_be_squared():
+    points = [(0, 0), (3000, 120), (3000, -100)]
+    assert sketch._square_polyline(points, [None] * 3, {}, {}, sketch._alignment_axes(FRAME), False, 250)
+    assert points == [(0, 0), (3000, 0), (3000, -100)]
+
+
+def test_nonfinite_closed_corner_discards_the_entire_candidate(monkeypatch):
+    corners = [(0, 0), (4000, 90), (3990, 3000), (0, 3010)]
+    monkeypatch.setattr(sketch, "_crossing", lambda *edges: (math.nan, math.inf))
+    points = corners.copy()
+    assert not sketch._square_polyline(points, [None] * 4, {}, {}, sketch._alignment_axes(FRAME), True, 250)
+    assert points == corners
+
+
+def test_a_fixed_corner_that_cannot_be_squared_rolls_back_the_first_edge_too():
+    corners = [(0, 0), (3000, 120), (3090, 2000)]
+    column = {"id": "32", "point": [3090 / FEET, 2000 / FEET]}
+    line, = resolve([drawn(*corners)], walls=[], columns=[column])["lines"]
+    assert line["points"] == [{"x": 0, "y": 0}, {"x": 3000, "y": 120},
+                              {"x": 3090, "y": 2000, "snap": {"kind": "column", "element_id": 32}}]
+
+
+@pytest.mark.parametrize("targets,start_snap", [
+    ({"walls": [], "grids": GRIDS}, {"kind": "grid_intersection", "grids": ["1", "A"]}),
+    ({"walls": [], "grids": GRIDS[:1], "columns": [COLUMN]}, {"kind": "column", "element_id": 123}),
+    ({"walls": [{"id": "33", "a": [0, 0], "b": [0, 8], "straight": True}], "grids": GRIDS[:1]},
+     {"kind": "wall_end", "wall_id": 33}),
+])
+def test_a_short_line_from_a_point_snap_along_its_grid_keeps_its_length(targets, start_snap):
+    line, = resolve([drawn((0, 0), (400, 0))], **targets)["lines"]
+    assert line["points"] == [{"x": 0, "y": 0, "snap": start_snap},
+                              {"x": 400, "y": 0, "snap": {"kind": "on_grid", "grid": "A"}}]
+    assert line["length_mm"] == 400
+
+
+def test_a_perpendicular_foot_one_mm_from_the_fixed_end_is_skipped():
+    column = {"id": "34", "point": [0, 1 / FEET]}
+    line, = resolve([drawn((0, 1), (400, 0))], walls=[], columns=[column], grids=GRIDS[:1])["lines"]
+    assert line["points"] == [{"x": 0, "y": 1, "snap": {"kind": "column", "element_id": 34}},
+                              {"x": 400, "y": 0, "snap": {"kind": "on_grid", "grid": "A"}}]
+
+
+def test_a_jittered_box_in_an_isometric_view_aligns_to_model_axes_on_whole_mm():
+    frame = sketch._frame(oriented_view(45, 35.264, 0))
+    corners = [(20.2, 30.4), (4020.6, 90.2), (3990.7, 3030.1), (30.8, 3050.9)]
+    stroke = [sketch.pixel_of(frame, 1600, 800, x, y, 0) for x, y in [*corners, corners[0]]]
+    box, = resolve([stroke], frame=frame, level="Base", expected_level="Base", walls=[])["lines"]
+    points = [(p["x"], p["y"]) for p in box["points"]]
+    assert box["closed"]
+    assert all(type(v) is int for point in points for v in point)
+    assert points == [(21, 30), (4021, 30), (4021, 3030), (21, 3030)]
+
+
+@pytest.mark.parametrize("group", ["walls", "grids", "columns", "framing"])
+@pytest.mark.parametrize("malformed", [None, 42])
+def test_non_list_target_groups_are_ignored_independently(group, malformed):
+    targets = {"walls": [], "columns": [COLUMN], group: malformed}
+    if group == "columns":
+        targets["framing"] = [BEAM]
+    line, = resolve([drawn((0, 0), (3030, 2410))], **targets)["lines"]
+    expected = {"kind": "element_end", "element_id": 456} if group == "columns" else {"kind": "column", "element_id": 123}
+    assert line["points"][0] == {"x": 0, "y": 0, "snap": expected}
+
+
+def test_grid_and_level_names_in_model_text_are_single_line_and_limited_per_name():
+    names = ['Row\n "North"  ' + "a" * 65, 'Bay\t "Two"\n' + "b" * 65]
+    row = ("Row 'North' " + "a" * 65)[:60]
+    bay = ("Bay 'Two' " + "b" * 65)[:60]
+    grids = [dict(grid, name=name) for grid, name in zip(GRIDS, names)]
+    out = resolve([drawn((0, 0), (2000, 0))], walls=[], grids=grids)
+    assert out["lines"][0]["points"][1]["snap"]["grid"] == names[0]
+    assert f"[the crossing of grids {bay} and {row}] to (2000, 0) [on grid {row}]" in sketch.sketch_block(out)
+    levels = [{"name": name, "elevation": i} for i, name in enumerate(names)]
+    frame = sketch._frame({**TILTED, "levels": levels})
+    result = asyncio.run(sketch.resolve_sketch(None, frame, 1600, 800, []))
+    assert result == {"error": "invalid_args", "message": f"Choose a level for the 3D sketch. Available levels: {row}, {bay}."}
