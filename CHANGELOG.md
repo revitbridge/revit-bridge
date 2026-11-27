@@ -6,6 +6,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-27
+
 ### Added
 
 - Designers can sketch on an orthographic 3D capture by choosing a level. The sketch
@@ -23,7 +25,10 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   requires every corner to be within 8 degrees of a right angle. An outline
   with an oblique corner can align its first edge only when both ends are
   free. If squaring would move a corner too far, make a new short edge or
-  miss a right angle, the sketch keeps its snapped coordinates. `sketch_block`
+  miss a right angle, the sketch keeps its snapped coordinates. A free
+  corner before a snapped end moves along the segment that leads to it, to
+  face that end squarely: an L joining two wall ends is two segments
+  along the axes. `sketch_block`
   says how to pass a polyline to `create_walls_by_points`.
 
 ### Fixed
@@ -1661,7 +1666,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/revitbridge/revit-bridge/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/revitbridge/revit-bridge/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/revitbridge/revit-bridge/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/revitbridge/revit-bridge/compare/v0.11.1...v0.11.2
