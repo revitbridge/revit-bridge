@@ -1,6 +1,6 @@
 # Revit Bridge plugin
 
-Build, change and query a running Autodesk Revit model from Claude: seven skills, one local MCP server and one confirmation hook. The model takes a snapshot first, traces every parameter to a source, shows a spec card, and executes only with a one-time token the designer confirmed.
+Build, change and query a running Autodesk Revit model from Claude: eight skills, one local MCP server and one confirmation hook. The model takes a snapshot first, traces every parameter to a source, shows a spec card, and executes only with a one-time token the designer confirmed.
 
 ## What is inside
 
@@ -12,6 +12,7 @@ Build, change and query a running Autodesk Revit model from Claude: seven skills
 | `skills/revit-addin-test` | The test phase: runs the compiled add-in in a real Revit without disturbing others on the machine, reads journals, judges the build matrix, compares base and branch. Needs no bridge component. |
 | `skills/revit-addin-release` | The release phase: multi-year release build, obfuscation, installer, acceptance on a real machine, the review record, logs from a user's machine. Needs no bridge component. |
 | `skills/revit-journal-analysis` | Reads Revit journals by hand or with plain text search: how the session ended, crash and exception markers, licence and model-open errors, which add-ins loaded and from which vendor, dialogs, sidecar logs. Needs no bridge component. |
+| `skills/revit-install` | Machine setup: installs Revit, Navisworks Manage, Civil 3D and AutoCAD on Windows from a queue, resumes an interrupted run, repairs the Revit Unit Schemas, and installs the Revit Chinese and US English content libraries year by year. Needs no bridge component. |
 | `skills/revit-core` | The `execute_code` snippet contract, internal units, ElementId and other version differences, the Revit 2024 to 2027 runtime matrix. |
 | `.mcp.json` | Starts the `revit-bridge` MCP server with `uvx` (the `revit-bridge` package from PyPI, pinned to one version). |
 | `hooks/hooks.json` | A `PreToolUse` hook that denies `execute_code` and `run_tool` unless the call carries a token from `confirm_spec`. It runs `hooks/spec_gate.py` with `uv`. |

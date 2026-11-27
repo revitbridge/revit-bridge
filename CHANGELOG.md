@@ -6,6 +6,21 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `revit-install` skill: install Autodesk Revit,
+  Navisworks Manage, Civil 3D and AutoCAD on Windows from a queue, from
+  local media or the official Web Install; resume an interrupted run;
+  repair the Revit Unit Schemas; identify, rename and install the Revit
+  Chinese and US English content libraries year by year. Four scripts:
+  `plan.py` prints the plan from a configuration file and changes nothing,
+  `read_content_identity.ps1` reads a content pack's year and language from
+  its signed manifest, `inspect_revit_content_msi.ps1` and
+  `inspect_revit_content_adix.py` count a pack's files and check the
+  installed ones. It is in no `skills install` profile: `--profile all` or
+  its name installs it. No Python package code, tool, pack format,
+  TaskSpec, gate or wire-format change.
+
 ## [0.11.2] - 2026-11-26
 
 ### Security

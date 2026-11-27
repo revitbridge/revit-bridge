@@ -1,0 +1,16 @@
+{
+  "downloadDir": "<DOWNLOAD_DIR>",
+  "contentRoot": "<CONTENT_ROOT>",
+  "proxyUrl": "<PROXY_URL_OR_NULL>",
+  "products": [
+    "Revit 2024.3.6",
+    "Revit 2025.5.1",
+    "Revit 2026.5.1",
+    "Revit 2027.4",
+    "Navisworks Manage 2027",
+    "Civil 3D 2027.1.1 English",
+    "AutoCAD 2027.1.1 English"
+  ],
+  "contentYears": [2024, 2025, 2026, 2027],
+  "contentLocales": ["CHS", "ENU"]
+}
