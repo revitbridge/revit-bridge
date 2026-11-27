@@ -531,6 +531,26 @@ def _square_closed(points, snaps):
     return True
 
 
+def _self_crosses(points, closed):
+    def straddles(a, b, c, d):
+        # The signed areas have opposite signs when c and d lie on opposite sides of a-b.
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        side_c = dx * (c[1] - a[1]) - dy * (c[0] - a[0])
+        side_d = dx * (d[1] - a[1]) - dy * (d[0] - a[0])
+        return side_c < 0 < side_d or side_d < 0 < side_c
+
+    ends = points[1:] + (points[:1] if closed else [])
+    segments = list(zip(points, ends))
+    for i, (a, b) in enumerate(segments):
+        for j in range(i + 2, len(segments)):
+            if closed and i == 0 and j == len(segments) - 1:
+                continue
+            c, d = segments[j]
+            if straddles(a, b, c, d) and straddles(c, d, a, b):
+                return True
+    return False
+
+
 def _valid_square(points, candidate, original_edges, square, closed, tolerance):
     if not all(math.isfinite(v) for point in candidate for v in point):
         return False
@@ -543,7 +563,9 @@ def _valid_square(points, candidate, original_edges, square, closed, tolerance):
         outgoing = lengths[i] if i < len(lengths) else 0
         if math.dist(before, after) > max(2 * tolerance, 0.25 * max(incoming, outgoing)):
             return False
-    return all(_nearly_square(edges[i - 1], edges[i], degrees=1) for i in square)
+    if not all(_nearly_square(edges[i - 1], edges[i], degrees=1) for i in square):
+        return False
+    return not _self_crosses(candidate, closed) or _self_crosses(points, closed)
 
 
 def _square_polyline(points, snaps, walls, grids, axes, closed, tolerance):
@@ -613,7 +635,7 @@ async def resolve_sketch(executor: RevitQueryExecutor, frame: dict, width: int, 
         levels = frame["levels"]
         chosen = next((row for row in levels if row["name"] == level), None)
         if chosen is None:
-            names = ", ".join(_display_name(row["name"], 60) for row in levels[:20]) or "(none)"
+            names = ", ".join(f'"{_display_name(row["name"], 60)}"' for row in levels[:20]) or "(none)"
             return {"error": "invalid_args", "message": f"Choose a level for the 3D sketch. Available levels: {names}."}
         elevation_mm = chosen["elevation_mm"]
     else:
@@ -663,7 +685,10 @@ async def resolve_sketch(executor: RevitQueryExecutor, frame: dict, width: int, 
 # -- the text for the model ---------------------------------------------------------------------
 
 def _display_name(name, limit):
-    return " ".join(str(name or "").split()).replace('"', "'")[:limit]
+    """A name read from the model, fit to stand between double quotes in a text: one line, no
+    double quote, and no backslash (a host that looks for quoted spans would read a backslash
+    before the closing quote as escaping it)."""
+    return " ".join(str(name or "").split()).replace('"', "'").replace("\\", "/")[:limit]
 
 
 def _where(point) -> str:
@@ -676,14 +701,14 @@ def _where(point) -> str:
         if kind == "on_wall":
             return f"{text} [on wall id {snap['wall_id']}]"
         if kind == "grid_intersection":
-            names = " and ".join(_display_name(name, 60) for name in snap["grids"])
+            names = " and ".join(f'"{_display_name(name, 60)}"' for name in snap["grids"])
             return f"{text} [the crossing of grids {names}]"
         if kind == "column":
             return f"{text} [column id {snap['element_id']}]"
         if kind == "element_end":
             return f"{text} [the end of element id {snap['element_id']}]"
         if kind == "on_grid":
-            return f"{text} [on grid {_display_name(snap['grid'], 60)}]"
+            return f'{text} [on grid "{_display_name(snap["grid"], 60)}"]'
     return text
 
 
