@@ -6,6 +6,42 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `mention_candidates(kind="element")` searches the whole model when nothing
+  is selected in Revit. Without `source` it offers the selection when there
+  is one and the model otherwise; `source="selection"` and `source="model"`
+  choose one. The reply says which in `source`, and a selection reply gives
+  the number of selected elements in `selected`. The model search reads the
+  elements that have a place in the model (a built-in model category, not
+  view specific, with a bounding box), ranks type name, family, category,
+  its display name and the bilingual aliases, and finds an element by its
+  id when the only term is a whole number. It stops at a time and row
+  budget and then says `truncated` and `facets_partial` with a warning.
+- `revit_bridge.mention_model.element_preview(executor, element_id)`: a
+  rough shape of one element for a host to draw while the designer chooses,
+  as triangles in whole millimetres from the corner of its bounding box (at
+  most 1500 by default), or only its size when it has no geometry to read.
+  It is a picture to recognise an element by, never a measurement.
+
+- `revit_bridge.sketch`: a sketch the designer draws on a capture of a plan
+  view, as model coordinates. `capture_for_sketch` returns the view image
+  with its `frame` (the model rectangle the picture shows, read before and
+  after the export; a view that moved or is not a plan is refused).
+  `resolve_sketch` converts strokes given in pixels of that capture into
+  lines in millimetres: a stroke that is nearly straight, however shakily
+  or often drawn over, is one segment; ends snap to the ends and centre
+  lines of the view's walls, a line from a wall's end to another wall meets
+  it at a right angle, and a free line nearly along an axis of the view is
+  made parallel. `sketch_block` is the text a host appends to the
+  designer's message. No image is read and nothing is written to the model.
+
+### Changed
+
+- `mention_candidates("element")` without `source` was `invalid_args`; it
+  is now the selection or the model, as above. A `source` other than
+  `selection` or `model` is still `invalid_args`.
+
 ## [0.11.3] - 2026-11-26
 
 ### Added

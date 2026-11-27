@@ -27,7 +27,11 @@ uvx --from . revit-bridge check   # read the open document's title through the a
   cuts the host text per role, without code-writing or with the selections rule).
 - `revit_bridge/mentions.py` - the designer's picks of levels, types, links and selected elements: `mention_candidates`,
   `resolve_mentions` (checked by id against the open model), `mention_block` (the selections text).
-  `mention_elements.py` reads the selection and rechecks element ids. `mention_search.py` ranks and
+  `mention_elements.py` reads the selection and rechecks element ids. `mention_model.py` searches the
+  whole model when nothing is selected and reads a rough 3D shape of one element (`element_preview`).
+- `revit_bridge/sketch.py` - a designer's sketch on a capture of a plan view as model coordinates: the view's
+  frame with the capture (`capture_for_sketch`), strokes in pixels to lines in millimetres snapped to walls
+  (`resolve_sketch`), the text for the model (`sketch_block`). Read only; no image is read. `mention_search.py` ranks and
   facets results using `mention_aliases.json`. `mention_cache.py` caches type inventories per open document.
 - `revit_bridge/checking.py` — `check_code`: compile C# in Revit without running it (local `sandbox.review`
   first, then the add-in's `check_code_in_revit`); the reply adds `hints` and `guidance` lessons.
