@@ -572,6 +572,10 @@ def _square_polyline(points, snaps, walls, grids, axes, closed, tolerance):
                 x, y = candidate[i]
                 dx, dy = x - candidate[i - 1][0], y - candidate[i - 1][1]
                 candidate[i + 1], _ = _foot(candidate[i + 1], (x, y), (x - dy, y + dx), infinite=True)
+            elif snaps[i] is None:
+                # The far end is fixed (a wall's end, a column): the free corner moves instead,
+                # along the segment that leads to it, to where it faces that end squarely.
+                candidate[i], _ = _foot(candidate[i + 1], candidate[i - 1], candidate[i], infinite=True)
     elif square and not _square_closed(candidate, snaps):
         return False
 

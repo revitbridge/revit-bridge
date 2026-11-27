@@ -299,7 +299,9 @@ def test_squaring_preserves_snapped_corners_and_leaves_a_fixed_end_in_place():
     # Coordinates are given to a thousandth of a millimetre: over sides of about two metres the
     # dot product of a right angle may be off by a few square millimetres (about 1e-6 radians).
     assert (b["x"] - a["x"]) * (c["x"] - b["x"]) + (b["y"] - a["y"]) * (c["y"] - b["y"]) == pytest.approx(0, abs=5)
-    assert out["lines"][1]["points"] == [{"x": 0, "y": 2000}, {"x": 2100, "y": 2000}, corner]
+    # The second line ends on the column: that end stays, and the free corner before it moves
+    # along the first segment to face it squarely.
+    assert out["lines"][1]["points"] == [{"x": 0, "y": 2000}, {"x": 2000, "y": 2000}, corner]
 
 
 def test_rectangle_is_square_in_the_axes_of_a_rotated_view():
@@ -625,12 +627,43 @@ def test_nonfinite_closed_corner_discards_the_entire_candidate(monkeypatch):
     assert points == corners
 
 
-def test_a_fixed_corner_that_cannot_be_squared_rolls_back_the_first_edge_too():
+def test_a_free_corner_before_a_fixed_end_moves_to_face_that_end_squarely():
+    # An L that ends on a column: the end cannot move, so the corner does, along the first segment.
     corners = [(0, 0), (3000, 120), (3090, 2000)]
     column = {"id": "32", "point": [3090 / FEET, 2000 / FEET]}
     line, = resolve([drawn(*corners)], walls=[], columns=[column])["lines"]
-    assert line["points"] == [{"x": 0, "y": 0}, {"x": 3000, "y": 120},
+    assert line["points"] == [{"x": 0, "y": 0}, {"x": 3090, "y": 0},
                               {"x": 3090, "y": 2000, "snap": {"kind": "column", "element_id": 32}}]
+
+
+def test_an_l_from_one_wall_end_to_another_is_two_segments_along_the_axes():
+    # The commonest stroke: joining the ends of two walls with an L, the corner drawn by hand.
+    walls = [{"id": "41", "straight": True, "a": [-2000 / FEET, 0.0], "b": [0.0, 0.0]},
+             {"id": "42", "straight": True, "a": [3000 / FEET, 2000 / FEET], "b": [3000 / FEET, 5000 / FEET]}]
+    for corner in ((3100, 40), (3060, -50), (2950, 30), (3020, 40)):
+        line, = resolve([drawn((0, 0), corner, (3000, 2000))], walls=walls)["lines"]
+        assert line["points"] == [{"x": 0, "y": 0, "snap": {"kind": "wall_end", "wall_id": 41}}, {"x": 3000, "y": 0},
+                                  {"x": 3000, "y": 2000, "snap": {"kind": "wall_end", "wall_id": 42}}], corner
+
+
+@pytest.mark.parametrize("ending", ["wall_end", "column"])
+def test_hand_drawn_ls_between_two_fixed_points_come_out_square(ending):
+    walls = [{"id": "41", "straight": True, "a": [-2000 / FEET, 0.0], "b": [0.0, 0.0]}]
+    targets = {"walls": walls}
+    if ending == "wall_end":
+        walls.append({"id": "42", "straight": True, "a": [3000 / FEET, 2000 / FEET], "b": [3000 / FEET, 5000 / FEET]})
+    else:
+        targets["columns"] = [{"id": "43", "point": [3000 / FEET, 2000 / FEET]}]
+    rng = random.Random(11)
+    square = 0
+    for _ in range(150):
+        corner = (3000 + rng.uniform(-110, 110), rng.uniform(-110, 110))
+        end = (3000 + rng.uniform(-60, 60), 2000 + rng.uniform(-60, 60))
+        line, = resolve([drawn((rng.uniform(-60, 60), rng.uniform(-60, 60)), corner, end)], **targets)["lines"]
+        points = [(p["x"], p["y"]) for p in line["points"]]
+        assert points[0] == (0, 0) and points[-1] == (3000, 2000), points          # both ends took their snaps
+        square += points == [(0, 0), (3000, 0), (3000, 2000)]
+    assert square >= 147, square                                                   # as the released version did
 
 
 @pytest.mark.parametrize("targets,start_snap", [
