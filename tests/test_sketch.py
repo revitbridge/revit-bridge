@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import math
 import random
 
 import pytest
@@ -40,7 +41,7 @@ def run(handler, fn, *args, **kwargs):
     return asyncio.run(go())
 
 
-def addin(*, frames=None, walls=WALLS, complete=True, walls_error=None):
+def addin(*, frames=None, walls=WALLS, grids=(), columns=(), framing=(), legacy=False, complete=True, walls_error=None):
     frames = list(frames or [RAW])
 
     def handler(request):
@@ -56,7 +57,10 @@ def addin(*, frames=None, walls=WALLS, complete=True, walls_error=None):
         assert params["parameters"] == ["example-view", "example-document"]
         if walls_error:
             return FakeRevit.code_result(request["id"], None, success=False, error=walls_error)
-        return FakeRevit.code_result(request["id"], {"walls": walls, "complete": complete})
+        result = {"walls": walls, "complete": complete}
+        if not legacy:
+            result.update(grids=grids, columns=columns, framing=framing)
+        return FakeRevit.code_result(request["id"], result)
     return handler
 
 
@@ -154,7 +158,8 @@ def test_the_block_names_every_line_and_how_to_use_it():
     assert text == ("Designer's sketch (drawn by the designer on a capture of the plan view \"L1\", level \"L1\"; the host "
                     "converted it to model coordinates, x and y in millimetres): line 1 from (-3000, 5000) [the end of wall "
                     "id 11] to (0, 5000) [on wall id 12], length 3000 mm; polyline 2 (2 segments) from (-5000, 2000) to "
-                    "(-2640, 2000) to (-2640, 40), length 4320 mm. These coordinates are the designer's own input: use them "
+                    "(-2640, 2000) to (-2640, 40), length 4320 mm. For walls along a polyline use create_walls_by_points "
+                    "with points as \"x,y;x,y;...\" in millimetres. These coordinates are the designer's own input: use them "
                     "as given, with source designer and evidence naming the line, e.g. \"sketch line 1 start\". A level name is "
                     "not: read it from Revit (source tool).")
     assert sketch.sketch_block({"lines": []}) == ""
@@ -177,3 +182,164 @@ def test_capture_for_sketch_refuses_a_view_that_moved_or_is_not_a_plan(tmp_path)
     out, requests = run(addin(frames=[{**RAW, "view_type": "ThreeD"}]), sketch.capture_for_sketch, 1600, ledger=ledger)
     assert out["error"] == "unsupported_view" and "plan view" in out["hint"]
     assert not any(r["method"] == "export_view_image_in_revit" for r in requests)    # nothing was exported
+
+
+def drawn(*points):
+    return [sketch.pixel_of(FRAME, 1600, 800, x, y) for x, y in points]
+
+
+# Only the extensions of these two grid segments cross, at (0, 0).
+GRIDS = [{"name": "A", "a": [4, 0], "b": [7, 0]}, {"name": "1", "a": [0, 4], "b": [0, 7]}]
+COLUMN = {"id": "123", "point": [0, 0]}
+BEAM = {"id": "456", "a": [0, 0], "b": [5, 5]}
+
+
+@pytest.mark.parametrize("targets,hit,miss,snap,label", [
+    ({"grids": GRIDS}, (140, 140), (260, 260), {"kind": "grid_intersection", "grids": ["1", "A"]},
+     "[the crossing of grids 1 and A]"),
+    ({"columns": [COLUMN]}, (0, 240), (0, 260), {"kind": "column", "element_id": 123}, "[column id 123]"),
+    ({"framing": [BEAM]}, (0, 240), (0, 260), {"kind": "element_end", "element_id": 456}, "[the end of element id 456]"),
+    ({"grids": GRIDS[:1]}, (0, 240), (0, 260), {"kind": "on_grid", "grid": "A"}, "[on grid A]"),
+])
+def test_snap_tolerance_and_block_text_for_new_targets(targets, hit, miss, snap, label):
+    out = resolve([drawn(hit, (3030, 2410)), drawn(miss, (3030, 2410))], walls=[], **targets)
+    assert out["lines"][0]["points"][0] == {"x": 0, "y": 0, "snap": snap}
+    assert "snap" not in out["lines"][1]["points"][0]
+    assert "(0, 0) " + label in sketch.sketch_block(out)
+
+
+def test_points_beat_lines_and_the_nearest_point_wins_with_wall_ends_first_on_ties():
+    wall = {"id": "17", "a": [0, 0], "b": [-2, -3], "straight": True}
+    column = {"id": "18", "point": [210 / FEET, 0]}
+    out = resolve([drawn((20, 0), (3030, 2410)), drawn((190, 0), (3030, 2410))],
+                  walls=[wall], grids=GRIDS, columns=[column])
+    assert [line["points"][0]["snap"] for line in out["lines"]] == [
+        {"kind": "wall_end", "wall_id": 17}, {"kind": "column", "element_id": 18}]
+
+
+def test_parallel_grids_have_no_crossing_and_the_nearest_line_wins():
+    parallel = [GRIDS[0], {"name": "B", "a": [4, 200 / FEET], "b": [7, 200 / FEET]}]
+    wall = {"id": "19", "a": [-5, 100 / FEET], "b": [5, 100 / FEET], "straight": True}
+    out = resolve([drawn((0, 180), (3030, 2410)), drawn((0, 90), (3030, 2410))], walls=[wall], grids=parallel)
+    assert [line["points"][0] for line in out["lines"]] == [
+        {"x": 0, "y": 200, "snap": {"kind": "on_grid", "grid": "B"}},
+        {"x": 0, "y": 100, "snap": {"kind": "on_wall", "wall_id": 19}}]
+
+
+@pytest.mark.parametrize("target,snap", [
+    ({"walls": [], "grids": GRIDS[:1]}, {"kind": "on_grid", "grid": "A"}),
+    ({"walls": [{"id": "20", "a": [-6, 0], "b": [6, 0], "straight": True}]}, {"kind": "on_wall", "wall_id": 20}),
+])
+def test_a_segment_from_a_column_meets_a_line_target_at_a_right_angle(target, snap):
+    out = resolve([drawn((0, 2010), (180, 30))], columns=[{"id": "21", "point": [0, 2000 / FEET]}], **target)
+    assert out["lines"][0]["points"] == [
+        {"x": 0, "y": 2000, "snap": {"kind": "column", "element_id": 21}}, {"x": 0, "y": 0, "snap": snap}]
+
+
+def test_one_read_for_all_strokes_and_wall_only_replies_still_work():
+    strokes = [[[310, 108], [590, 90]], drawn((2000, 500), (4000, 1500))]
+
+    async def go(client):
+        return await sketch.resolve_sketch(RevitQueryExecutor(client), FRAME, 1600, 800, strokes)
+
+    out, requests = run(addin(complete=False), go)
+    assert len([r for r in requests if r["method"] == "send_code_to_revit"]) == 1
+    assert out == resolve(strokes, legacy=True, complete=False)
+    assert out["warnings"]
+
+
+def test_jittered_box_closes_once_and_its_length_includes_the_fourth_edge():
+    stroke = drawn((1000, 1000), (4010, 1100), (3980, 3040), (920, 3000), (1060, 1050))
+    out = resolve([stroke], walls=[])
+    assert out["lines"] == [{
+        "line": 1, "closed": True, "length_mm": 2 * (3010 + 2040),
+        "points": [{"x": 1000, "y": 1000}, {"x": 4010, "y": 1000}, {"x": 4010, "y": 3040}, {"x": 1000, "y": 3040}],
+        "pixels": drawn((1000, 1000), (4010, 1000), (4010, 3040), (1000, 3040)),
+    }]
+    text = sketch.sketch_block(out)
+    assert ("closed polyline 1 (4 segments) through (1000, 1000) to (4010, 1000) to (4010, 3040) to "
+            "(1000, 3040), length 10100 mm. For walls along a polyline use create_walls_by_points with points as "
+            "\"x,y;x,y;...\" in millimetres, and closed true for a closed line. These coordinates") in text
+
+
+def test_closure_uses_the_drawn_distance_including_the_tolerance_boundary():
+    for gap, closed in ((250, True), (251, False)):
+        stroke = drawn((0, 0), (2300, 0), (1100, 2000), (0, gap))
+        line, = resolve([stroke], walls=[])["lines"]
+        assert ("closed" in line) == closed
+        assert len(line["points"]) == (3 if closed else 4)
+
+
+def test_an_open_l_is_squared_and_an_oblique_bend_is_left_as_drawn():
+    out = resolve([drawn((0, 0), (2000, 100), (2100, 1600)), drawn((0, 0), (2000, 0), (3000, 1732))], walls=[])
+    square, oblique = out["lines"]
+    assert square["points"] == [{"x": 0, "y": 0}, {"x": 2000, "y": 0}, {"x": 2000, "y": 1600}]
+    assert oblique["points"] == [{"x": 0, "y": 0}, {"x": 2000, "y": 0}, {"x": 3000, "y": 1732}]
+    assert "closed" not in square and "closed" not in oblique
+    assert sketch.sketch_block(out).count("For walls along a polyline") == 1
+
+
+def test_squaring_preserves_snapped_corners_and_leaves_a_fixed_end_in_place():
+    column = {"id": "26", "point": [2000 / FEET, 100 / FEET]}
+    out = resolve([drawn((0, 0), (1980, 80), (2100, 1600)), drawn((0, 2000), (2100, 2000), (1980, 80))],
+                  walls=[], columns=[column])
+    corner = {"x": 2000, "y": 100, "snap": {"kind": "column", "element_id": 26}}
+    a, b, c = out["lines"][0]["points"]
+    assert b == corner and a == {"x": 0, "y": 0}
+    # Coordinates are given to a thousandth of a millimetre: over sides of about two metres the
+    # dot product of a right angle may be off by a few square millimetres (about 1e-6 radians).
+    assert (b["x"] - a["x"]) * (c["x"] - b["x"]) + (b["y"] - a["y"]) * (c["y"] - b["y"]) == pytest.approx(0, abs=5)
+    assert out["lines"][1]["points"] == [{"x": 0, "y": 2000}, {"x": 2100, "y": 2000}, corner]
+
+
+def test_rectangle_is_square_in_the_axes_of_a_rotated_view():
+    angle = math.radians(28)
+    frame = {**FRAME, "right": [math.cos(angle), math.sin(angle)], "up": [-math.sin(angle), math.cos(angle)]}
+    stroke = [[400, 200], [710, 208], [703, 455], [391, 450], [407, 203]]
+
+    async def go(client):
+        return await sketch.resolve_sketch(RevitQueryExecutor(client), frame, 1600, 800, [stroke])
+
+    out, _ = run(addin(walls=[]), go)
+    box, = out["lines"]
+    assert box["closed"] and box["pixels"] == [[400, 200], [710, 200], [710, 455], [400, 455]]
+    assert box["length_mm"] == 2 * (3100 + 2550)
+    pts = [(p["x"], p["y"]) for p in box["points"]]
+    for i, (x, y) in enumerate(pts):
+        a, b = pts[i - 1], pts[(i + 1) % 4]
+        assert (a[0] - x) * (b[0] - x) + (a[1] - y) * (b[1] - y) == pytest.approx(0, abs=5)     # thousandths, as above
+
+
+def test_a_fixed_last_corner_sets_the_height_of_the_rectangle():
+    stroke = drawn((1000, 1000), (4000, 1100), (3980, 3040), (920, 3000), (1060, 1050))
+    column = {"id": "27", "point": [1000 / FEET, 3000 / FEET]}
+    box, = resolve([stroke], walls=[], columns=[column])["lines"]
+    assert box["closed"] and box["length_mm"] == 10000
+    assert box["points"] == [{"x": 1000, "y": 1000}, {"x": 4000, "y": 1000}, {"x": 4000, "y": 3000},
+                             {"x": 1000, "y": 3000, "snap": {"kind": "column", "element_id": 27}}]
+
+
+def test_single_segments_have_no_polyline_guidance():
+    out = resolve([drawn((0, 0), (2000, 500)), drawn((500, 500), (4000, 1500))], walls=[])
+    assert "create_walls_by_points" not in sketch.sketch_block(out)
+
+
+def test_a_short_line_along_the_wall_it_starts_from_keeps_its_length():
+    # From the end of wall 11 (-3000, 5000) back along that wall: nothing to meet at a right angle.
+    out = resolve([[[300, 100], [301, 140]]])
+    first, second = out["lines"][0]["points"]
+    assert first["snap"] == {"kind": "wall_end", "wall_id": 11} and second["snap"] == {"kind": "on_wall", "wall_id": 11}
+    assert (first["x"], first["y"]) == (-3000, 5000) and (second["x"], second["y"]) == (-3000, 4600)
+    assert out["lines"][0]["length_mm"] == 400
+
+
+def test_a_box_drawn_between_pixels_comes_out_on_whole_millimetres():
+    # Real captures give fractional pixels: the squared corners must not carry long decimals.
+    box = [[400.37, 300.21], [700.64, 303.4], [698.2, 500.77], [403.9, 498.3], [401.1, 303.0]]
+    (line,) = resolve([box])["lines"]
+    assert line.get("closed") is True and len(line["points"]) == 4
+    for point in line["points"]:
+        assert type(point["x"]) is int and type(point["y"]) is int, point
+    xs = sorted({p["x"] for p in line["points"]})
+    ys = sorted({p["y"] for p in line["points"]})
+    assert len(xs) == 2 and len(ys) == 2                          # an axis-aligned rectangle

@@ -15,14 +15,17 @@ being guessed from the image by a model.
     millimetres: a stroke that is nearly straight - however shakily or often it was drawn
     over - is one segment, anything else a simplified polyline.
 ``resolve_sketch(executor, frame, width, height, strokes)``
-    ``sketch_lines`` snapped to the walls of that view: an end within the tolerance of a
-    wall's end takes it (``wall_end``), else of a wall's centre line a point on it
-    (``on_wall``); a segment from a wall's end to another wall meets that wall at a right
-    angle when that is what was nearly drawn, and a free segment that is nearly parallel to
-    the view's axes is made parallel. Reads the model once; raises RevitQueryError when
-    the view of the frame is no longer there. ``{view_name, level, lines: [{line, points:
-    [{x, y, snap?}], length_mm, pixels}], tolerance_mm, warnings}``; ``pixels`` are the same
-    points on the capture, for a host that draws what was understood over the picture.
+    ``sketch_lines`` snapped to the nearest wall end (``wall_end``), crossing of straight
+    grids (``grid_intersection``), column location (``column``) or framing end (``element_end``)
+    within tolerance. Otherwise a point can snap to a straight wall's centre line
+    (``on_wall``) or a straight grid (``on_grid``). A segment from a point target to a wall
+    or grid meets it at a right angle when that is what was nearly drawn. A free segment
+    nearly parallel to the view's axes is made parallel. Polylines that return within
+    tolerance of their start are closed. Nearly square corners are squared with snapped
+    vertices fixed. Reads the model once; raises RevitQueryError when the view of the frame
+    is no longer there. ``{view_name, level, lines: [{line, points: [{x, y, snap?}],
+    length_mm, pixels, closed?}], tolerance_mm, warnings}``; model and pixel points list
+    each corner once, and the length includes the closing edge of a closed line.
 ``sketch_block(resolved)``
     The fixed text a host appends to the designer's message.
 
@@ -31,6 +34,7 @@ Nothing here writes to the model, and no image is read: only the pixel coordinat
 from __future__ import annotations
 
 import math
+from itertools import combinations
 
 from revit_bridge import view_commands
 from revit_bridge.evidence.ledger import LOCAL_SCOPE
@@ -45,6 +49,7 @@ MIN_STROKE_PX = 6              # shorter than this is a click, not a line
 SNAP_PX = 14                   # the snap tolerance, in pixels of the capture ...
 SNAP_MIN_MM = 250              # ... and never less than this in the model
 AXIS_DEGREES = 6               # a free segment this close to an axis of the view is made parallel
+RIGHT_ANGLE_DEGREES = 8
 FEET_MM = 304.8
 
 _FRAME = """
@@ -66,22 +71,41 @@ return new {
     direction = new double[] { direction.X, direction.Y, direction.Z } };
 """
 
-_WALLS = """
+_TARGETS = """
 View view = document.GetElement((string)parameters[0]) as View;
 if (view == null || document.GetHashCode().ToString() != (string)parameters[1])
     throw new InvalidOperationException("The view of the sketch is no longer open; capture the view again.");
 var timer = System.Diagnostics.Stopwatch.StartNew();
 var walls = new List<object>();
+var grids = new List<object>();
+var columns = new List<object>();
+var framing = new List<object>();
+var columnCategories = new ElementMulticategoryFilter(new List<BuiltInCategory> {
+    BuiltInCategory.OST_StructuralColumns, BuiltInCategory.OST_Columns });
+var filter = new LogicalOrFilter(new List<ElementFilter> {
+    new ElementClassFilter(typeof(Wall)), new ElementClassFilter(typeof(Grid)),
+    columnCategories, new ElementCategoryFilter(BuiltInCategory.OST_StructuralFraming) });
+double[] XY(XYZ p) => new double[] { p.X, p.Y };
 bool complete = true;
-foreach (Element e in new FilteredElementCollector(document, view.Id).OfClass(typeof(Wall))) {
-    if (timer.ElapsedMilliseconds >= 800 || walls.Count >= 5000) { complete = false; break; }
-    LocationCurve location = e.Location as LocationCurve;
-    if (location?.Curve == null) continue;
-    XYZ a = location.Curve.GetEndPoint(0), b = location.Curve.GetEndPoint(1);
-    walls.Add(new { id = e.Id.ToString(), straight = location.Curve is Line,
-                    a = new double[] { a.X, a.Y }, b = new double[] { b.X, b.Y } });
+foreach (Element e in new FilteredElementCollector(document, view.Id).WherePasses(filter).WhereElementIsNotElementType()) {
+    if (timer.ElapsedMilliseconds >= 800 || walls.Count + grids.Count + columns.Count + framing.Count >= 5000) {
+        complete = false;
+        break;
+    }
+    if (e is Grid grid) {
+        if (grid.Curve is Line axis && axis.IsBound)
+            grids.Add(new { name = grid.Name, a = XY(axis.GetEndPoint(0)), b = XY(axis.GetEndPoint(1)) });
+    } else if (columnCategories.PassesFilter(e)) {
+        if (e.Location is LocationPoint location)
+            columns.Add(new { id = e.Id.ToString(), point = XY(location.Point) });
+    } else if ((e.Location as LocationCurve)?.Curve is Curve curve && curve.IsBound) {
+        var a = XY(curve.GetEndPoint(0));
+        var b = XY(curve.GetEndPoint(1));
+        if (e is Wall) walls.Add(new { id = e.Id.ToString(), straight = curve is Line, a, b });
+        else framing.Add(new { id = e.Id.ToString(), a, b });
+    }
 }
-return new { walls, complete };
+return new { walls, grids, columns, framing, complete };
 """
 
 
@@ -225,103 +249,249 @@ def sketch_lines(frame: dict, width: int, height: int, strokes) -> list[list[tup
     return lines
 
 
-# -- snapping to walls -------------------------------------------------------------------------
+# -- snapping to model geometry ----------------------------------------------------------------
 
-def _foot(point, a, b):
-    """The nearest point to ``point`` on the segment a-b, and its distance."""
+def _xy(row, key):
+    value = row.get(key)
+    if _numbers(value, 2):
+        return (value[0] * FEET_MM, value[1] * FEET_MM)
+    return None
+
+
+def _targets(data):
+    """Point targets (wall ends first for ties), straight wall segments and infinite grid lines."""
+    ends, walls, grids = [], {}, {}
+    for group, kind, id_key in (("walls", "wall_end", "wall_id"), ("framing", "element_end", "element_id")):
+        for row in data.get(group, []):
+            number = element_id_or_none(row.get("id")) if isinstance(row, dict) else None
+            if number is None:
+                continue
+            a, b = _xy(row, "a"), _xy(row, "b")
+            if a is not None and b is not None:
+                snap = {"kind": kind, id_key: number}
+                ends.extend(((a, snap), (b, snap)))
+                if group == "walls" and row.get("straight") is True:
+                    walls[number] = (a, b)
+    for row in data.get("columns", []):
+        number = element_id_or_none(row.get("id")) if isinstance(row, dict) else None
+        if number is not None and (point := _xy(row, "point")) is not None:
+            ends.append((point, {"kind": "column", "element_id": number}))
+    for row in data.get("grids", []):
+        if isinstance(row, dict) and isinstance(row.get("name"), str):
+            a, b = _xy(row, "a"), _xy(row, "b")
+            if a is not None and b is not None and a != b:
+                grids[row["name"]] = (a, b)
+    return ends, walls, grids
+
+
+def _foot(point, a, b, *, infinite=False):
+    """The nearest point on a-b and its distance. Only grid lines extend beyond their ends."""
     dx, dy = b[0] - a[0], b[1] - a[1]
     span = dx * dx + dy * dy
-    t = 0.0 if not span else max(0.0, min(1.0, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / span))
+    t = ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / span if span else 0.0
+    if not infinite:
+        t = max(0.0, min(1.0, t))
     foot = (a[0] + dx * t, a[1] + dy * t)
     return foot, math.hypot(point[0] - foot[0], point[1] - foot[1])
 
 
-def _snap(point, walls, tolerance):
-    best = None
-    for wall in walls:
-        for end in (wall["a"], wall["b"]):
-            distance = math.hypot(point[0] - end[0], point[1] - end[1])
-            if distance <= tolerance and (best is None or distance < best[0]):
-                best = (distance, end, {"kind": "wall_end", "wall_id": wall["id"]})
-    if best:
-        return best[1], best[2]
-    for wall in walls:
-        if not wall["straight"]:
-            continue
-        foot, distance = _foot(point, wall["a"], wall["b"])
-        if distance <= tolerance and (best is None or distance < best[0]):
-            best = (distance, foot, {"kind": "on_wall", "wall_id": wall["id"]})
-    return (best[1], best[2]) if best else (point, None)
+def _crossing(a, b, c, d):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    ex, ey = d[0] - c[0], d[1] - c[1]
+    if math.isclose(dx * ey, dy * ex, rel_tol=1e-14):
+        return None
+    t = ((c[0] - a[0]) * ey - (c[1] - a[1]) * ex) / (dx * ey - dy * ex)
+    return a[0] + t * dx, a[1] + t * dy
 
 
-def _square_up(points, snaps, walls, frame, tolerance):
-    """Tidy each segment after snapping (see the module)."""
-    by_id = {wall["id"]: wall for wall in walls}
+def _snap(point, ends, walls, grids, tolerance):
+    best_distance = math.inf
+    best = (point, None)
+    for end, snap in ends:
+        distance = math.dist(point, end)
+        if distance == 0:
+            return end, snap
+        if distance <= tolerance and distance < best_distance:
+            best_distance, best = distance, (end, snap)
+
+    # A crossing within tolerance must lie on two grids that both pass within tolerance.
+    nearby = {}
+    for name, axis in grids.items():
+        foot, distance = _foot(point, *axis, infinite=True)
+        if distance <= tolerance and distance < best_distance:
+            nearby[name] = (foot, distance)
+    for first, second in combinations(nearby, 2):
+        crossing = _crossing(*grids[first], *grids[second])
+        if crossing is not None:
+            distance = math.dist(point, crossing)
+            if distance <= tolerance and distance < best_distance:
+                best_distance = distance
+                best = (crossing, {"kind": "grid_intersection", "grids": sorted((first, second))})
+                if distance == 0:
+                    return best
+    if best[1] is not None:
+        return best
+
+    for number, segment in walls.items():
+        foot, distance = _foot(point, *segment)
+        if distance <= tolerance and distance < best_distance:
+            best_distance, best = distance, (foot, {"kind": "on_wall", "wall_id": number})
+    for name, (foot, distance) in nearby.items():
+        if distance < best_distance:
+            best_distance, best = distance, (foot, {"kind": "on_grid", "grid": name})
+    return best
+
+
+def _axis_end(anchor, end, frame):
     limit = math.tan(math.radians(AXIS_DEGREES))
-    for i in range(len(points) - 1):
-        for fixed, loose in ((i, i + 1), (i + 1, i)):
-            # From a wall's end to a point on another wall: meet that wall at a right angle,
-            # when the foot of the perpendicular is where the designer nearly drew to.
-            if (snaps[fixed] or {}).get("kind") == "wall_end" and (snaps[loose] or {}).get("kind") == "on_wall":
-                wall = by_id[snaps[loose]["wall_id"]]
-                foot, _ = _foot(points[fixed], wall["a"], wall["b"])
-                if math.hypot(foot[0] - points[loose][0], foot[1] - points[loose][1]) <= 2 * tolerance:
-                    points[loose] = foot
-        if snaps[i] is None or snaps[i + 1] is None:
-            # A free end: a segment nearly along an axis of the view runs along it.
-            # Where the line began stays, unless only the beginning is free.
-            moving, anchor = (i + 1, i) if snaps[i + 1] is None else (i, i + 1)
-            dx, dy = points[moving][0] - points[anchor][0], points[moving][1] - points[anchor][1]
-            along = dx * frame["right"][0] + dy * frame["right"][1]
-            across = dx * frame["up"][0] + dy * frame["up"][1]
-            if along and abs(across / along) <= limit:
-                across = 0.0
-            elif across and abs(along / across) <= limit:
-                along = 0.0
-            else:
-                continue
-            if snaps[i] is None and snaps[i + 1] is None and len(points) > 2:
-                continue                                       # a free corner of a polyline stays where it was drawn
-            points[moving] = (points[anchor][0] + along * frame["right"][0] + across * frame["up"][0],
-                              points[anchor][1] + along * frame["right"][1] + across * frame["up"][1])
+    dx, dy = end[0] - anchor[0], end[1] - anchor[1]
+    along = dx * frame["right"][0] + dy * frame["right"][1]
+    across = dx * frame["up"][0] + dy * frame["up"][1]
+    if along and abs(across / along) <= limit:
+        axis, distance = frame["right"], along
+    elif across and abs(along / across) <= limit:
+        axis, distance = frame["up"], across
+    else:
+        return end
+    return anchor[0] + axis[0] * distance, anchor[1] + axis[1] * distance
+
+
+def _square_up(points, snaps, walls, grids, frame, tolerance):
+    """Align a single segment to the view or to the wall or grid at its loose end."""
+    if None in snaps:
+        moving = 1 if snaps[1] is None else 0
+        points[moving] = _axis_end(points[1 - moving], points[moving], frame)
+        return
+    for fixed, loose in ((0, 1), (1, 0)):
+        if snaps[fixed]["kind"] not in ("wall_end", "grid_intersection", "column", "element_end"):
+            continue
+        snap = snaps[loose]
+        if snap["kind"] == "on_wall":
+            if snaps[fixed].get("wall_id") == snap["wall_id"]:
+                continue                       # along the wall it starts from: no perpendicular to drop
+            foot, _ = _foot(points[fixed], *walls[snap["wall_id"]])
+        elif snap["kind"] == "on_grid":
+            foot, _ = _foot(points[fixed], *grids[snap["grid"]], infinite=True)
+        else:
+            continue
+        if math.dist(foot, points[loose]) <= 2 * tolerance:
+            points[loose] = foot
+
+
+def _nearly_square(incoming, outgoing):
+    dx, dy = incoming
+    ex, ey = outgoing
+    lengths = math.hypot(dx, dy) * math.hypot(ex, ey)
+    return lengths > 0 and abs(dx * ex + dy * ey) <= lengths * math.sin(math.radians(RIGHT_ANGLE_DEGREES))
+
+
+def _square_polyline(points, snaps, frame, closed):
+    """Use the angles before any edits to decide which corners to square."""
+    edge_ends = list(range(1, len(points)))
+    if closed:
+        edge_ends.append(0)
+    directions = [(points[j][0] - a[0], points[j][1] - a[1]) for a, j in zip(points, edge_ends)]
+    square = [_nearly_square(directions[i - 1], direction) for i, direction in enumerate(directions)]
+    square[0] = closed and square[0]
+    if not any(square):
+        return False
+
+    if snaps[0] is None and snaps[1] is None:
+        points[1] = _axis_end(points[0], points[1], frame)
+        directions[0] = (points[1][0] - points[0][0], points[1][1] - points[0][1])
+    if not closed:
+        # Walk in drawing order. If a snap fixes the next vertex, its actual incoming
+        # direction becomes the reference for the following corner.
+        for i in range(1, len(directions)):
+            if square[i] and snaps[i + 1] is None:
+                x, y = points[i]
+                dx, dy = x - points[i - 1][0], y - points[i - 1][1]
+                if dx or dy:
+                    points[i + 1], _ = _foot(points[i + 1], (x, y), (x - dy, y + dx), infinite=True)
+        return True
+
+    # A closed path must fit both sides of the join. Carry the first edge's direction
+    # through each run of square corners, including the run that leads back to the start.
+    for i in range(1, len(directions)):
+        if square[i]:
+            dx, dy = directions[i - 1]
+            directions[i] = (-dy, dx)
+    for i in reversed(range(1, len(directions))):
+        j = edge_ends[i]
+        if not square[j]:
+            break
+        dx, dy = directions[j]
+        directions[i] = (-dy, dx)
+
+    edges = []
+    for i, (dx, dy) in enumerate(directions):
+        j = edge_ends[i]
+        anchor = points[j] if j == 0 or snaps[j] is not None else points[i]
+        edges.append((anchor, (anchor[0] + dx, anchor[1] + dy)))
+    for i in range(1, len(points)):
+        if snaps[i] is not None:
+            continue
+        corner = _crossing(*edges[i - 1], *edges[i])
+        if corner is not None:
+            points[i] = corner
+    return True
+
+
+def _whole_mm(point, frame):
+    right, up = frame["right"], frame["up"]
+    u = round(point[0] * right[0] + point[1] * right[1])
+    v = round(point[0] * up[0] + point[1] * up[1])
+    return right[0] * u + up[0] * v, right[1] * u + up[1] * v
+
+
+def _coordinate_mm(value, squared):
+    # Whole millimetres, except where squaring put a corner between them (a view that is turned,
+    # or a corner tied to a snapped point that is not on a whole millimetre): rounding such a
+    # corner would make the right angle slightly oblique, so it keeps thousandths.
+    if squared:
+        value = round(value, 3)
+        if value != round(value):
+            return value
+    return round(value)
 
 
 async def resolve_sketch(executor: RevitQueryExecutor, frame: dict, width: int, height: int, strokes) -> dict:
-    """The designer's strokes as model lines snapped to the view's walls (see the module).
+    """The designer's strokes as model lines snapped to elements in the view (see the module).
     ``{"error": "invalid_args", "message"}`` for strokes that cannot be read."""
     try:
         lines = sketch_lines(frame, width, height, strokes)
     except ValueError as exc:
         return {"error": "invalid_args", "message": str(exc)}
-    response = await executor.client.send_code(_WALLS, parameters=[frame["view_uid"], frame["document_id"]])
+    response = await executor.client.send_code(_TARGETS, parameters=[frame["view_uid"], frame["document_id"]])
     data = response.result
     if not response.success or not isinstance(data, dict) or not isinstance(data.get("walls"), list):
         raise RevitQueryError(response.error or "Could not read the walls of the view")
-    walls = []
-    for row in data["walls"]:
-        number = element_id_or_none(row.get("id")) if isinstance(row, dict) else None
-        if number is None or not _numbers(row.get("a"), 2) or not _numbers(row.get("b"), 2):
-            continue
-        walls.append({"id": number, "straight": row.get("straight") is True,
-                      "a": (row["a"][0] * FEET_MM, row["a"][1] * FEET_MM),
-                      "b": (row["b"][0] * FEET_MM, row["b"][1] * FEET_MM)})
+    ends, walls, grids = _targets(data)
     per_pixel = (frame["u"][1] - frame["u"][0]) / width
     tolerance = max(SNAP_MIN_MM, SNAP_PX * per_pixel)
     out = []
     for number, line in enumerate(lines, start=1):
+        closed = len(line) >= 4 and math.dist(line[-1], line[0]) <= tolerance
         points, snaps = [], []
-        for point in line:
-            snapped, snap = _snap(point, walls, tolerance)
-            points.append(snapped)
+        for point in (line[:-1] if closed else line):
+            snapped, snap = _snap(point, ends, walls, grids, tolerance)
+            # A free point is where a hand was: whole millimetres along the axes of the view, so
+            # that what is squared from it along those axes stays on whole millimetres too.
+            points.append(snapped if snap else _whole_mm(snapped, frame))
             snaps.append(snap)
-        _square_up(points, snaps, walls, frame, tolerance)
-        length = sum(math.hypot(points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1])
-                     for i in range(len(points) - 1))
+        squared = False
+        if len(points) == 2:
+            _square_up(points, snaps, walls, grids, frame, tolerance)
+        else:
+            squared = _square_polyline(points, snaps, frame, closed)
+        length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
+        if closed:
+            length += math.dist(points[-1], points[0])
         if length < 1:
             return {"error": "invalid_args", "message": "A line has no length after snapping; draw it longer"}
-        out.append({"line": number, "length_mm": round(length),
-                    "points": [{"x": round(x), "y": round(y), **({"snap": snap} if snap else {})}
-                               for (x, y), snap in zip(points, snaps)],
+        out.append({"line": number, "length_mm": round(length), **({"closed": True} if closed else {}),
+                    "points": [{"x": _coordinate_mm(x, squared), "y": _coordinate_mm(y, squared),
+                                **({"snap": snap} if snap else {})} for (x, y), snap in zip(points, snaps)],
                     "pixels": [pixel_of(frame, width, height, x, y) for x, y in points]})
     warnings = [] if data.get("complete") is True else [
         "The view has more walls than one read covers; some ends may not have snapped."]
@@ -335,8 +505,19 @@ def _where(point) -> str:
     text = f"({point['x']}, {point['y']})"
     snap = point.get("snap")
     if snap:
-        text += (f" [the end of wall id {snap['wall_id']}]" if snap["kind"] == "wall_end"
-                 else f" [on wall id {snap['wall_id']}]")
+        kind = snap["kind"]
+        if kind == "wall_end":
+            return f"{text} [the end of wall id {snap['wall_id']}]"
+        if kind == "on_wall":
+            return f"{text} [on wall id {snap['wall_id']}]"
+        if kind == "grid_intersection":
+            return f"{text} [the crossing of grids {' and '.join(snap['grids'])}]"
+        if kind == "column":
+            return f"{text} [column id {snap['element_id']}]"
+        if kind == "element_end":
+            return f"{text} [the end of element id {snap['element_id']}]"
+        if kind == "on_grid":
+            return f"{text} [on grid {snap['grid']}]"
     return text
 
 
@@ -351,12 +532,22 @@ def sketch_block(resolved: dict) -> str:
     for line in lines:
         points = line["points"]
         path = " to ".join(_where(p) for p in points)
-        kind = (f"line {line['line']}" if len(points) == 2
-                else f"polyline {line['line']} ({len(points) - 1} segments)")
-        parts.append(f"{kind} from {path}, length {line['length_mm']} mm")
+        if line.get("closed"):
+            start = f"closed polyline {line['line']} ({len(points)} segments) through"
+        elif len(points) > 2:
+            start = f"polyline {line['line']} ({len(points) - 1} segments) from"
+        else:
+            start = f"line {line['line']} from"
+        parts.append(f"{start} {path}, length {line['length_mm']} mm")
+    guidance = ""
+    if any(len(line["points"]) > 2 for line in lines):
+        guidance = ' For walls along a polyline use create_walls_by_points with points as "x,y;x,y;..." in millimetres'
+        if any(line.get("closed") for line in lines):
+            guidance += ", and closed true for a closed line"
+        guidance += "."
     return (f"Designer's sketch (drawn by the designer on a capture of the plan view \"{name}\""
             + (f", level \"{level}\"" if level else "")
             + "; the host converted it to model coordinates, x and y in millimetres): " + "; ".join(parts)
-            + ". These coordinates are the designer's own input: use them as given, with source designer and "
+            + "." + guidance + " These coordinates are the designer's own input: use them as given, with source designer and "
               "evidence naming the line, e.g. \"sketch line 1 start\". A level name is not: read it from Revit "
               "(source tool).")

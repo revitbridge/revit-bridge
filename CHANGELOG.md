@@ -30,11 +30,17 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   after the export; a view that moved or is not a plan is refused).
   `resolve_sketch` converts strokes given in pixels of that capture into
   lines in millimetres: a stroke that is nearly straight, however shakily
-  or often drawn over, is one segment; ends snap to the ends and centre
-  lines of the view's walls, a line from a wall's end to another wall meets
-  it at a right angle, and a free line nearly along an axis of the view is
-  made parallel. `sketch_block` is the text a host appends to the
-  designer's message. No image is read and nothing is written to the model.
+  or often drawn over, is one segment. Corners snap to wall ends, grid
+  crossings, column locations and framing ends, then to straight wall
+  centre lines and grids. A segment drawn nearly perpendicular from a
+  point target to a wall or grid meets it squarely. A free line nearly
+  along an axis of the view is made parallel. Polylines that end within
+  tolerance of their start close. Nearly right-angled corners square up
+  around fixed snaps, including the four corners of a hand-drawn rectangle.
+  Closed lines return each corner once and include the closing edge in their
+  length. `sketch_block` gives the host text for the designer's message,
+  including how to use `create_walls_by_points` for a polyline. No image
+  is read and nothing is written to the model.
 
 ### Changed
 
