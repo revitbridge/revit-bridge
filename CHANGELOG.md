@@ -6,7 +6,7 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.12.0] - 2026-11-26
+## [0.12.0] - 2026-11-27
 
 ### Added
 
