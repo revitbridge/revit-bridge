@@ -23,7 +23,10 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   requires every corner to be within 8 degrees of a right angle. An outline
   with an oblique corner can align its first edge only when both ends are
   free. If squaring would move a corner too far, make a new short edge or
-  miss a right angle, the sketch keeps its snapped coordinates. `sketch_block`
+  miss a right angle, the sketch keeps its snapped coordinates. A free
+  corner before a snapped end moves along the segment that leads to it, to
+  face that end squarely: an L joining two wall ends is two segments
+  along the axes. `sketch_block`
   says how to pass a polyline to `create_walls_by_points`.
 
 ### Fixed
