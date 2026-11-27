@@ -1,0 +1,104 @@
+schema_version: 1
+name: create_level
+display_name: Create Level
+description: Create one level with a new, unique name at an elevation in mm. A floor plan can
+  also be created for the new level. Refusals (empty, invalid or taken name, elevation that is not a
+  number) stop the run and change nothing.
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  string levelName = "{name}";
+  string elevationText = "{elevation}";
+
+  if (string.IsNullOrWhiteSpace(levelName))
+      throw new InvalidOperationException("REFUSED: Give the new level a name.");
+  if (!NamingUtils.IsValidName(levelName))
+      throw new InvalidOperationException("REFUSED: \"" + levelName + "\" cannot be a level name: Revit does not allow characters such as : ; [ ] | < > ? ` ~ or braces in names.");
+  Level clash = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+      .FirstOrDefault(l => l.Name == levelName);
+  if (clash != null)
+      throw new InvalidOperationException("REFUSED: A level named \"" + levelName + "\" already exists. Choose another name.");
+
+  double elevationMm;
+  if (!double.TryParse(elevationText, System.Globalization.NumberStyles.Float, invariant, out elevationMm)
+      || double.IsNaN(elevationMm) || double.IsInfinity(elevationMm))
+      throw new InvalidOperationException("REFUSED: The elevation must be a number in mm, got \"" + elevationText + "\".");
+  double elevation = UnitUtils.ConvertToInternalUnits(elevationMm, UnitTypeId.Millimeters);
+  if (!XYZ.IsWithinLengthLimits(new XYZ(0, 0, elevation)))
+      throw new InvalidOperationException("REFUSED: The elevation " + elevationText + " mm is outside the model's limits.");
+
+  Level level = Level.Create(document, elevation);
+  try
+  {
+      level.Name = levelName;
+  }
+  catch (Autodesk.Revit.Exceptions.ArgumentException ex)
+  {
+      throw new InvalidOperationException("REFUSED: Revit refused the level name \"" + levelName + "\": " + ex.Message);
+  }
+
+  if (bool.Parse("{create_plan_view}"))
+  {
+      ElementId defaultPlan = document.GetDefaultElementTypeId(ElementTypeGroup.ViewTypeFloorPlan);
+      var planType = document.GetElement(defaultPlan) as ViewFamilyType;
+      if (planType == null || planType.ViewFamily != ViewFamily.FloorPlan)
+          throw new InvalidOperationException("REFUSED: No floor plan view type is available.");
+      ViewPlan.Create(document, planType.Id, level.Id);
+  }
+  return new
+  {
+      Status = "Created",
+      ElementId = long.Parse(level.Id.ToString(), invariant),
+      Name = level.Name,
+      // Level.Create takes the elevation from the model's internal origin: on Revit 2026, with a
+      // level type whose elevation base is the survey point, the input came back as ProjectElevation
+      // while Elevation (which follows the level type's elevation base) differed. Both are reported.
+      ElevationMm = Math.Round(UnitUtils.ConvertFromInternalUnits(level.Elevation, UnitTypeId.Millimeters), 1),
+      ProjectElevationMm = Math.Round(UnitUtils.ConvertFromInternalUnits(level.ProjectElevation, UnitTypeId.Millimeters), 1)
+  };
+parameters:
+  - name: name
+    type: string
+    description: Name of the new level; must not be used by another level
+    source: designer
+    required: true
+  - name: elevation
+    type: double
+    description: Elevation of the new level from the model's internal origin (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: create_plan_view
+    type: bool
+    description: "Also create a floor plan for the new level."
+    source: designer
+    required: false
+    default: false
+preconditions: []
+not_for:
+  - "rename level"
+  - "move level"
+  - "list levels"
+applies_when:
+  - "create level"
+  - "add level"
+  - "new level"
+validator:
+  kind: count_delta
+  category: OST_Levels
+  expected: 1
+fixtures:
+  - name: basic
+    params: {name: "L3", elevation: 6000}
+    expect: {Status: "Created"}
+  - name: with_plan
+    params: {"name":"L3","elevation":6000,"create_plan_view":true}
+    expect: {"Status":"Created"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-23T00:00:00"
+source_query: create a level

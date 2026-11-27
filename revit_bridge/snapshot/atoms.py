@@ -496,8 +496,11 @@ class AtomResolver:
 
     @staticmethod
     def _escape_cs_string(s: str) -> str:
-        """Escape a value before embedding it inside a C# string literal (P2-5)."""
-        return s.replace("\\", "\\\\").replace('"', '\\"')
+        """Escape a value before embedding it inside a C# string literal (P2-5): quotes,
+        backslashes and line ends, as for a capability pack's parameter values."""
+        # imported here: revit_bridge.capabilities imports this package (schema -> snapshot)
+        from revit_bridge.capabilities.store import escape_param_value
+        return escape_param_value(s)
 
     async def _i_pick_object(self, prompt: str | None) -> list[dict]:
         msg = self._escape_cs_string(prompt or "Please select an element")

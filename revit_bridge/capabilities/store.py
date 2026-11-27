@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
@@ -41,7 +42,9 @@ from revit_bridge.paths import (
     builtin_capabilities_dir,
     user_capabilities_dir,
 )
-from revit_bridge.capabilities.schema import PACK_SCHEMA_VERSION, validate_pack
+from revit_bridge.capabilities.schema import PACK_SCHEMA_VERSION, optional_element_pick, validate_pack
+from revit_bridge.capabilities.scalars import BARE_TYPES, NUMERIC_TYPES, bare_literal
+from revit_bridge.capabilities.template import CODE, PLACEHOLDER_RE, template_slots
 from revit_bridge.capabilities.usage import USAGE_FILE, UsageStore, empty_usage
 
 __all__ = [
@@ -59,14 +62,11 @@ _log = logging.getLogger("revit_bridge.capabilities.store")
 
 DISABLED_SUFFIX = ".disabled"
 
-# A ``{name}`` token in a code template; substituted by ``render``.
-PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_]\w*)\}")
-
 # Fields of a v1 pack file, in the order they are written. Parameter ``source``
 # values are "designer", "tool:<kind>", "answer" or "default".
 PACK_FIELDS = (
     "schema_version", "name", "display_name", "description", "version",
-    "revit_versions", "code_template", "parameters", "preconditions",
+    "revit_versions", "read_only", "ui_only", "code_template", "parameters", "preconditions",
     "not_for", "applies_when", "validator", "fixtures",
     "approved_by", "approved_at", "created_at", "source_query",
 )
@@ -82,19 +82,81 @@ def default_capabilities_dir() -> Path:
     return user_capabilities_dir()
 
 
-def escape_param_value(value) -> str:
-    """Make a parameter value safe inside a C# string literal (P0-3).
+# What a regular C# string literal cannot hold as written: the quote, the backslash and the
+# characters C# reads as a line end (CR, LF, U+0085, U+2028, U+2029). NUL and lone UTF-16
+# surrogates are escaped too, so the text reaches Revit unchanged.
+_CS_ESCAPES = {
+    "\\": "\\\\", '"': '\\"', "\r": "\\r", "\n": "\\n", "\x00": "\\0",
+    "\x85": "\\u0085", "\N{LINE SEPARATOR}": "\\u2028", "\N{PARAGRAPH SEPARATOR}": "\\u2029",
+}
+_CS_ESCAPE_RE = re.compile('[\\\\"\r\n\x00\x85\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}\ud800-\udfff]')
+# A bare scalar can join an identifier (including an escaped/Unicode one) or
+# a neighboring numeric token. Insert trivia only at a potentially shared edge.
+_SCALAR_EDGE = re.compile(r"[\w.@\\]|[^\x00-\x7f]")
 
-    Placeholders in code templates sit between double quotes; a value carrying
-    a quote, backslash or newline would otherwise terminate the literal and
-    inject code. Non-strings are rendered with ``str``.
+
+def _cs_escape(match: re.Match) -> str:
+    char = match.group()
+    return _CS_ESCAPES.get(char) or f"\\u{ord(char):04x}"
+
+
+def _value_kind(value) -> str:
+    """How a refused parameter value is named in an error: ``a list``, ``an object``, ``null``."""
+    if value is None:
+        return "null"
+    if isinstance(value, (list, tuple)):
+        return "a list"
+    if isinstance(value, dict):
+        return "an object"
+    return f"a value of type {type(value).__name__}"
+
+
+_PLAIN_CHAR_RE = re.compile(r"[^A-Za-z0-9_ ]")
+
+
+def _unicode_escape(match: re.Match) -> str:
+    """One character as C# unicode escapes (an astral character as its two UTF-16 units)."""
+    point = ord(match.group())
+    if point > 0xFFFF:
+        point -= 0x10000
+        return f"\\u{0xD800 + (point >> 10):04x}\\u{0xDC00 + (point & 0x3FF):04x}"
+    return f"\\u{point:04x}"
+
+
+def escape_param_value(value) -> str:
+    """Text for an ordinary C# string literal that cannot form code in any other context.
+
+    A scalar keeps its 0.11.1 spelling. Then every character other than an ASCII letter,
+    an ASCII digit or a space is written as a unicode escape. Inside an ordinary literal the
+    compiler reads the original text back. Anywhere else the text holds no quote, bracket,
+    operator, dot, semicolon or line end, so a wrong guess about the placeholder's context
+    cannot turn a value into a call or a member access.
     """
     if isinstance(value, str):
-        return (value.replace("\\", "\\\\")
-                     .replace('"', '\\"')
-                     .replace("\r", "\\r")
-                     .replace("\n", "\\n"))
-    return str(value)
+        text = value
+    elif isinstance(value, bool):
+        text = "True" if value else "False"
+    elif isinstance(value, int):
+        text = int.__repr__(value)
+    elif isinstance(value, float):
+        text = float.__repr__(value)
+    else:
+        raise TypeError(f"must be a single value, got {_value_kind(value)}")
+    return _PLAIN_CHAR_RE.sub(_unicode_escape, text)
+
+
+def _value_problem(value, ptype: str) -> str | None:
+    """Check a supplied scalar without losing its spelling inside a C# string."""
+    if not isinstance(value, (str, int, float)):          # bool is an int
+        return f"must be a single value, got {_value_kind(value)}"
+    if ptype in BARE_TYPES:
+        try:
+            bare_literal(value, ptype)
+        except ValueError as exc:
+            return str(exc)
+    elif ptype != "string":
+        return f"expects {ptype}, got {type(value).__name__}"
+    return None
 
 
 @dataclass
@@ -104,7 +166,7 @@ class SolidifiedTool:
     Parameter dicts carry the v1 vocabulary after loading:
       - ``source``: "designer" | "tool:<kind>" | "answer" | "default"
       - ``choices_from``: query kind for ``get_tool_choices`` (levels,
-        family_types:<OST_*>, floor_types, elements:<OST_*>)
+        family_types:<OST_*>, floor_types, links, elements[:<OST_*>])
       - ``unit``: "mm" | "m" | "feet" for lengths
       - ``required``: bool; ``default``: the declared default value
     """
@@ -129,9 +191,15 @@ class SolidifiedTool:
     execution_count: int = 0            # from usage.json
     last_used: str = ""                 # from usage.json
     failure_count: int = 0              # consecutive failures, from usage.json
+    read_only: bool = False             # pack declaration; user overrides are still user packs
+    ui_only: bool = False
+    validation_errors: list[str] = field(default_factory=list)  # computed on load, never persisted
 
 
 KNOWN_FIELDS = {f.name for f in fields(SolidifiedTool)}
+# A host override calling super() must validate the same pack that render read.
+_render_snapshot: ContextVar[tuple[ToolStore, str, SolidifiedTool] | None] = ContextVar(
+    "render_snapshot", default=None)
 
 
 # -- normalisation -------------------------------------------------------------
@@ -160,6 +228,10 @@ def normalize_pack(data: dict, fallback_name: str = "") -> dict:
     out.setdefault("code_template", "")
     out["version"] = "0.0.0" if is_v0 else str(out.get("version") or "0.0.0")
     out["revit_versions"] = [str(v) for v in (out.get("revit_versions") or [])]
+    out["read_only"] = out.get("read_only") is True
+    out["ui_only"] = out.get("ui_only") is True
+    if out["read_only"] and out["ui_only"]:
+        raise ValueError("read_only and ui_only cannot both be true")
     out["parameters"] = [
         _normalize_param(p) for p in (out.get("parameters") or []) if isinstance(p, dict)
     ]
@@ -368,6 +440,8 @@ class ToolStore:
         usage = usage or self.usage.get(data["name"])
         filtered = {k: data[k] for k in KNOWN_FIELDS if k in data}
         filtered.update(usage)
+        declared = {p["name"]: p for p in data["parameters"]}
+        _, filtered["validation_errors"] = template_slots(data["code_template"], declared)
         return SolidifiedTool(**filtered)
 
     def load(self, name: str) -> SolidifiedTool | None:
@@ -536,12 +610,15 @@ class ToolStore:
         """Check if a tool is healthy or should fall back to writing fresh code.
 
         Returns:
-            {"status": "healthy"|"stale"|"failing"|"not_found",
+            {"status": "healthy"|"stale"|"failing"|"invalid"|"not_found",
              "issues": [...], "recommendation": "use_tool"|"write_new_code"}
         """
         tool = self.load(name)
         if not tool:
             return {"status": "not_found", "issues": [], "recommendation": "write_new_code"}
+
+        if errors := tool.validation_errors:
+            return {"status": "invalid", "issues": errors, "recommendation": "write_new_code"}
 
         issues: list[str] = []
 
@@ -598,11 +675,25 @@ class ToolStore:
           - valid: True if all checks pass
           - errors: list of human-readable error strings
           - filled_params: params dict with defaults filled in
+
+        A value of None counts as not given (its default applies, or it is
+        missing). Every value given must be a single string, number or boolean
+        that fits the declared type (``_value_problem``): a list or an object
+        is refused for every type, a boolean or a non-finite number for a
+        numeric one.
         """
-        tool = self.load(name)
+        snapshot = _render_snapshot.get()
+        tool = snapshot[2] if snapshot and snapshot[0] is self and snapshot[1] == name else self.load(name)
         if not tool:
             return False, [f"Tool '{name}' not found"], {}
+        if errors := tool.validation_errors:
+            return False, errors, {}
+        return self._fill_params(tool, params, resolved_atoms)
 
+    @staticmethod
+    def _fill_params(
+        tool: SolidifiedTool, params: dict | None, resolved_atoms: dict | None = None,
+    ) -> tuple[bool, list[str], dict]:
         params = dict(params or {})
         resolved_atoms = resolved_atoms or {}
         errors: list[str] = []
@@ -614,6 +705,8 @@ class ToolStore:
             kind = source.split(":", 1)[0]
             has_default = "default" in pdef
 
+            if pname in params and params[pname] is None:
+                del params[pname]                  # null is no value: treated as not given
             if pname not in params:
                 # Values that must come from Revit: never guessed, never defaulted
                 if kind in ("tool", "query", "interactive"):
@@ -629,61 +722,73 @@ class ToolStore:
                             f"(source: {source}) - call get_tool_choices first"
                         )
                     continue
-                if source == "default":
-                    if has_default:
-                        params[pname] = pdef["default"]
-                    else:
-                        errors.append(f"Parameter '{pname}' has source=default but no default value")
-                    continue
                 # designer / answer / legacy ask_user: provided or defaulted.
                 # ``required: false`` never means "leave the placeholder empty":
                 # a value the template needs must come from somewhere.
                 if has_default:
                     params[pname] = pdef["default"]
+                    # Legacy packs may use text as a quoted numeric default.
+                    # Bare defaults were checked while validating the template.
+                    if ptype in NUMERIC_TYPES and isinstance(pdef["default"], (str, int, float)):
+                        continue
+                elif source == "default":
+                    errors.append(f"Parameter '{pname}' has source=default but no default value")
+                    continue
                 else:
                     errors.append(f"Missing required parameter: {pname}")
-                continue
+                    continue
 
-            # Type coercion check for numeric types
-            if ptype in ("double", "number", "float", "int", "integer"):
-                try:
-                    float(params[pname])
-                except (ValueError, TypeError):
-                    errors.append(
-                        f"Parameter '{pname}' expects {ptype}, got {params[pname]!r}"
-                    )
+            problem = _value_problem(params[pname], ptype)
+            if problem:
+                errors.append(f"Parameter '{pname}' {problem}")
 
         return (len(errors) == 0, errors, params)
 
     # -- Render ----------------------------------------------------------------
 
     def render(self, name: str, params: dict | None = None) -> tuple[str | None, list[str]]:
-        """Fill the template's ``{placeholders}``; ``(code, [])`` or ``(None, errors)``.
-
-        Validates the parameters first. Code in which a ``{identifier}`` token
-        survives substitution is refused too: a leftover placeholder would
-        otherwise be shipped to Revit as C#. Templates therefore cannot use
-        ``$"{x}"`` interpolation with a bare identifier unless ``x`` is a
-        declared parameter.
-        """
+        """Apply host parameter validation, then fill only the template's original sites."""
         tool = self.load(name)
         if not tool:
             return None, [f"Tool '{name}' not found"]
 
-        valid, errors, filled = self.validate_params(name, params)
+        code = tool.code_template
+        declared = {p["name"]: p for p in tool.parameters}
+        slots, errors = template_slots(code, declared)
+        if errors:
+            return None, errors
+        binding = _render_snapshot.set((self, name, tool))
+        try:
+            valid, errors, filled = self.validate_params(name, params)
+        finally:
+            _render_snapshot.reset(binding)
         if not valid:
             return None, errors
 
-        code = tool.code_template
-        for k, v in filled.items():
-            code = code.replace(f"{{{k}}}", escape_param_value(v))
-        leftover = sorted(set(PLACEHOLDER_RE.findall(code)))
-        if leftover:
-            return None, [
-                f"Template still contains placeholder(s) {leftover}: "
-                "declare them as parameters or remove them from the code"
-            ]
-        return code, []
+        parts = []
+        pos = 0
+        for slot in slots:
+            if slot.name not in filled:
+                return None, [f"Missing required parameter: {slot.name}"]
+            value = filled[slot.name]
+            try:
+                if slot.context == CODE:
+                    text = bare_literal(value, str(declared[slot.name]["type"]).lower())
+                    left = code[slot.start - 1:slot.start]
+                    if (_SCALAR_EDGE.fullmatch(left) or (left == "-" and text.startswith("-"))
+                            or (pos > 0 and pos == slot.start)):
+                        text = " " + text
+                    if _SCALAR_EDGE.match(code, slot.end):
+                        text += " "
+                else:
+                    text = escape_param_value(value)
+            except (TypeError, ValueError) as exc:
+                return None, [f"Parameter '{slot.name}' {exc}"]
+            parts.append(code[pos:slot.start])
+            parts.append(text)
+            pos = slot.end
+        parts.append(code[pos:])
+        return "".join(parts), []
 
     def render_code(self, name: str, params: dict | None = None) -> str | None:
         """0.1 form of ``render``: the code, or None when it must not run."""
@@ -704,6 +809,8 @@ class ToolStore:
                 "name": p["name"],
                 "choices_from": p["choices_from"],
                 "description": p.get("description", ""),
+                **({"type": p["type"]} if p["choices_from"] == "elements" else {}),
+                **({"source": p["source"]} if optional_element_pick(p) else {}),
             }
             for p in tool.parameters
             if "choices_from" in p
@@ -735,8 +842,8 @@ class ToolStore:
 
         scored: list[tuple[float, SolidifiedTool]] = []
         for tool in self.list_tools():
-            # Hard-skip only actively failing tools (consecutive failures)
-            if tool.failure_count >= 2:
+            # An invalid or repeatedly failing pack cannot satisfy the request.
+            if tool.failure_count >= 2 or tool.validation_errors:
                 continue
 
             # Check not_for exclusions first

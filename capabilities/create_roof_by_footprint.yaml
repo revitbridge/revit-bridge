@@ -1,0 +1,174 @@
+schema_version: 1
+name: create_roof_by_footprint
+display_name: Create Roof By Footprint
+description: >-
+  Create one flat footprint roof on a level from a rectangle given by its corner
+  (x, y) and its width along X and length along Y, all in mm. No edge defines a slope; change
+  slopes in Revit afterwards. The roof type is a roof type name; when two families have a type
+  of that name, give it as "Family: Type". Refusals (no such level or type, a width or length
+  that is not more than zero) stop the run and change nothing.
+  Use offset to shift the roof above the level (mm) and slope to pitch its edges (degrees).
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  // A refusal (nothing is kept; the designer can fix the input) throws an InvalidOperationException
+  // whose message starts with "REFUSED: "; any other exception is a failure of this pack. Either way
+  // the add-in rolls its transaction back. The bridge opened that transaction; none is opened here.
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, string, double> toFeet = (label, text) =>
+  {
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException("REFUSED: " + label + " must be a number in mm, got \"" + text + "\".");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  };
+  Func<ElementId, long> idOf = id => long.Parse(id.ToString(), invariant);
+  string levelName = "{level_name}";
+  string typeName = "{type_name}";
+  double tolerance = document.Application.ShortCurveTolerance;
+
+  Level level = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+      .FirstOrDefault(l => l.Name == levelName);
+  if (level == null)
+      throw new InvalidOperationException("REFUSED: There is no level named \"" + levelName + "\". Pick a level from the list.");
+  var types = new FilteredElementCollector(document).OfClass(typeof(RoofType)).Cast<RoofType>()
+      .Where(t => t.Name == typeName || t.FamilyName + ": " + t.Name == typeName)
+      .ToList();
+  if (types.Count == 0)
+      throw new InvalidOperationException("REFUSED: There is no roof type named \"" + typeName + "\". Pick a roof type from the list.");
+  if (types.Count > 1)
+      throw new InvalidOperationException("REFUSED: " + types.Count + " roof types are named \"" + typeName + "\" (families: "
+          + string.Join(", ", types.Select(t => t.FamilyName).Distinct()) + "). Give the type as \"Family: Type\".");
+  RoofType roofType = types[0];
+
+  double z = level.ProjectElevation;
+  var corners = new List<XYZ>();
+  double x = toFeet("X", "{x}"), y = toFeet("Y", "{y}");
+  double width = toFeet("Width", "{width}");
+  double length = toFeet("Length", "{length}");
+  if (width <= tolerance || length <= tolerance)
+      throw new InvalidOperationException("REFUSED: Width and length must both be more than zero mm.");
+  corners.AddRange(new[] { new XYZ(x, y, z), new XYZ(x + width, y, z),
+      new XYZ(x + width, y + length, z), new XYZ(x, y + length, z) });
+  if (!corners.All(p => XYZ.IsWithinLengthLimits(p)))
+      throw new InvalidOperationException("REFUSED: The outline reaches outside the model's limits.");
+  var footprint = new CurveArray();
+  for (int i = 0; i < corners.Count; i++)
+  {
+      XYZ start = corners[i], end = corners[(i + 1) % corners.Count];
+      if (start.DistanceTo(end) <= tolerance)
+          throw new InvalidOperationException("REFUSED: Two consecutive vertices are too close together.");
+      footprint.Append(Line.CreateBound(start, end));
+  }
+
+  // Revit fills this array and needs an instance: passed uninitialised, NewFootPrintRoof throws
+  // ArgumentNullException (seen on Revit 2026).
+  ModelCurveArray edges = new ModelCurveArray();
+  FootPrintRoof roof = document.Create.NewFootPrintRoof(footprint, level, roofType, out edges);
+  if (roof == null)
+      throw new InvalidOperationException("Revit did not create the roof; nothing was changed.");
+  double degrees = double.Parse("{slope}", invariant);
+  if (degrees < 0 || degrees >= 90)
+      throw new InvalidOperationException("REFUSED: The roof slope must be at least zero and less than 90 degrees.");
+  foreach (ModelCurve edge in edges)
+  {
+      roof.set_DefinesSlope(edge, degrees > 0);
+      if (degrees > 0)
+          roof.set_SlopeAngle(edge, Math.Tan(degrees * Math.PI / 180.0));
+  }
+  double offsetFeet = toFeet("Offset", "{offset}");
+  if (offsetFeet != 0)
+  {
+      Parameter offset = roof.get_Parameter(BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM);
+      if (offset == null || offset.IsReadOnly || !offset.Set(offsetFeet))
+          throw new InvalidOperationException("REFUSED: The roof offset cannot be set.");
+  }
+
+  return new
+  {
+      Status = "Created",
+      ElementId = idOf(roof.Id),
+      Level = level.Name,
+      TypeId = idOf(roofType.Id),
+      Type = roofType.FamilyName + ": " + roofType.Name,
+      WidthMm = Math.Round(UnitUtils.ConvertFromInternalUnits(width, UnitTypeId.Millimeters), 1),
+      LengthMm = Math.Round(UnitUtils.ConvertFromInternalUnits(length, UnitTypeId.Millimeters), 1)
+  };
+parameters:
+  - name: level_name
+    type: string
+    description: Level the roof sits on
+    source: tool:levels
+    choices_from: levels
+    required: true
+  - name: type_name
+    type: string
+    description: 'Roof type name, or "Family: Type" when two families share the name'
+    source: tool:family_types
+    choices_from: family_types:OST_Roofs
+    required: true
+  - name: x
+    type: double
+    description: X of the rectangle's corner with the smallest X and Y (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: y
+    type: double
+    description: Y of the rectangle's corner with the smallest X and Y (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: width
+    type: double
+    description: Rectangle size along X (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: length
+    type: double
+    description: Rectangle size along Y (mm)
+    unit: mm
+    source: designer
+    required: true
+  - name: offset
+    type: double
+    description: "Vertical offset from the level (mm)."
+    unit: mm
+    source: designer
+    required: false
+    default: 0
+  - name: slope
+    type: double
+    description: "Pitch for each footprint edge (degrees, 0 to less than 90)."
+    source: designer
+    required: false
+    default: 0
+preconditions:
+  - kind: levels_min
+    value: 1
+  - kind: category_present
+    category: OST_Roofs
+not_for:
+  - "polygonal roof specified by vertices"
+  - "roof by extrusion"
+  - "roof type"
+  - "curtain system"
+applies_when:
+  - "create roof"
+  - "footprint roof"
+  - "flat roof"
+  - "add roof"
+validator:
+  kind: count_delta
+  category: OST_Roofs
+  expected: 1
+fixtures:
+  - name: basic
+    params: {level_name: "L2", type_name: "Generic - 400mm", x: 0, y: 0, width: 6000, length: 8000}
+    expect: {Status: "Created"}
+approved_by: null
+approved_at: null
+created_at: "2026-11-23T00:00:00"
+source_query: create a footprint roof

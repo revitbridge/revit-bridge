@@ -1,6 +1,8 @@
 """The evidence ledger: one JSONL line per execution with every spec-9 field."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 
 from revit_bridge.evidence.ledger import (
@@ -11,6 +13,16 @@ from revit_bridge.evidence.ledger import (
     new_id,
     summarize_result,
 )
+
+
+def test_capture_summary_keeps_only_hash_and_pixel_dimensions():
+    png = b"\x89PNG\r\n\x1a\n" + bytes(range(32))
+    encoded = base64.b64encode(png).decode("ascii")
+    result = dict(png_base64=encoded, width=800, height=600, view="3D", Message=encoded)
+    assert summarize_result(result, tool="capture_view") == {
+        "sha256": hashlib.sha256(png).hexdigest(), "width": 800, "height": 600}
+    for bad in (encoded, dict(result, png_base64="%%%"), dict(result, width=encoded), dict(result, height=0)):
+        assert summarize_result(bad, tool="capture_view") == {}
 
 
 def test_append_writes_every_field_and_get_finds_it(tmp_path):

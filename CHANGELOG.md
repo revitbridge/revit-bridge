@@ -21,6 +21,413 @@ All notable changes to `revit-bridge` are recorded here. The format follows
   its name installs it. No Python package code, tool, pack format,
   TaskSpec, gate or wire-format change.
 
+## [0.11.2] - 2026-11-26
+
+### Security
+
+- Capability packs check the entire C# template before save and render. A
+  top-level colon starts interpolation format text, including the first colon
+  in `::`. Uncertain lexical boundaries invalidate the pack, even after the
+  final placeholder. Existing invalid packs expose the reason in
+  `validation_errors` when listed.
+- A value written into a string literal can no longer form code in any context:
+  every character other than an ASCII letter, an ASCII digit, an underscore or a
+  space is written as a C# unicode escape. Inside an ordinary literal the compiler
+  reads the original text back, so tools behave as before; the rendered text, and
+  with it the code hash in the ledger, differs from 0.11.1 for values that hold
+  other characters.
+- The code review reads unicode escapes and format characters in identifiers the way
+  the compiler does, so a blocked name written with an escape is refused.
+- An allowed directive line holds nothing but `#pragma warning disable|restore
+  <ids>` or `#nullable enable|disable|restore [annotations|warnings]` and an
+  optional comment without quotes. A string literal that directly touches another
+  literal invalidates the template.
+
+### Changed
+
+- Tool packs accepted by 0.11.1 can now fail validation for the following reasons.
+  - Unsafe placeholder contexts. Substitution requires ordinary string content
+    or a bare numeric or boolean operand of the declared type. This excludes
+    comments, directives, character literals, other string forms, incomplete
+    escapes, and templates whose lexical boundaries cannot be established.
+    A bare numeric site requires a numeric declared default if one is present.
+    Quoted numeric defaults retain their original spelling. Boolean parameters
+    accept only booleans or ASCII-case variants of "true" and "false", including
+    when filling a default.
+  - Physical lines beginning with a preprocessor directive other than
+    `#pragma` or `#nullable`, including after C# whitespace.
+  - Numeric inputs outside the strict decimal grammar. Numeric strings allow
+    up to 256 characters including surrounding ASCII whitespace, an optional
+    sign, ASCII digits and an optional fraction with digits on both sides of
+    the point. Exponents, separators and non-ASCII padding are refused.
+    Integer parameters also refuse fractional values and strings with a point.
+- Hosts can call `revit_bridge.capabilities.schema.placeholders(code_template, parameters)`
+  to get declared substitution sites in order. Each site has a `name`, a
+  `context` and half-open `start` and `end` offsets in the Python string.
+  Native interpolation locals such as `$"{local}"` pass through. A declared
+  parameter in an interpolated literal raises `ValueError`, as does any other
+  invalid template. `schema.PLACEHOLDER_RE` remains importable for raw text matching.
+- Quoted scalars keep their 0.11.1 spelling. Bare booleans use lowercase C#
+  keywords and bare numbers use plain decimal. Element pickers retain their
+  0.11.1 ID types, and rendering again calls the host's `validate_params` hook.
+
+## [0.11.1] - 2026-11-25
+
+The two tools added in this release were verified by compiling against the Revit API for every supported year and by simulation, not yet in a running Revit.
+
+### Added
+
+- `set_view_detail_level` and `set_view_display_style` change the active view or a
+  uniquely named view and report its previous and new setting. Both changes can
+  be undone in Revit. When a view template controls the setting, the tool names
+  the template. If a style is unsupported, the tool lists the choices for that view.
+
+## [0.11.0] - 2026-11-25
+
+The tools added in this release were verified by compiling against the Revit API for every supported year and by simulation. They have not yet been exercised in a running Revit; the tools that existed in 0.10.1 are unchanged.
+
+### Added
+
+- Linear workflow v1 definitions can be validated, saved and read from the
+  `workflows/` directory beside user tools. Hosts can resolve each step's
+  inputs and earlier results before submitting it through the normal tool gate.
+  MCP exposes `list_workflows`, `get_workflow` and `revit://workflows/{name}`.
+- `revit_bridge.mcp_app.build_asgi_app` serves the stdio handlers over Streamable
+  HTTP with a host-supplied connection per request. Each paired device has its
+  own user tools, confirmations, verification plans and evidence ledger.
+- `link_revit_model` links RVT files by origin or shared coordinates. `link_cad`
+  links DWG and DXF files in the active view or on a named level. Both check the
+  paths of existing link types and refuse a second link to the same file.
+- `load_family` loads a new RFA and refuses same-name families. All three packs
+  take a designer-supplied path on the computer running Revit and omit it from
+  evidence parameters. They report native failures with a next step and compile
+  for Revit 2021 and 2023–2027.
+- `place_family_instance` places and rotates non-hosted point families. `create_pipe`
+  and `create_duct` create sized rigid segments from model internal-origin coordinates
+  in millimetres. `list_mep_types` lists loaded types, systems and nominal sizes.
+- `create_pipes_by_points` fits elbows along a route and reports failed segments
+  and corners by zero-based index. `connect_pipes` joins free ends that coincide
+  or can be extended to meet. All six packs compile for Revit 2021 and 2023–2027.
+- Packs can declare `ui_only: true` for changes to selection or view display. The loader
+  and `list_tools` expose the flag. It defaults to false and is mutually exclusive with
+  `read_only`. Five packs declare it: `select_elements`, `select_in_box`,
+  `select_by_filter`, `clear_selection` and `zoom_to_elements`.
+  Selection tools refuse results over 5,000 elements before applying them.
+- `set_view_orientation` changes the saved 3D view orientation. `set_section_box`
+  sets or disables its section box. Both use the normal model-change confirmation path.
+  All seven new packs compile against the
+  Revit 2021 and 2023–2027 APIs.
+- `RevitQueryExecutor.watch_selection(mode, category=None, timeout_s=120, settle_ms=1200,
+  poll_ms=400)` observes normal Revit selection. Single mode returns a changed singleton
+  immediately. Multiple and box modes wait for a changed nonempty set to settle.
+  The result contains element mention `items` with `document_id`. A category filter
+  adds `filtered_out`, the number excluded across the whole selection. Timeout and
+  document switches return `{"timed_out": true}` and `{"document_changed": true}`.
+  Cancel the coroutine to stop polling. Older add-ins return `unsupported_addin`
+  with an upgrade hint so the host can offer Get current selection.
+- `RevitQueryExecutor.trigger_selection()` uses the 0.10.1 `PickObject` snippet,
+  falls back to `get_selected_elements`, and returns the original list of element rows.
+- The host functions `open_view` and `capture_view_image` in `revit_bridge.view_commands`
+  activate a named view and export a PNG with its view name and pixel dimensions.
+  The capture ledger records the image digest and dimensions. Hosts can discover
+  both functions with `revit_bridge.list_host_functions()` or MCP
+  `list_tools(include_host_functions=true)`. Call each function by its descriptor
+  name. The default MCP listing contains packs, and MCP `capture_view` returns a file path.
+
+## [0.10.1] - 2026-11-25
+
+### Added
+
+- Capability packs can declare `read_only: true`. The catalogue and loaded pack objects expose
+  this boolean, which defaults to false. Eight built-in tools declare it. Hosts can check
+  the pack's origin separately when deciding how to handle user overrides. The MCP resource
+  `revit://tools/{name}` serves the original YAML, including comments and block scalars.
+- Selected and rechecked element items include `document_id`, an opaque identifier for
+  the open document. Compare it only within the same connection. Reopening a document can
+  change its identifier, and a later document can reuse it.
+- Hosts can pass `confirm_button_label` to `host_instructions` for no-code chat prompts.
+  Empty labels, labels longer than 20 characters, and labels containing quotes, line
+  breaks or other nonprintable characters fall back to the default button text.
+- Built-in instance id parameters declare `choices_from: elements` or a category such
+  as `elements:OST_Walls`. Unqualified pickers offer up to 50 current selections.
+  The link instance picker keeps its 0.10.0 declaration, `elements:OST_RvtLinks`.
+
+### Changed
+
+- Type searches allow up to 1,500 ms per inventory read. If the first valid inventory
+  on a connection reports a timeout, the picker retries once. A failed initial read
+  leaves that retry available. A complete result can warm the clean document cache.
+  A partial result reports its warning.
+
+### Compatibility
+
+- All eight declared read tools compile against Revit 2023 through 2027. Seven also compile
+  against 2021. The version lists for `get_element_geometry`, `list_elements` and
+  `query_levels` cover all six builds. `get_element_parameters` declares Revit 2023
+  through 2027 because its template uses `Definition.GetDataType`.
+
+## [0.10.0] - 2026-11-25
+
+Mention search that ranks and understands category words, a mention kind for
+the current Revit selection, 18 more modelling tools, and chat instructions
+for hosts that show the task card inside the conversation. On Revit 2026,
+with a copy of a sample model, all 31 new or changed tools were run with an
+independent read-back, 13 existing tools were replayed against 0.9.1, and
+selections of up to 12,989 elements were read. Not run there: the cache path
+of an unmodified document on the released tree, selections above 65,536
+elements, rebar and stacked walls, and Revit years other than 2026 (the code
+templates were compiled against their API only). No pack format, TaskSpec,
+gate or MCP tool change; existing tools keep every parameter's name, type,
+required flag and default.
+
+Upgrade: `uvx --refresh revit-bridge`; in Claude Code,
+`/plugin marketplace update revit-bridge`. Hosts: `list_tools` lists 18 more
+built-in tools; `mention_candidates` returns ranked results with `facets`,
+`offset` and `category_matched`, and for `kind="type"` with a search text
+and no category it now returns types where it returned categories - a host
+that shows a mention picker must be updated together with this version;
+the no-code chat instructions name a card in the chat reply and an
+`ask_designer` question form, so a host that uses them must offer both.
+`create_door` now refuses an opening outside the host wall's height.
+
+### Added
+
+- Hosts can page through selected elements with `mention_candidates(kind="element", source="selection")`,
+  resolve the picked ids against the active document, and include them in the designer's selections.
+  Search results include category counts and support an offset.
+- Inspect model instances with `list_elements`, `get_element_geometry` and
+  `get_element_parameters`. The parameter listing includes raw and formatted values.
+- Create walls from a reference or a path with `create_wall_from_element` and
+  `create_walls_by_points`. Edit existing walls with `set_wall_constraints`.
+  Create architectural columns with `create_column` and grid arrays with
+  `create_grids_array`.
+- Create polygonal outlines with `create_floor_by_points`, `create_ceiling_by_points`
+  and `create_roof_by_points`. Place a door or window at a distance along its host
+  wall with `create_door_on_wall` and `create_window_on_wall`.
+- Transform model instances with `copy_elements`, `rotate_elements` and
+  `mirror_elements`. Use `change_type_by_name` to resolve a target type and verify
+  each instance. `delete_elements` checks the dependencies of the supplied IDs
+  before deletion. It refuses unlisted independently placeable components and
+  reports the additional elements actually removed, with counts by Revit class.
+
+### Changed
+
+- `mention_candidates(kind="type", q="...")` without a category now returns matching **types**.
+  An empty query still returns categories for navigation. Upgrade the web host to its V2 picker
+  together with this package. The previous picker only accepts category rows in this state, so
+  it displays the returned types as unselectable.
+- Mention search splits Chinese and non-Chinese text into distinct terms. It ranks exact,
+  prefix, word-start, substring and fuzzy matches in that order. Fuzzy matching uses name
+  and family words. Terms containing digits only use the first four ranks. Category aliases,
+  their plurals and English inputs of at least five letters missing one letter from an alias
+  can narrow the search before the remaining terms match names and families.
+- More than eight distinct search terms returns `invalid_args` for every kind, including
+  existing level, link and category-specific type searches. A cross-category type search
+  returns partial results, warnings and `truncated` when the read budget is reached
+  or inventory rows cannot be read.
+- A cold cross-category type search uses one fixed, bounded inventory query. Each type
+  search makes at most five bridge calls, including capability and document checks.
+  The same connection and unmodified document can reuse a complete inventory for up to
+  30 seconds. Unreadable rows, native warnings and mismatched totals prevent cache
+  reuse, so the next search retries the incomplete list. If an add-in disables fixed queries, the
+  picker reports the scope of the native category results it can still read.
+- If selection scanning reaches its time budget, `total` gives the full selection count.
+  Unfiltered pages keep their selection order. Filtered pages rank the available rows.
+  `facets_partial`, `truncated` and warnings identify incomplete results.
+- Hosts using `host_instructions(code=False)` direct designers to the confirmation
+  button on the card inside the chat reply. The planner asks outstanding questions
+  together and uses `ask_designer` for choices. For replies that request changes,
+  the analyst selects the appropriate query, tool or none route.
+- `delete_elements` includes wall-type curtain panels owned by the supplied curtain
+  wall even when its grid omits their IDs.
+- `create_door` returns the placed door's XYZ coordinates, including on curved walls.
+- `create_beam` keeps the requested `Level` and reports the actual `ReferenceLevel`
+  and the start elevation of the placed beam in `ElevationMm`.
+- `create_door` now refuses placements previously accepted when the wall bottom is
+  above the placement level or the door head exceeds the wall top. On a raised
+  wall, `create_door_on_wall` accepts an explicit `sill_height`.
+- Existing modelling tools retain their 0.9.1 required parameters and defaults.
+  The following inputs are optional:
+  - `create_wall` accepts `type_name`, `top_level_name`, `top_offset`, `base_offset`,
+    `structural` and `location_line`; `create_structural_column` accepts
+    `top_level_name`, `top_offset`, `base_offset` and `rotation`.
+  - `create_beam` accepts `start_offset`, `end_offset` and `structural_usage`.
+    `create_level` accepts `create_plan_view`.
+  - `create_floor` accepts `offset` and `structural`; `create_roof_by_footprint`
+    accepts `offset` and `slope`. Both `create_door` and `create_window` accept
+    `level_name` and `flip`.
+  - `change_type`, `move_elements` and `set_parameter` accept `element_ids` for
+    explicit targets. `change_type` also accepts 64-bit type IDs.
+- A wall's top-level constraint takes precedence over its unconnected height.
+  `create_wall` refuses a nonpositive unconnected height that previously passed
+  silently. `create_floor` refuses zero dimensions before creation, where the
+  previous version reported a failure.
+- Name-based placement refuses ambiguous types and accepts a qualified
+  `Family: Type` name. A missing level or type in wall, floor, column or beam
+  creation now produces a `REFUSED` result where those tools previously returned
+  `Status="Error"`.
+
+### Fixed
+
+- `create_door` and `create_door_on_wall` refuse openings extending below the
+  host wall or above its top. Along-wall door and window placement reports the
+  actual instance location after regeneration, including on curved walls.
+- Parameter read-back compares element IDs as 64-bit integers. Adjacent IDs
+  above the exact precision of a floating-point number are now distinguished.
+
+## [0.9.1] - 2026-11-23
+
+Fourteen basic capability packs, and a way for any pack to refuse its input
+without counting as a failure of the pack. On Revit 2026, with a sample
+model, the success cases of 12 of the 14 packs and 37 refusals were run;
+`create_roof_by_footprint` and the grid refusal of `move_elements` were
+changed after that run and have not been run in Revit since. No pack
+format, TaskSpec, gate or MCP tool change; a `run_tool` result gains a key
+only when the pack refused.
+
+Upgrade: `uvx --refresh revit-bridge`; in Claude Code,
+`/plugin marketplace update revit-bridge`; for copied skill folders, run
+`revit-bridge skills install` again with `--force` (one line of the
+`revit-bridge` skill changed). Hosts: `list_tools` lists 14 more built-in
+packs; a `run_pack` result, and its ledger line, may carry `refused: true`.
+On an add-in that does not handle the failures Revit reports when the
+transaction is committed, `delete_selected` can make Revit show its
+warnings dialog.
+
+### Added
+
+- Fourteen basic modelling capability packs. Creation: `create_level`,
+  `create_grid`, `create_door`, `create_window`, `create_room`,
+  `create_roof_by_footprint`, `create_ceiling`, each with a `count_delta`
+  validator. On the Revit selection (at most 100 elements, every element
+  checked before any is changed): `set_parameter`, `move_elements`,
+  `delete_selected`, which read their own result back and have no validator,
+  and `change_type`, validated by `param_equals` on the type. Read only:
+  `count_by_level`, `list_types`, `elements_in_link`, at most 200 rows with
+  `Truncated` when rows were left out. Lengths are in mm; a parameter that
+  picks a level, a wall, a link or a type by name offers the model's
+  choices (`change_type` takes the type's id, from `list_types`). A
+  refusal (nothing is kept, the input is the problem) throws an
+  `InvalidOperationException` whose message starts with `REFUSED: `; Revit's
+  own refusals of the name, selection or value given (naming a level or a
+  grid, moving, deleting, setting a parameter) are passed on the same way;
+  any other exception is a failure of the pack. Either way the add-in rolls its transaction back and
+  nothing is kept. Written for Revit 2021 and 2023-2027 (the add-in has no
+  2022 build); `create_ceiling` and `set_parameter` need 2023 or later,
+  `change_type` 2024 or later (its validator reads ids with
+  `ElementId.Value`; on an earlier Revit it refuses). The eight earlier packs
+  are unchanged.
+- `run_pack`: when the pack refused in Revit (`REFUSAL_MARKER`,
+  `refusal_message` in `revit_bridge.execution`) the result has
+  `refused: true`, a key present only then, `error` is the text after the
+  marker and there is no hint; the pack's usage counters are not touched, so
+  refusals never make a pack unhealthy; the ledger line carries
+  `refused: true`, and `validate` (`revalidate`) answers `not_executed` for
+  it. Every other result and ledger line is unchanged. The rule holds for
+  every pack, built-in or your own: throw `InvalidOperationException` with a
+  message starting `REFUSED: ` when the input cannot be used and nothing is
+  kept.
+
+### Changed
+
+- The README, the plugin's README and the `revit-bridge` skill name the
+  add-in's button **Revit Bridge** (it shows On or Off); on add-ins up to 0.5
+  it is **Revit MCP Switch**, as before.
+
+### Fixed
+
+- A `param_equals` check's detail prints a whole number as an integer: an
+  element id was shown as `1.22151e+06`, now `1221510`. Whether a check
+  passes is unchanged.
+
+## [0.9.0] - 2026-11-23
+
+Reads for a host that lets the designer pick model items, and one
+instruction text per role for a host that splits the work between roles.
+Needs nothing new from the add-in: with an add-in that offers
+`list_model_items`, links, type categories, the type picker and checks by id
+are read without compiling code or opening a transaction, and linked models
+can be read; without it, everything but `link_id` works. Reads that 0.8.2
+accepted send the same requests and give the same replies. No pack format,
+TaskSpec, gate or tool name change.
+
+Upgrade: `uvx --refresh revit-bridge`; in Claude Code,
+`/plugin marketplace update revit-bridge`. The server and host instructions
+now say revit-bridge 0.9. Hosts: no public name was removed or renamed, and
+the new arguments are optional.
+
+### Added
+
+- `query` kinds `links` (every link instance: id, name, type, loaded,
+  document title, origin in mm, rotated; an unloaded link is listed) and
+  `type_categories` (the OST_* categories that have types, with counts; on
+  an add-in without `list_model_items`, only the categories `family_types`
+  can list there).
+- `query` `args.link_id` for `levels`, `family_types`, `elements`, `counts`
+  and `type_categories`: reads that linked model. The reply carries `link`
+  (id, name, document title, origin, rotated), `coordinates: "link"` and a
+  note that values are in the link's own coordinates and that element, level
+  and type ids read through a link belong to the linked file, not to the
+  open model. Errors `unsupported_addin` (the add-in has no
+  `list_model_items`), `unknown_link` and `link_not_loaded`.
+- `revit_bridge.mentions`: `mention_candidates` (what to offer for `@level`,
+  `@type`, `@link`: `{kind, items, total, truncated}`; types by category,
+  categories first; unloaded links listed but disabled), `resolve_mentions`
+  (check picked `{kind, id}` by id against the open model, resolved and not
+  found apart; an id that is not a positive whole number in Int64 range is
+  `invalid`; an add-in whose capability cannot be read is an error, never
+  "not found") and `mention_block` (the fixed "Designer's selections" text,
+  English or Chinese; names quoted, control, format and separator characters
+  escaped).
+- `host_instructions(role=None, code=True, mentions=False)`: `code=False`
+  for a host whose model never writes code (no execute_code, snippet
+  contract or blocked_code); `mentions=True` adds the rule for the
+  selections block (a picked value is bound by name with evidence
+  `mention:<kind>#<id>`, source `tool` for a pack parameter that takes its
+  value from the model, else `designer`, and is not asked again); `role`
+  gives the text of one role: `analyst` (one JSON object `{route, tool?,
+  facts_needed, note}`; with chat and none `note` is the reply shown to the
+  designer), `planner` (fill and propose the spec) or `supervisor` (one JSON
+  object `{verdict: done | retry | ask, report, fix?, question?}`).
+- `snapshot_digest(snapshot, max_chars=1200)`: a short text of a snapshot
+  (document, units, level names, the number of types per category,
+  selection count, fingerprint), never longer than `max_chars`.
+
+### Changed
+
+- Category names (`CATEGORY_RE`, `revit_bridge.snapshot`) take digits and
+  underscores after `OST_` (`OST_[A-Za-z0-9_]+`, always matched whole), as
+  the add-in does: `query` and `get_project_snapshot` accept a name such as
+  `OST_IOS_GeoSite`, which 0.8.2 refused. A dot, a space, a quote or a line
+  break within the name is still refused.
+- `query` `levels`, `family_types`, `counts`, `elements` and `grids` without
+  `link_id` send the same requests and give the same replies as in 0.8.2, on
+  every add-in. A transport failure (connection refused or closed) raises
+  on every query path, `link_id` reads included.
+- `query` error replies name the additions: `unknown_kind` lists `links` and
+  `type_categories` among the kinds, and `invalid_args` for an unexpected
+  argument lists `link_id` among the allowed arguments of the kinds that
+  take it. The `query` tool's description names the new kinds and
+  `link_id`.
+- `server_instructions()`, and `host_instructions()` with no arguments,
+  return the 0.8.2 texts but for the version: they say revit-bridge 0.9.
+
+### Security
+
+- A capability pack parameter sent as a JSON array or object was written
+  into the C# code with Python's `str()`, unescaped, so a value for a string
+  parameter could close its string literal and add code that compiled and
+  passed the sandbox review. Every parameter now takes one string, number
+  or boolean: a list or an object is refused for every type, null counts as
+  not given (the default applies, or the parameter is missing), a numeric
+  parameter refuses a boolean and a non-finite number, a boolean parameter
+  takes true or false. `escape_param_value` raises `TypeError` for anything
+  else (`render` returns it as an error) and also escapes the line ends
+  U+0085, U+2028 and U+2029, NUL and lone surrogates; validator probes escape
+  `param_equals` parameter names and match categories whole. Strings
+  without those characters and finite numbers render to the same code as
+  before.
+
 ## [0.8.2] - 2026-11-19
 
 The journal skill reads cloud-model opens, managed exceptions and the
@@ -1187,7 +1594,14 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/revitbridge/revit-bridge/compare/v0.11.1...v0.11.2
+[0.11.1]: https://github.com/revitbridge/revit-bridge/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/revitbridge/revit-bridge/compare/v0.10.1...v0.11.0
+[0.10.1]: https://github.com/revitbridge/revit-bridge/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/revitbridge/revit-bridge/compare/v0.9.1...v0.10.0
+[0.9.1]: https://github.com/revitbridge/revit-bridge/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/revitbridge/revit-bridge/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/revitbridge/revit-bridge/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/revitbridge/revit-bridge/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/revitbridge/revit-bridge/compare/v0.7.1...v0.8.0

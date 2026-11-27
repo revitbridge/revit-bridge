@@ -1,8 +1,8 @@
 """Project snapshot primitives: query atoms, model queries, the snapshot itself.
 
 ``take_snapshot`` collects units, active view, levels, grids, selection,
-links, phases and a type summary in one go; ``run_query`` answers the
-read-only ``query(kind, args)`` tool.
+links, phases and a type summary in one go; ``snapshot_digest`` is its short
+text; ``run_query`` answers the read-only ``query(kind, args)`` tool.
 """
 from revit_bridge.snapshot.atoms import ATOM_CATALOG, AtomDef, AtomKind, AtomResolver, get_atom_keys, list_atoms
 from revit_bridge.snapshot.project import (
@@ -14,6 +14,7 @@ from revit_bridge.snapshot.project import (
     ProjectSnapshot,
     SelectedElement,
     TypeSummary,
+    snapshot_digest,
     take_snapshot,
 )
 from revit_bridge.snapshot.query import (
@@ -54,5 +55,6 @@ __all__ = [
     "list_atoms",
     "run_query",
     "sanitize_categories",
+    "snapshot_digest",
     "take_snapshot",
 ]

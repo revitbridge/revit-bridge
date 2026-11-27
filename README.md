@@ -58,7 +58,39 @@ settings through environment variables (see Configure), for example in the
 **Your own host** — the same flow is a package API: `revit_bridge.execution`
 (`run_pack`, `run_code`, `revalidate`) with your own `ToolStore`, `Gate`,
 `Ledger` and Revit client, plus `revit_bridge.host_instructions()` for a host
-whose interface does the confirmation.
+whose interface does the confirmation (`role`, `code` and `mentions` give a
+text per role, one without code-writing, one with the designer's selections)
+and `revit_bridge.mentions` for levels, types, links and elements the designer
+picks. Request `kind="element", source="selection"` to page through the active
+selection. Type searches accept Chinese and English category names and return
+matching types across categories.
+
+**Streamable HTTP.** Import `build_asgi_app` and `scope_directory` from
+`revit_bridge.mcp_app`. Pass an async `get_client(request)` that returns
+`(authenticated_device_id, connected_revit_client)` after the host verifies
+the pairing. The host owns the connection. For example,
+`app = build_asgi_app(get_client, channel="remote-mcp")` serves `/mcp`.
+The path is relative to the mount point. Enter `app.router.lifespan_context(app)`
+in the parent application's lifespan. For a public origin, pass the MCP SDK's
+`TransportSecuritySettings` with the host's allowed hosts and origins.
+
+Read a device's execution history with
+`Ledger(scope_directory(device_id) / "evidence")`. Use the same optional
+`data_dir` in the factory and directory lookup. The device directory also
+holds its `capabilities/`, `workflows/` and `verifications/`. Stage local
+source includes and add-in DLLs for that device in its `files/` directory.
+The confirmation channel in the spec and the ledger's `host` field retain
+their separate meanings. The factory's `channel` sets the latter.
+
+**Workflows.** `revit_bridge.workflows.WorkflowStore(tool_store)` saves v1 YAML
+beside the user tools. Call `save(definition, overwrite=False)`, `load(name)`,
+`list_workflows()` or `delete(name)`. A load validates against the current
+catalog. Invalid definitions raise `WorkflowError` with a list of `problems`.
+For an editor, `validate_workflow(definition, tool_store)` returns that list
+directly. Before running any steps, validate the full definition. For each
+step, `resolve_step_params(step, inputs, results_by_step_id)` returns the
+parameters or raises `ValueError` naming the missing input or result path.
+The host submits each step through its usual confirmation and execution flow.
 
 From a checkout: `uv sync` then `uv run revit-bridge`.
 
@@ -149,8 +181,8 @@ describes the starter generator; it does not install or launch the add-in.
      family types, selection, …); `query(kind, args)` answers single read-only
      questions (`levels`, `grids`, `family_types`, `elements`, `selection`,
      `view_elements`, `units`, `counts`). Neither needs confirmation.
-   - `list_tools` — the capability packs (eight built-ins such as
-     `create_wall`, `create_structural_column`, `query_levels`, plus your own);
+   - `list_tools` — the capability packs (40 built-ins such as
+     `create_wall`, `create_level`, `move_elements`, `query_levels`, plus your own);
      `missing_params(tool, known)` — the questions still open, with the real
      options, who can answer each (`kind`) and the steps it holds up
      (`blocks`); `get_tool_choices(name)` — levels, types or elements for a pack's
@@ -300,7 +332,7 @@ License: MIT. Issues and discussion: <https://github.com/revitbridge/revit-bridg
 
 dsh runs an agent that can talk to revit-bridge and revit-api-docs like any other MCP client, and it iterates on its own: writes, compiles, reads the model, fixes, until the task is done. The flow for a feature developed against the live Revit:
 
-1. Install the add-in in Revit (Releases of `revit-bridge-addin`), open the project you want to work on and click **Add-Ins > Revit MCP Switch**. `uvx revit-bridge check` must print `"status": "connected"` with that document's title.
+1. Install the add-in in Revit (Releases of `revit-bridge-addin`), open the project you want to work on and click **Add-Ins > Revit Bridge** so that it says **On** (on add-ins up to 0.5 the button is **Revit MCP Switch**). `uvx revit-bridge check` must print `"status": "connected"` with that document's title.
 2. Register both servers in the dsh profile you use (`~/.dsh/profiles/<profile>/cordis.patch.yml`, a top-level list):
 
    ```yaml

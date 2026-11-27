@@ -1,0 +1,97 @@
+schema_version: 1
+name: set_view_orientation
+display_name: Set View Orientation
+description: "Change the saved orientation of the active 3D view to a standard direction or from an eye point toward a target."
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  double Feet(string text)
+  {
+      double mm;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out mm)
+          || double.IsNaN(mm) || double.IsInfinity(mm))
+          throw new InvalidOperationException("REFUSED: Invalid length " + text + ". Give finite numbers in millimetres.");
+      return UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+  }
+  XYZ Point(string text)
+  {
+      var parts = text.Split(',');
+      if (parts.Length != 3)
+          throw new InvalidOperationException("REFUSED: Each point needs three comma-separated coordinates in millimetres.");
+      var point = new XYZ(Feet(parts[0]), Feet(parts[1]), Feet(parts[2]));
+      if (!XYZ.IsWithinLengthLimits(point))
+          throw new InvalidOperationException("REFUSED: Coordinates exceed the model limits. Give points nearer the model origin.");
+      return point;
+  }
+  var view = document.ActiveView as View3D;
+  if (view == null || view.IsTemplate || view.IsLocked)
+      throw new InvalidOperationException("REFUSED: The active view must be an unlocked 3D view. Open or unlock one first.");
+  string orientation = "{orientation}", eyeText = "{eye_mm}", targetText = "{target_mm}";
+  if (eyeText != "" || targetText != "" || orientation == "custom")
+  {
+      if (orientation != "custom" || eyeText == "" || targetText == "")
+          throw new InvalidOperationException("REFUSED: For a camera position choose custom and give both eye_mm and target_mm.");
+      XYZ eye = Point(eyeText), forward = (Point(targetText) - eye).Normalize();
+      if (forward.IsZeroLength())
+          throw new InvalidOperationException("REFUSED: Eye and target coincide. Choose two distinct points.");
+      // Project world up into the camera plane. Use north when looking vertically.
+      XYZ reference = Math.Abs(forward.DotProduct(XYZ.BasisZ)) > 0.999999 ? XYZ.BasisY : XYZ.BasisZ;
+      XYZ up = forward.CrossProduct(reference.CrossProduct(forward)).Normalize();
+      view.SetOrientation(new ViewOrientation3D(eye, up, forward));
+  }
+  else
+  {
+      // Directions point from the eye toward the model. Front looks north (+Y).
+      XYZ forward;
+      switch (orientation)
+      {
+          case "top": forward = -XYZ.BasisZ; break;
+          case "bottom": forward = XYZ.BasisZ; break;
+          case "front": forward = XYZ.BasisY; break;
+          case "back": forward = -XYZ.BasisY; break;
+          case "left": forward = XYZ.BasisX; break;
+          case "right": forward = -XYZ.BasisX; break;
+          case "iso_ne": forward = new XYZ(-1, -1, -1); break;
+          case "iso_nw": forward = new XYZ(1, -1, -1); break;
+          case "iso_se": forward = new XYZ(-1, 1, -1); break;
+          case "iso_sw": forward = new XYZ(1, 1, -1); break;
+          default: throw new InvalidOperationException("REFUSED: Unknown orientation. Choose a listed direction or custom.");
+      }
+      view.OrientTo(forward.Normalize());
+  }
+  new UIDocument(document).RefreshActiveView();
+  return new { Status = "Oriented", Orientation = orientation, View = view.Name };
+parameters:
+  - name: orientation
+    type: string
+    description: "top, bottom, front, back, left, right, iso_ne, iso_nw, iso_se, iso_sw or custom"
+    source: designer
+    required: false
+    default: "custom"
+  - name: eye_mm
+    type: string
+    description: "Custom camera eye X,Y,Z in model-space millimetres"
+    source: designer
+    required: false
+    default: ""
+  - name: target_mm
+    type: string
+    description: "Custom target X,Y,Z in model-space millimetres"
+    source: designer
+    required: false
+    default: ""
+preconditions:
+  - text: "Activate an unlocked 3D model view."
+applies_when:
+  - "set view orientation"
+validator: null
+fixtures:
+  - name: top
+    params: {"orientation":"top"}
+    expect: {"Status":"Oriented","Orientation":"top"}
+  - name: southwest
+    params: {"orientation":"iso_sw"}
+    expect: {"Status":"Oriented","Orientation":"iso_sw"}
+  - name: vertical_eye
+    params: {"eye_mm":"100,200,6000","target_mm":"100,200,0"}
+    expect: {"Status":"Oriented","Orientation":"custom"}

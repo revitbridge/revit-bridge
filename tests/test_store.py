@@ -1,19 +1,37 @@
 """Capability store: two directories, v0 compatibility, usage.json, solidify."""
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
 
 import pytest
 import yaml
 
-from revit_bridge.capabilities.store import ToolStore, default_capabilities_dir, normalize_pack
+from tests.conftest import legacy_escape_param_value  # the 0.11.1 spelling, see conftest
+from revit_bridge.capabilities.store import ToolStore, default_capabilities_dir, escape_param_value, normalize_pack
 from revit_bridge.paths import builtin_capabilities_dir, user_capabilities_dir
 
 BUILTIN_NAMES = {
     "create_beam", "create_floor", "create_structural_column", "create_wall",
     "delete_elements_by_category", "modify_wall_height", "query_levels", "query_model_stats",
+    # the basic modelling packs
+    "create_level", "create_grid", "create_door", "create_window", "create_room",
+    "create_roof_by_footprint", "create_ceiling", "set_parameter", "move_elements",
+    "change_type", "delete_selected", "count_by_level", "list_types", "elements_in_link",
+    "create_wall_from_element", "create_walls_by_points", "set_wall_constraints",
+    "create_column", "get_element_geometry", "list_elements", "get_element_parameters",
+    "create_grids_array", "copy_elements", "rotate_elements", "mirror_elements", "delete_elements",
+    "create_floor_by_points", "create_ceiling_by_points", "create_roof_by_points",
+    "create_door_on_wall", "create_window_on_wall", "change_type_by_name",
+    "select_elements", "select_in_box", "select_by_filter", "clear_selection",
+    "zoom_to_elements", "set_view_orientation", "set_section_box",
+    "set_view_detail_level", "set_view_display_style",
+    "place_family_instance", "create_pipe", "create_pipes_by_points", "connect_pipes",
+    "create_duct", "list_mep_types", "link_revit_model", "link_cad", "load_family",
 }
-# Demo artefacts with type, level and coordinates hard-coded in C#: kept as examples, never loaded
+# Demo artefacts with type, level and coordinates hard-coded in C#: kept as examples, never loaded.
+# create_room is also a built-in name now; the example of that name must still not be what loads.
 EXAMPLE_NAMES = {"create_column", "create_column_2", "create_room", "create_wall_v2"}
 
 
@@ -30,9 +48,9 @@ def test_builtin_packs_are_found_and_loadable(isolated_data_dir):
     assert store.tools_dir == store.user_dir            # 0.1 name still answers
     assert not store.user_dir.exists()                  # listing creates nothing
     files = sorted(p.name for p in store.builtin_dir.glob("*.yaml"))
-    assert len(files) == 8
+    assert len(files) == len(BUILTIN_NAMES)
     names = names_of(store)
-    assert len(names) == 8 and set(names) == BUILTIN_NAMES
+    assert len(names) == len(BUILTIN_NAMES) and set(names) == BUILTIN_NAMES
     for name in BUILTIN_NAMES:
         tool = store.load(name)
         assert tool is not None and tool.code_template.strip()
@@ -45,7 +63,13 @@ def test_examples_subdirectory_and_underscore_files_are_never_loaded(tmp_path):
     examples = store.builtin_dir / "examples"
     assert {p.stem for p in examples.glob("*.yaml")} >= EXAMPLE_NAMES
     assert names_of(store).count("create_wall") == 1
-    assert not {"create_column", "create_column_2", "create_room"} & set(names_of(store))
+    assert "create_column_2" not in names_of(store)
+    assert names_of(store).count("create_column") == 1
+    assert store.path_of("create_column") == store.builtin_dir / "create_column.yaml"
+    example_room = yaml.safe_load((examples / "create_room.yaml").read_text(encoding="utf-8"))
+    assert names_of(store).count("create_room") == 1
+    assert store.path_of("create_room") == store.builtin_dir / "create_room.yaml"
+    assert store.load("create_room").code_template != example_room["code_template"]
 
     store.user_dir.mkdir()
     (store.user_dir / "_draft.yaml").write_text("name: draft\ncode_template: return 1;\n", encoding="utf-8")
@@ -89,7 +113,7 @@ def test_user_pack_overrides_builtin_of_the_same_name(tmp_path):
     tool = store.load("create_wall")
     assert tool.description == "mine" and tool.code_template == "return 42;"
     assert store.path_of("create_wall") == store.user_dir / "create_wall.yaml"
-    assert len(names_of(store)) == 8
+    assert len(names_of(store)) == len(BUILTIN_NAMES)
 
 
 def test_delete_builtin_leaves_a_disabled_marker(tmp_path):
@@ -99,7 +123,7 @@ def test_delete_builtin_leaves_a_disabled_marker(tmp_path):
     assert marker.exists() and marker.read_text() == ""
     assert store.load("query_levels") is None
     assert store.path_of("query_levels") is None
-    assert "query_levels" not in names_of(store) and len(names_of(store)) == 7
+    assert "query_levels" not in names_of(store) and len(names_of(store)) == len(BUILTIN_NAMES) - 1
     assert store.delete("query_levels") is False        # already hidden
     assert store.delete("no_such_tool") is False
     assert (store.builtin_dir / "query_levels.yaml").exists()   # built-in untouched
@@ -315,7 +339,7 @@ def test_validate_params_enforces_sources(tmp_path):
         == ["level_name", "type_name", "x"]        # defaults fill themselves
 
     valid, errors, filled = store.validate_params(
-        "probe", {"level_name": "L1", "type_name": "Basic", "x": "12.5"})
+        "probe", {"level_name": "L1", "type_name": "Basic", "x": 12.5})
     assert valid, errors
     assert filled["h"] == 3000 and filled["note"] == ""
 
@@ -342,7 +366,9 @@ def test_validate_params_enforces_sources(tmp_path):
 def test_dynamic_params_of_builtin_create_wall():
     store = ToolStore()
     dynamic = store.get_dynamic_params("create_wall")
-    assert [(d["name"], d["choices_from"]) for d in dynamic] == [("level_name", "levels")]
+    assert [(d["name"], d["choices_from"]) for d in dynamic] == [
+        ("level_name", "levels"), ("type_name", "family_types:OST_Walls"), ("top_level_name", "levels"),
+    ]
 
 
 def test_a_value_the_template_needs_is_never_left_blank(tmp_path):
@@ -373,10 +399,8 @@ def test_render_refuses_code_with_a_leftover_placeholder(tmp_path):
         encoding="utf-8")
     code, errors = store.render("leaky", {"label": "x"})
     assert code is None
-    assert errors == [
-        "Template still contains placeholder(s) ['count']: "
-        "declare them as parameters or remove them from the code"
-    ]
+    assert len(errors) == 2
+    assert all("placeholder {count} is not a declared parameter" in error for error in errors)
     assert store.render_code("leaky", {"label": "x"}) is None
     assert store.render("missing", {}) == (None, ["Tool 'missing' not found"])
 
@@ -405,6 +429,141 @@ def test_query_source_round_trips_through_choices_and_validation(tmp_path):
     assert store.render_code("probe", {"level_name": "L1"}) == 'return "L1";'
 
 
+# -- parameter values: one scalar that fits the type, escaped for a C# literal -----------------
+
+BREAKOUT = ['x"; document.Delete(new ElementId(5L)); return null; //']
+NOT_SCALARS = ((BREAKOUT, "a list"), ({"a": 'b"; x(); //'}, "an object"), (("t",), "a list"),
+               ({"x"}, "a value of type set"), (b"x", "a value of type bytes"))
+
+
+def _typed_probe(store: ToolStore) -> None:
+    store.solidify(
+        name="probe",
+        code='string levelName = "{name}"; double h = {h}; bool flag = bool.Parse("{flag}");\nreturn levelName;',
+        parameters=[
+            {"name": "name", "type": "string", "source": "designer", "required": True},
+            {"name": "h", "type": "double", "source": "designer", "required": False, "default": 3000},
+            {"name": "flag", "type": "bool", "source": "designer", "required": False, "default": False},
+        ],
+    )
+
+
+def test_a_list_or_an_object_never_reaches_the_code(tmp_path):
+    """B3: a string parameter sent as a JSON array was written with str(), whose quote closed the
+    C# literal; the rest compiled as code and passed the sandbox. Refused before rendering now,
+    for every parameter type."""
+    store = ToolStore(user_dir=tmp_path / "user")
+    _typed_probe(store)
+    for value, kind in NOT_SCALARS:
+        for pname in ("name", "h", "flag"):
+            params = {"name": "L1", pname: value}
+            valid, errors, _ = store.validate_params("probe", params)
+            assert not valid and errors == [f"Parameter '{pname}' must be a single value, got {kind}"]
+            assert store.render("probe", params) == (None, errors)
+
+
+def test_hand_written_undeclared_placeholder_cannot_be_filled_by_an_extra_param(tmp_path):
+    store = ToolStore(user_dir=tmp_path / "user")
+    store.user_dir.mkdir(parents=True)
+    (store.user_dir / "handmade.yaml").write_text(
+        "name: handmade\ncode_template: 'string levelName = \"{name}\"; return levelName;'\n", encoding="utf-8")
+    for value, kind in (*NOT_SCALARS, (None, "null")):
+        code, errors = store.render("handmade", {"name": value})
+        assert code is None and "placeholder {name} is not a declared parameter" in errors[0]
+        with pytest.raises(TypeError, match=f"must be a single value, got {kind}"):
+            escape_param_value(value)
+    assert store.render_code("handmade", {"name": 'L1"'}) is None
+    store.update("handmade", {"parameters": [{"name": "name", "type": "string"}]})
+    # A value no placeholder asks for is written nowhere.
+    assert store.render("handmade", {"name": "L1", "extra": [1], "other": None})[1] == []
+
+
+def test_null_is_a_value_not_given(tmp_path):
+    """None was written as the text None; it now means "not given": the default, or missing."""
+    store = ToolStore(user_dir=tmp_path / "user")
+    _typed_probe(store)
+    for pname in ("h", "flag"):
+        assert store.validate_params("probe", {"name": "L1", pname: None}) \
+            == store.validate_params("probe", {"name": "L1"})
+    assert store.validate_params("probe", {"name": None}) == store.validate_params("probe", {}) \
+        == (False, ["Missing required parameter: name"], {"h": 3000, "flag": False})
+    assert store.render("probe", {"name": None}) == (None, ["Missing required parameter: name"])
+
+    wall = {"start_x": 0, "start_y": 0, "end_x": 5000, "end_y": 0}
+    assert store.validate_params("create_wall", {**wall, "level_name": None}) \
+        == store.validate_params("create_wall", wall)
+    assert store.render("create_wall", {**wall, "level_name": "L1", "height": None}) \
+        == store.render("create_wall", {**wall, "level_name": "L1"})
+
+
+def test_a_number_is_a_finite_number_and_never_a_boolean(tmp_path):
+    store = ToolStore(user_dir=tmp_path / "user")
+    _typed_probe(store)
+    for value in (True, False, float("nan"), float("inf"), float("-inf"), "nan", "inf", "-Infinity",
+                  10 ** 400, "twelve", "1e3"):
+        valid, errors, _ = store.validate_params("probe", {"name": "L1", "h": value})
+        assert not valid and len(errors) == 1, (value, errors)
+        assert errors[0].startswith("Parameter 'h' expects double, got "), errors
+    for value, text in ((3000, "3000"), ("3000", "3000"), (" 42 ", "42"),
+                        (12.5, "12.5"), (1e20, "100000000000000000000.0"),
+                        (1e-7, "0.0000001"), (-0.5, "-0.5"), (3000.0, "3000.0")):
+        code, errors = store.render("probe", {"name": "L1", "h": value})
+        assert errors == [] and f"double h = {text};" in code, (value, errors)
+
+
+def test_quoted_booleans_and_string_parameters_keep_scalar_spelling(tmp_path):
+    store = ToolStore(user_dir=tmp_path / "user")
+    _typed_probe(store)
+    for value, text in ((True, "True"), (False, "False"), ("true", "true"), ("False", "False")):
+        code, errors = store.render("probe", {"name": "L1", "flag": value})
+        assert errors == [] and f'bool.Parse("{text}")' in code, (value, errors)
+    for value in (1, 0, 1.0, "yes", ""):
+        assert store.validate_params("probe", {"name": "L1", "flag": value})[1] == [
+            f"Parameter 'flag' expects bool (true or false), got {type(value).__name__}"]
+    for value in (2, 2.5, True):
+        code, errors = store.render("probe", {"name": value})
+        assert errors == [] and f'string levelName = "{value}";' in code
+    assert store.render("probe", {"name": ""})[1] == []
+
+
+def test_every_character_that_ends_a_csharp_literal_or_line_is_escaped(tmp_path):
+    """C# ends a regular string literal at CR, LF, U+0085, U+2028 and U+2029; NUL and a lone
+    surrogate are escaped too. Everything else is written as given."""
+    ends = "a\x85b\N{LINE SEPARATOR}c\N{PARAGRAPH SEPARATOR}d"
+    assert legacy_escape_param_value(ends) == "a\\u0085b\\u2028c\\u2029d"
+    assert legacy_escape_param_value("a\x00b\ud800c\udfff") == "a\\0b\\ud800c\\udfff"
+    assert legacy_escape_param_value('a"b\\c\r\nd') == 'a\\"b\\\\c\\r\\nd'                       # as before
+    plain = "tab\there \N{CJK UNIFIED IDEOGRAPH-6807} \N{GRINNING FACE} {x} $@'"
+    assert legacy_escape_param_value(plain) == plain
+    assert (legacy_escape_param_value(True), legacy_escape_param_value(3000.0), legacy_escape_param_value(-7)) == ("True", "3000.0", "-7")
+
+    store = ToolStore(user_dir=tmp_path / "user")
+    _typed_probe(store)
+    code, errors = store.render("probe", {"name": "x\r\n" + ends + "\x00\ud800"})
+    assert errors == [] and code.count("\n") == 1
+    assert not any(ch in code for ch in "\r\x85\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}\x00\ud800")
+    assert code.startswith('string levelName = "x\\r\\na\\u0085b\\u2028c\\u2029d\\0\\ud800";')
+
+
+def test_every_built_in_fixture_matches_0_11_1_bytes(tmp_path):
+    """UTF-8 SHA-256 goldens from ToolStore.render in git revision 7d67c27."""
+    golden = json.loads(Path(__file__).with_name("fixture_renders_0.11.1.json").read_text(encoding="utf-8"))
+    store = ToolStore(user_dir=tmp_path / "user")
+    seen = set()
+    for tool in store.list_tools():
+        numeric = {p["name"] for p in tool.parameters if p["type"] in {"int", "integer", "float", "double", "number"}}
+        for fixture in tool.fixtures:
+            params = dict(fixture.get("params") or {})
+            key = f"{tool.name}/{fixture['name']}"
+            seen.add(key)
+            host = {k: str(v) if k in numeric else v for k, v in params.items()}
+            for values in (params, host):
+                code, errors = store.render(tool.name, values)
+                assert errors == [], (key, errors)
+                assert hashlib.sha256(code.encode("utf-8")).hexdigest() == golden[key], key
+    assert seen == golden.keys() and len(seen) == 101
+
+
 def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):
     """load, path_of and list_tools agree on what is visible (review item 3)."""
     store = ToolStore(user_dir=tmp_path / "user")
@@ -417,7 +576,7 @@ def test_a_hand_dropped_user_pack_beats_a_stale_disabled_marker(tmp_path):
     assert store.path_of("query_levels") == store.user_dir / "query_levels.yaml"
     assert store.load("query_levels").code_template == "return 9;"
     listed = {t.name: t for t in store.list_tools()}
-    assert listed["query_levels"].code_template == "return 9;" and len(listed) == 8
+    assert listed["query_levels"].code_template == "return 9;" and len(listed) == len(BUILTIN_NAMES)
     assert (store.user_dir / "query_levels.disabled").exists()   # untouched by reads
 
     # A stale marker for a user-only pack (no built-in) hides nothing either

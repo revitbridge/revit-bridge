@@ -13,7 +13,9 @@ model state (title, Revit version, level names and elevations).
 from __future__ import annotations
 
 import hashlib
+import re
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -34,6 +36,7 @@ DEFAULT_CATEGORIES = [
 ]
 MAX_NAMES = 50          # grid / type names kept per list
 MAX_SELECTION = 20      # selected elements kept (the total is selection_count)
+DIGEST_MAX_CHARS = 1200
 
 
 # -- models -------------------------------------------------------------------------
@@ -222,6 +225,78 @@ def levels_of(rows: list) -> list[LevelInfo]:
     """``LevelInfo`` from rows shaped ``{Id, Name, ElevationMm}``: the snapshot block's
     ``Levels`` and the rows of ``RevitQueryExecutor.get_levels`` alike. Raises on a bad row."""
     return _levels(rows)
+
+
+def _one_line(value, limit: int = 100) -> str:
+    text = re.sub(r"\s+", " ", str(value if value is not None else "")).strip()
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def _fit(prefix: str, items: list[str], budget: int) -> str:
+    """``prefix`` and as many ``items`` as fit in ``budget`` characters, then ``... (+N more)``."""
+    for shown in range(len(items), -1, -1):
+        rest = len(items) - shown
+        line = prefix + ", ".join(items[:shown])
+        if rest:
+            line += (", " if shown else "") + f"... (+{rest} more)"
+        if len(line) <= budget:
+            return line
+    return prefix + f"... (+{len(items)} more)"
+
+
+def snapshot_digest(snapshot: ProjectSnapshot | Mapping, max_chars: int = DIGEST_MAX_CHARS) -> str:
+    """A short text of a snapshot, for a model that only needs the outline (the analyst role).
+
+    Document, units, level names, the number of types per category read,
+    selection count, the warning count when there are warnings, and the
+    fingerprint - never a list of type names, never longer than
+    ``max_chars``: level names and categories that do not fit end in
+    ``... (+N more)``. A category whose types could not be read is not in the
+    snapshot, so it is not listed (never as 0). Takes a :class:`ProjectSnapshot`
+    or its JSON form (a dict).
+    """
+    if isinstance(snapshot, BaseModel):
+        data = snapshot.model_dump()
+    elif isinstance(snapshot, Mapping):
+        data = dict(snapshot)
+    else:
+        raise TypeError(f"snapshot_digest takes a ProjectSnapshot or a dict, not {type(snapshot).__name__}")
+    max_chars = max(0, int(max_chars))
+
+    document = data.get("document") if isinstance(data.get("document"), Mapping) else {}
+    title = _one_line(document.get("title")) or "(no title)"
+    version = _one_line(document.get("revit_version"), 20)
+    facts = [v for v in (f"Revit {version}" if version else "", "workshared" if document.get("is_workshared") else "")
+             if v]
+    doc_line = f"Document: {title}" + (f" ({', '.join(facts)})" if facts else "")
+    units = data.get("units") if isinstance(data.get("units"), Mapping) else {}
+    units_line = f"Units: {_one_line(units.get('length'), 10) or 'unknown'}"
+
+    levels = [lv for lv in (data.get("levels") or []) if isinstance(lv, Mapping)]
+    level_names = [_one_line(lv.get("name"), 40) for lv in levels]
+    types = [t for t in (data.get("family_types") or []) if isinstance(t, Mapping)]
+    type_counts = [f"{_one_line(t.get('category'), 40)} {t['count']}" for t in types
+                   if isinstance(t.get("count"), int) and not isinstance(t.get("count"), bool)]
+    count = data.get("selection_count")
+    selection_line = (f"Selection: {count} element{'' if count == 1 else 's'}"
+                      if isinstance(count, int) and not isinstance(count, bool) else "Selection: unknown")
+    warnings = data.get("warnings") or []
+    warnings_line = f"Warnings: {len(warnings)} (partial snapshot)" if warnings else ""
+    fingerprint_line = f"Fingerprint: {_one_line(data.get('fingerprint'), 64) or 'none'}"
+
+    fixed = [line for line in (doc_line, units_line, selection_line, warnings_line, fingerprint_line) if line]
+    room = max_chars - sum(len(line) for line in fixed) - (len(fixed) + 2 - 1)    # newlines between 2 + fixed lines
+    if type_counts:                              # at most half the room when the levels need the rest
+        types_full = "Types per category: " + ", ".join(type_counts)
+        types_line = _fit("Types per category: ", type_counts, min(len(types_full), max(room // 2, 0)))
+    else:
+        types_line = "Types per category: none read"
+    levels_prefix = f"Levels ({len(level_names)}): "
+    levels_line = _fit(levels_prefix, level_names, room - len(types_line))
+    text = "\n".join([doc_line, units_line, levels_line, types_line] + fixed[2:])
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars - 3] + "..." if max_chars > 3 else text[:max_chars]
 
 
 def fingerprint_of(title: str, revit_version: str, levels: list[LevelInfo]) -> str:

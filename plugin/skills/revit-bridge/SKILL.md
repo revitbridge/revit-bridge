@@ -182,5 +182,5 @@ Read the one that matches the task before drafting the spec.
 <!-- snippet-contract:end -->
 - Read-only tools also run inside a transaction on the add-in and fail on a read-only document.
 - `solidify_tool(name, code, description, parameters, source_query, validator)` saves code that worked as a v1 pack: every parameter with `source`, `required`, `unit`; a `validator` (`created_ids`, `count_delta`, `param_equals` - use BuiltInParameter names such as `WALL_USER_HEIGHT_PARAM`, not display names).
-- The add-in must be running (ribbon *Revit MCP Switch*); if a call fails with a connection error, say so and stop.
+- The add-in must be running (ribbon button *Revit Bridge* showing On; *Revit MCP Switch* on add-ins up to 0.5); if a call fails with a connection error, say so and stop.
 - `get_guidance(mode="read", ids=[...])` returns a lesson's full text; `mode="index"` or the resource `revit://guidance/index` lists every lesson.

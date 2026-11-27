@@ -6,7 +6,9 @@ written as ``"{param}"`` and then take the spec's value for that parameter.
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 
+from revit_bridge.capabilities.store import escape_param_value
 from revit_bridge.spec.models import TaskSpec
 from revit_bridge.validators.base import (
     Check,
@@ -23,8 +25,9 @@ MM_PER_UNIT = {"mm": 1.0, "m": 1000.0, "feet": 304.8}   # a spec value's unit ->
 
 
 def _category(cfg: dict, spec: TaskSpec) -> str:
+    # The name goes into the probe's C# literal: ``fullmatch``, as ``match`` lets "OST_Walls\n" through
     category = resolve(cfg.get("category"), spec)
-    if not isinstance(category, str) or not CATEGORY_RE.match(category):
+    if not isinstance(category, str) or not CATEGORY_RE.fullmatch(category):
         raise ValidatorError(f"validator category must be an OST_* name, got {category!r}")
     return category
 
@@ -164,7 +167,8 @@ class ParamEquals:
             if spec_param not in values:
                 raise ValidatorError(f"param_equals: spec has no parameter {spec_param!r}")
             wanted.append((name, spec_param))
-        names = ", ".join(f'"{name}"' for name, _ in wanted)
+        # pack configuration or a verification check: escaped like a template value
+        names = ", ".join(f'"{escape_param_value(name)}"' for name, _ in wanted)
         code = (
             f'var rows = new List<object>();\n'
             f'foreach (var raw in new long[] {{ {_ids_literal(ids)} }}) {{\n'
@@ -214,6 +218,11 @@ class ParamEquals:
                                 after={"ids": ids, "category": category})
 
 
+def _number(value: float) -> str:
+    """A whole number as an integer (element id 1221510, not ``:g``'s 1.22151e+06); anything else as ``:g``."""
+    return str(int(value)) if value.is_integer() and abs(value) < 2 ** 63 else f"{value:g}"
+
+
 def _compare(row: dict, expected, unit: str | None = None,
              tolerance: float | None = None) -> tuple[bool, str]:
     """Compare a readback with the spec value; lengths in mm after converting by ``unit``.
@@ -226,7 +235,20 @@ def _compare(row: dict, expected, unit: str | None = None,
         return False, "element does not exist"
     if kind == "none":
         return False, "parameter not found on the element"
-    if kind in ("length_mm", "double", "int", "elementid"):
+    if kind == "elementid":
+        try:
+            ids = [Decimal(str(value)) for value in (actual, expected)]
+        except InvalidOperation:
+            ids = []
+        if len(ids) != 2 or any(not n.is_finite() or n < -(2**63) or n >= 2**63
+                                or n != n.to_integral_value() for n in ids):
+            return False, f"got {actual!r}, expected {expected!r}"
+        got_id, want_id = map(int, ids)
+        detail = f"got {got_id}, expected {want_id}"
+        if tolerance is None:
+            return got_id == want_id, detail
+        return abs(got_id - want_id) <= tolerance, f"{detail} +/- {tolerance:g}"
+    if kind in ("length_mm", "double", "int"):
         try:
             got, want = float(actual), float(expected)
         except (TypeError, ValueError):
@@ -242,7 +264,7 @@ def _compare(row: dict, expected, unit: str | None = None,
             margin = tolerance * factor
             return abs(got - want_mm) <= margin, f"got {got:g} mm, expected {shown} +/- {margin:g} mm"
         if tolerance is None:
-            return abs(got - want) <= 1e-6, f"got {got:g}, expected {want:g}"
+            return abs(got - want) <= 1e-6, f"got {_number(got)}, expected {_number(want)}"
         return abs(got - want) <= tolerance, f"got {got:g}, expected {want:g} +/- {tolerance:g}"
     return str(actual) == str(expected), f"got {actual!r}, expected {expected!r}"
 

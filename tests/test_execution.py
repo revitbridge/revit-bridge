@@ -2,17 +2,23 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from revit_bridge.capabilities.store import ToolStore
-from revit_bridge.evidence.ledger import Ledger
-from revit_bridge.execution import ExecutionResult, revalidate, run_code, run_pack
-from revit_bridge.revit.client import RevitClient
+from revit_bridge.evidence.ledger import RECORD_FIELDS, Ledger
+from revit_bridge.execution import REFUSAL_MARKER, ExecutionResult, refusal_message, revalidate, run_code, run_pack
+from revit_bridge.revit.client import RevitClient, RevitResponse
 from revit_bridge.snapshot.project import take_snapshot
 from revit_bridge.snapshot.query import LEVELS_CODE
 from revit_bridge.spec.gate import Gate
 from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec
+from revit_bridge.verification.flow import verify
+from revit_bridge.verification.store import VerificationStore
 
 from tests.fake_revit import FakeRevit
 from tests.test_gate import PROJECT1, WALL, counting_handler
@@ -39,6 +45,43 @@ def wall_token(gate: Gate, **overrides) -> str:
 def code_token(gate: Gate, code: str) -> str:
     spec = TaskSpec(task="code", action=Action(kind="execute_code", code=code), parameters=[])
     return gate.issue(spec).token
+
+
+@pytest.mark.parametrize("phase", ["execute_code", "run_tool", "validator_after"])
+def test_cancel_after_confirmation_records_once(host, phase):
+    code = "return 1;"
+    gate = host["gate"]
+    token = code_token(gate, code) if phase == "execute_code" else wall_token(gate)
+
+    async def scenario(client, fake):
+        send = client.send_code
+        entered = asyncio.Event()
+
+        async def pause(snippet, *args, **kwargs):
+            if gate.peek(token).used_at and (phase != "validator_after" or "GetElementCount" in snippet):
+                entered.set()
+                await asyncio.Event().wait()
+            return await send(snippet, *args, **kwargs)
+
+        client.send_code = pause
+        if phase == "execute_code":
+            execution = run_code(client=client, code=code, parameters=None, token=token,
+                                 gate=gate, ledger=host["ledger"], host="remote-mcp")
+        else:
+            execution = run_pack(client=client, name="create_wall", params=dict(WALL), token=token,
+                                 host="remote-mcp", **host)
+        task = asyncio.create_task(execution)
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        record, = host["ledger"].recent()
+        assert record["host"] == "remote-mcp" and record["token_prefix"] == token[:6]
+        assert not record["success"] and "cancel" in record["error"].lower()
+        if phase == "validator_after":
+            assert record["result_summary"]["ids"] == [4242]
+
+    with_fake(counting_handler(1, 2), scenario)
 
 
 def with_fake(handler, scenario):
@@ -88,6 +131,55 @@ def test_run_pack_runs_the_built_in_pack_when_the_user_copy_is_broken_and_says_s
     assert result.success is True
     assert len(result.warnings) == 1 and result.warnings[0].startswith(f"user pack {broken} cannot be read")
     assert host["ledger"].get(result.evidence_id)["warnings"] == result.warnings
+
+
+def test_capture_pack_returns_image_but_records_only_digest_and_dimensions(host):
+    # A user pack named capture_view shares the native capture's ledger rule.
+    png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRyoAAAAASUVORK5CYII="
+    capture = {"png_base64": png, "width": 1, "height": 1, "view": "Sample view"}
+    host["store"].solidify("capture_view", "return 1;")
+    spec = TaskSpec(task="capture", action=Action(kind="run_tool", tool="capture_view"), parameters=[])
+    token = host["gate"].issue(spec).token
+    out = with_fake(counting_handler(0, 0, capture), lambda c, _: run_pack(
+        client=c, name="capture_view", params={}, token=token, host="web", **host))
+    assert out.success and out.result == capture
+    record = host["ledger"].get(out.evidence_id)
+    assert record["result_summary"] == {"sha256": hashlib.sha256(base64.b64decode(png)).hexdigest(),
+                                        "width": 1, "height": 1}
+    assert png not in str(record) and "Sample view" not in str(record)
+
+
+@pytest.mark.parametrize("name", ["link_revit_model", "link_cad", "load_family"])
+@pytest.mark.parametrize("outcome", ["success", "refused", "error", "exception"])
+def test_file_pack_confirms_and_executes_the_path_but_omits_it_from_evidence(host, name, outcome):
+    store = host["store"]
+    params = store.load(name).fixtures[1]["params"]
+    spec = TaskSpec(task=name, action=Action(kind="run_tool", tool=name),
+                    parameters=[ParamBinding(name=k, value=v, source=Source.answer, evidence="form")
+                                for k, v in params.items()])
+    confirmation = host["gate"].issue(spec)
+    code, errors = store.render(name, params)
+    assert code and not errors
+    replies = [RevitResponse(True, {})]  # document probe
+    path = params["path"]
+    replies.append({
+        "success": RevitResponse(True, {"ElementId": 101}),
+        "refused": RevitResponse(False, error=f"System.InvalidOperationException: REFUSED: Could not open '{path}'. Check the file."),
+        "error": RevitResponse(False, error="Source unavailable: " + path.upper().replace("\\", "/")),
+        "exception": OSError("Load failed for " + path.replace("\\", "\\\\")),
+    }[outcome])
+    client = SimpleNamespace(send_code=AsyncMock(side_effect=replies))
+    result = asyncio.run(run_pack(client=client, name=name, params=params, token=confirmation.token,
+                                  host="test", **host))
+    assert result.success == (outcome == "success")
+    assert bool(result.refused) == (outcome == "refused")
+    client.send_code.assert_any_await(code)
+    record = host["ledger"].get(result.evidence_id)
+    assert record["projection_hash"] == confirmation.projection_hash
+    assert record["params"] == {k: v for k, v in params.items() if k != "path"}
+    assert record["error"] == result.error
+    assert "example.invalid" not in (result.error or "").lower()
+    assert "example.invalid" not in str(record).lower()
 
 
 def test_run_pack_refuses_without_a_token_and_never_touches_revit(host):
@@ -199,6 +291,23 @@ def test_run_pack_early_refusals_carry_the_payload(host):
     assert "expects double" in bad.error and bad.refusal["error"] == bad.error
     assert not_dict.error == "params must be a JSON object"
     assert host["gate"].peek(token).used_at is None and host["gate"].peek(nope).used_at is None
+
+
+def test_run_pack_refuses_a_list_for_a_string_parameter_before_revit(host):
+    """B3: a confirmed list value never becomes code; nothing reaches Revit, the token stays."""
+    breakout = ['x"; document.Delete(new ElementId(5L)); return null; //']
+    token = wall_token(host["gate"], level_name=breakout)
+
+    async def scenario(client, fake):
+        out = await run_pack(client=client, name="create_wall", params={**WALL, "level_name": breakout},
+                             token=token, host="web", **host)
+        assert fake.requests == []
+        return out
+
+    out = with_fake(counting_handler(1, 2), scenario)
+    assert out.success is False and out.error == (
+        "Parameter validation failed: Parameter 'level_name' must be a single value, got a list")
+    assert host["gate"].peek(token).used_at is None
 
 
 # -- run_code ----------------------------------------------------------------------------------
@@ -744,3 +853,97 @@ def test_the_client_reports_the_json_rpc_error_code():
     assert declined.success is False and declined.error == "declined on device" and declined.error_code == -32001
     assert failed.success is False and failed.error == "boom" and failed.error_code is None
     assert unknown.success is False and unknown.error_code == -32601
+
+
+# -- a pack's refusal ----------------------------------------------------------------------------
+
+FAILED = FakeRevit.THROWN_PREFIX                     # the add-in's prefix for a snippet that threw
+
+
+@pytest.mark.parametrize("error, expected", [
+    # add-in 0.3.0 and later: the full type name
+    (FAILED + "System.InvalidOperationException: REFUSED: Nothing is selected.", "Nothing is selected."),
+    # earlier add-ins: the short type name
+    (FAILED + "InvalidOperationException: REFUSED: Nothing is selected.", "Nothing is selected."),
+    # an inner exception after the refusal is not part of the designer's text
+    (FAILED + "System.InvalidOperationException: REFUSED: Nothing is selected. ---> System.Exception: x",
+     "Nothing is selected."),
+    ("System.InvalidOperationException: REFUSED: two\nlines", "two\nlines"),
+])
+def test_refusal_message_reads_the_thrown_exceptions_own_message(error, expected):
+    assert REFUSAL_MARKER == "REFUSED: "
+    assert refusal_message(error) == expected
+
+
+@pytest.mark.parametrize("error", [
+    None, "", FAILED + "System.InvalidOperationException: Sequence contains no elements",
+    FAILED + "System.InvalidOperationException: Sequence contains no elements REFUSED: x",      # in the middle
+    FAILED + "System.ArgumentException: REFUSED: x",                                             # another type
+    FAILED + "Autodesk.Revit.Exceptions.InvalidOperationException: REFUSED: x",                  # Revit's own type
+    FAILED + "System.Exception: outer ---> System.InvalidOperationException: REFUSED: x",       # on an inner one
+    FAILED + "System.InvalidOperationException: refused: x",                                    # the marker is exact
+    FAILED + "System.InvalidOperationException: REFUSED:",                                      # no text after it
+    "\u6267\u884c\u5931\u8d25: \u4ee3\u7801\u7f16\u8bd1\u9519\u8bef:\nLine 1: REFUSED: x",       # a compile error
+])
+def test_anything_else_is_not_a_refusal(error):
+    assert refusal_message(error) is None
+
+
+def test_refused_is_in_the_result_only_when_true():
+    plain = ExecutionResult(success=False, tool="t", error="boom")
+    assert "refused" not in plain.model_dump() and '"refused"' not in plain.model_dump_json()
+    refused = ExecutionResult(success=False, tool="t", error="input", refused=True)
+    assert refused.model_dump()["refused"] is True and '"refused":true' in refused.model_dump_json()
+
+
+@pytest.mark.parametrize("error, expected", [
+    # a pre-0.3.0 add-in named the reflection wrapper's inner exception - the snippet's own - by short type
+    (FAILED + "InvalidOperationException: REFUSED: Pick a wall from the list.", "Pick a wall from the list."),
+    # an arrow in the designer's own text stays; only an inner-exception separator is cut
+    (FAILED + 'System.InvalidOperationException: REFUSED: A level named "A ---> B" already exists.',
+     'A level named "A ---> B" already exists.'),
+    (FAILED + "System.InvalidOperationException: REFUSED: a ---> b: c", "a ---> b: c"),
+    (FAILED + "System.InvalidOperationException: REFUSED: a ---> Autodesk.Revit.Exceptions.ArgumentException: in",
+     "a"),
+])
+def test_refusal_message_keeps_the_designers_text_whole(error, expected):
+    assert refusal_message(error) == expected
+
+
+@pytest.mark.parametrize("error", [
+    FAILED + "ArgumentException: REFUSED: x",                   # pre-0.3.0 shape, another type
+    FAILED + "TargetInvocationException: REFUSED: x",           # the wrapper itself, never the snippet's
+])
+def test_pre_0_3_shapes_of_other_exceptions_are_not_refusals(error):
+    assert refusal_message(error) is None
+
+
+def test_the_ledger_keeps_refused_only_when_it_is_exactly_true(tmp_path):
+    ledger = Ledger(tmp_path / "evidence")
+    written = [(value, ledger.append({"action": "run_tool", "tool": "t", "refused": value}))
+               for value in (True, 1, "true", False, None)]
+    for value, evidence_id in written:
+        line = ledger.get(evidence_id)
+        if value is True:
+            assert line["refused"] is True and list(line) == list(RECORD_FIELDS) + ["refused"]
+        else:
+            assert "refused" not in line and list(line) == list(RECORD_FIELDS), value
+
+
+def test_a_refused_record_is_not_executed_for_revalidate_and_verify(tmp_path, host):
+    refused = host["ledger"].append({"action": "run_tool", "tool": "create_wall", "success": False, "params": WALL,
+                                     "error": "Pick a level.", "refused": True})
+    failed = host["ledger"].append({"action": "run_tool", "tool": "create_wall", "success": False, "params": WALL,
+                                    "error": "boom"})
+
+    async def scenario():
+        return (await revalidate(store=host["store"], ledger=host["ledger"], client=None, evidence_id=refused),
+                await verify(VerificationStore(tmp_path / "plans"), host["ledger"], None, refused, "v_0123456789abcdef"),
+                await revalidate(store=host["store"], ledger=host["ledger"], client=None, evidence_id=failed))
+
+    again, checked, other = asyncio.run(scenario())
+    assert again == {"error": "not_executed", "evidence_id": refused,
+                     "message": "the pack refused the input; nothing was kept"}
+    assert checked["error"] == "not_executed" and checked["verified"] is False
+    # an ordinary failure is re-checked as before (here: no count was sampled, so the assertion fails)
+    assert "error" not in other and other["validator"] == "count_delta" and other["passed"] is False

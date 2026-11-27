@@ -32,6 +32,16 @@ lessons for them: ``call get_guidance(stage="fix", exceptions=[...])`` and
 what to do after (``failure_hint``, E3); a pack's retry advice follows it.
 Without such a name the ``hint`` is what it was. The reply keeps its keys.
 
+A pack refuses - nothing is kept (the add-in rolls back) and the designer can
+fix the input - by throwing ``InvalidOperationException`` whose own message
+starts with ``REFUSAL_MARKER`` (``refusal_message``). The rule holds for every
+pack, built-in or the user's. ``run_pack`` then answers ``refused: true`` with
+the text after the marker as ``error``, no hint, a ledger line that says
+``refused``, and leaves the pack's usage counters alone: a refusal is neither
+a success nor a failure of the pack. ``revalidate`` answers ``not_executed``
+for such a line. Any other exception is a failure as before, with the same
+reply.
+
 ``client`` needs ``send_code(code, parameters, confirm=None)`` - a client
 that receives ``confirm`` sends it in the request params, waits at least
 ``CONFIRM_TIMEOUT_SECONDS`` for the answer and reports a JSON-RPC error's
@@ -44,11 +54,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 from revit_bridge.capabilities.schema import evaluate_preconditions, precondition_categories
 from revit_bridge.capabilities.store import SolidifiedTool, ToolStore
@@ -76,13 +87,55 @@ RETRY_HINT = (
 )
 CONFIRM_TITLE = "revit-bridge"
 DECLINED_ERROR = "declined_on_device"
+_FILE_PACKS = {"link_revit_model", "link_cad", "load_family"}
 # E3: a failed run whose error names .NET exception types points at the fix lessons for them.
 EXCEPTION_HINT = ('call get_guidance(stage="fix", exceptions={exceptions}) and read those lessons before '
                   'changing the code; the changed code needs check_code and a new confirmation.')
 
+# A pack's refusal: an InvalidOperationException whose own message starts with this marker.
+REFUSAL_MARKER = "REFUSED: "
+# The add-in's errorMessage for a snippet that threw: its prefix ("execution failed: " in Chinese),
+# the thrown exception's type - the full name from add-in 0.3.0, the short name before - and its
+# message, then each inner exception after " ---> ". Only the thrown exception's own message counts:
+# the marker in the middle of a message, or on an inner exception, is not a refusal. The message is
+# cut only at " ---> " followed by an exception type name and ": ", so a designer's text with an
+# arrow in it stays whole.
+_REFUSAL_RE = re.compile(
+    r"\A\s*(?:\u6267\u884c\u5931\u8d25: )?(?:System\.)?InvalidOperationException: "
+    + re.escape(REFUSAL_MARKER)
+    + r"(?P<message>.*?)(?: ---> (?:[A-Za-z_]\w*\.)*\w*Exception(?:`\d+)?: .*)?\Z",
+    re.DOTALL,
+)
+
+
+def refusal_message(error: str | None) -> str | None:
+    """The designer-facing text of a pack's refusal, or None when ``error`` is not one."""
+    if not isinstance(error, str):
+        return None
+    match = _REFUSAL_RE.match(error)
+    if match is None:
+        return None
+    return match.group("message").strip() or None
+
+
+def _pack_error(name: str, params: dict, error: str | None) -> str | None:
+    """Keep native and transport diagnostics with file paths out of responses and evidence."""
+    if not error or name not in _FILE_PACKS:
+        return error
+    path = params.get("path")
+    # Native diagnostics may normalize case, change separators, or quote an escaped path.
+    echoes_input = isinstance(path, str) and path and path.casefold() in error.casefold()
+    if echoes_input or re.search(r"[a-zA-Z]:[/\\]|[/\\]{2}", error):
+        return "The file operation could not be confirmed. Check the file and its status in Revit before retrying."
+    return error
+
 
 class ExecutionResult(BaseModel):
-    """What one execution came to; the same shape the MCP tools return as JSON."""
+    """What one execution came to; the same shape the MCP tools return as JSON.
+
+    ``refused`` is only in the dump when it is true (a pack's refusal, see
+    ``refusal_message``); every other result keeps the keys it always had.
+    """
     success: bool
     tool: str | None = None
     result: Any = None
@@ -93,6 +146,14 @@ class ExecutionResult(BaseModel):
     preconditions_failed: list[str] = Field(default_factory=list)
     hint: str | None = None
     refusal: dict | None = None          # confirmation_required / confirmation_invalid payload as is
+    refused: bool = False                # the pack refused in Revit: nothing kept, input to fix
+
+    @model_serializer(mode="wrap")
+    def _drop_refused_unless_true(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and not self.refused:
+            data.pop("refused", None)
+        return data
 
 
 # -- the gate -------------------------------------------------------------------------
@@ -272,8 +333,10 @@ async def preconditions(client, pack: SolidifiedTool, warnings: list[str]) -> tu
 def _record(ledger: Ledger, *, host: str, scope: str, bypass: bool, action: str, tool: SolidifiedTool | None,
             projection: dict, conf: Confirmation | None, code: str | None, document: dict, resp,
             validation: ValidationReport | None, success: bool, error: str | None, duration_ms: int,
-            preconditions_failed: list[str], warnings: list[str]) -> str | None:
-    """Append the ledger line; a ledger that cannot be written costs a warning, not the result."""
+            preconditions_failed: list[str], warnings: list[str], refused: bool = False) -> str | None:
+    """Append the ledger line; a ledger that cannot be written costs a warning, not the result.
+
+    ``refused`` (a pack's refusal) adds ``"refused": true``; other lines keep their keys."""
     record = {
         "host": host,
         "scope": scope,
@@ -290,12 +353,17 @@ def _record(ledger: Ledger, *, host: str, scope: str, bypass: bool, action: str,
         "document": document,
         "success": success,
         "error": error,
-        "result_summary": summarize_result(resp.result if resp is not None else None),
+        "result_summary": summarize_result(resp.result if resp is not None else None, tool=tool.name if tool else None),
         "validation": validation.model_dump() if validation else None,
         "duration_ms": duration_ms,
         "preconditions_failed": preconditions_failed,
         "warnings": list(warnings),
     }
+    if tool and tool.name in _FILE_PACKS:
+        # The confirmation binds the full projection. Read-back uses model IDs/counts only.
+        record["params"] = {k: v for k, v in record["params"].items() if k != "path"}
+    if refused:
+        record["refused"] = True
     try:
         return ledger.append(record)
     except OSError as exc:
@@ -378,6 +446,12 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     when the validator's read-back could not reach Revit (``_transport_failure``:
     its result is still a failed validation). The last three still leave their
     ledger line.
+
+    A refusal thrown by the pack in Revit (``refusal_message``: nothing is
+    kept, the designer can fix the input) is not evidence against the pack
+    either: ``refused: true``, ``error`` is the text after the marker, no hint,
+    the usage counters are not touched (not reset either), and the ledger line
+    carries ``refused: true``.
     """
     if not isinstance(params, dict):
         return _refused({"success": False, "error": "params must be a JSON object"}, name)
@@ -430,7 +504,7 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
         await ensure_connected(client)
         failed, document = await preconditions(client, pack, warnings)
     except Exception as e:                     # noqa: BLE001 - nothing reached Revit: nothing to record
-        error = str(e) or type(e).__name__
+        error = _pack_error(name, params, str(e) or type(e).__name__)
         return ExecutionResult(success=False, tool=name, error=error, warnings=warnings, hint=failure_hint(error))
 
     def refused(error: str) -> ExecutionResult:
@@ -459,37 +533,53 @@ async def run_pack(*, store: ToolStore, gate: Gate, ledger: Ledger, client, name
     if refusal:
         return _refused(refusal, name)
     conf = _confirmation_of(gate, token)
+
+    def record(resp, error, *, success=False, validation=None, refused=False):
+        return _record(
+            ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection,
+            conf=conf, code=None, document=document, resp=resp, validation=validation, success=success, error=error,
+            duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
+            refused=refused,
+        )
+
     try:
         resp = await client.send_code(code)
+    except asyncio.CancelledError:
+        record(None, "cancelled_after_dispatch")
+        raise
     except Exception as e:
         # Revit may or may not have run it: exactly the case that needs a ledger line.
         # No reply came back, so nothing is known about the pack: its usage is not touched.
-        evidence_id = _record(
-            ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
-            code=None, document=document, resp=None, validation=None, success=False, error=str(e),
-            duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
-        )
-        return ExecutionResult(success=False, tool=name, error=str(e), evidence_id=evidence_id, warnings=warnings,
-                               hint=failure_hint(str(e)))
+        error = _pack_error(name, params, str(e))
+        evidence_id = record(None, error)
+        return ExecutionResult(success=False, tool=name, error=error, evidence_id=evidence_id, warnings=warnings,
+                               hint=failure_hint(error))
+
+    refused_text = None if resp.success else _pack_error(name, params, refusal_message(resp.error))
+    if refused_text is not None:
+        # The pack refused the input in Revit and the add-in rolled back: nothing to say about the
+        # pack itself, so its usage counters stay as they are and no retry or exception hint is given.
+        evidence_id = record(resp, refused_text, refused=True)
+        return ExecutionResult(success=False, tool=name, result=resp.result, error=refused_text,
+                               evidence_id=evidence_id, warnings=warnings, refused=True)
 
     validation: ValidationReport | None = None
     read_back_unreachable = False
     if validator is not None and resp.success:
         try:
             validation = await validator.after(client, spec, pack.validator, before, resp.result)
+        except asyncio.CancelledError:
+            record(resp, "cancelled_during_validation")
+            raise
         except Exception as e:  # noqa: BLE001 - a validator that cannot run is a failed validation
             validation = _validation_error(validator.kind, e, before)
             read_back_unreachable = _transport_failure(e)
     success = bool(resp.success) and (validation is None or validation.passed)
     error = resp.error if not resp.success else ("validation_failed" if validation and not validation.passed else None)
+    error = _pack_error(name, params, error)
     if _replied(resp) and not read_back_unreachable:
         store.record_usage(name, success=success)
-    duration_ms = int((time.monotonic() - started) * 1000)
-    evidence_id = _record(
-        ledger, host=host, scope=scope, bypass=bypass, action="run_tool", tool=pack, projection=projection, conf=conf,
-        code=None, document=document, resp=resp, validation=validation, success=success, error=error,
-        duration_ms=duration_ms, preconditions_failed=[], warnings=warnings,
-    )
+    evidence_id = record(resp, error, success=success, validation=validation)
     return ExecutionResult(
         success=success, tool=name, result=resp.result, error=error, validation=validation,
         evidence_id=evidence_id, warnings=warnings, hint=None if resp.success else failure_hint(error, RETRY_HINT),
@@ -525,16 +615,19 @@ async def run_code(*, gate: Gate, ledger: Ledger, client, code: str, parameters:
     conf = _confirmation_of(gate, token)
     try:
         resp = await client.send_code(code, parameters, confirm=device_confirmation(code, conf))
-    except Exception as e:
+    except (Exception, asyncio.CancelledError) as e:
         # Revit may or may not have run it: exactly the case that needs a ledger line
+        error = "cancelled_after_dispatch" if isinstance(e, asyncio.CancelledError) else str(e)
         evidence_id = _record(
             ledger, host=host, scope=scope, bypass=bypass, action="execute_code", tool=None, projection=projection,
             conf=conf,
-            code=code, document=document, resp=None, validation=None, success=False, error=str(e),
+            code=code, document=document, resp=None, validation=None, success=False, error=error,
             duration_ms=int((time.monotonic() - started) * 1000), preconditions_failed=[], warnings=warnings,
         )
-        return ExecutionResult(success=False, error=str(e), evidence_id=evidence_id, warnings=warnings,
-                               hint=failure_hint(str(e)))
+        if isinstance(e, asyncio.CancelledError):
+            raise
+        return ExecutionResult(success=False, error=error, evidence_id=evidence_id, warnings=warnings,
+                               hint=failure_hint(error))
     duration_ms = int((time.monotonic() - started) * 1000)
     error = DECLINED_ERROR if _declined(resp) else resp.error       # the designer said No on the device
     evidence_id = _record(
@@ -556,13 +649,18 @@ async def revalidate(*, store: ToolStore, ledger: Ledger, client, evidence_id: s
     Returns the ValidationReport (plus ``evidence_id`` and ``tool``) or
     ``{"error": ...}`` when the record, its pack or a validator is missing,
     or (``scope_mismatch``) when ``scope`` is given and the record belongs
-    to another one. Transport failures propagate to the caller.
+    to another one, or (``not_executed``, as ``verify`` says) when the pack
+    refused: nothing was kept, so there is nothing to assert. Other failed
+    records are re-checked as before. Transport failures propagate to the caller.
     """
     record = ledger.get(evidence_id)
     if record is None:
         return {"error": "unknown_evidence", "evidence_id": evidence_id}
     if scope is not None and record.get("scope") != scope:
         return {"error": "scope_mismatch", "evidence_id": evidence_id}
+    if record.get("refused") is True:
+        return {"error": "not_executed", "evidence_id": evidence_id,
+                "message": "the pack refused the input; nothing was kept"}
     if record.get("action") != "run_tool" or not record.get("tool"):
         return {"error": "no_validator", "message": "only run_tool executions carry a validator"}
     pack = store.load(record["tool"])

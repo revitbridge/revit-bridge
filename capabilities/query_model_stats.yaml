@@ -1,5 +1,6 @@
 schema_version: 1
 name: query_model_stats
+read_only: true
 display_name: Query Model Statistics
 description: Count model elements by category (read-only).
 version: "1.0.0"

@@ -218,13 +218,15 @@ class LockedJsonFile:
                 pass  # gone already, or still open: the next sweep
 
     @contextmanager
-    def locked(self):
-        """Hold the lock file for one read-modify-write (see module doc)."""
+    def locked(self, *, required: bool = False):
+        """Hold the writer lock. With required=True, raise if it could not be acquired."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass  # the write will report it
         token = self._acquire()
+        if required and token is None:
+            raise TimeoutError("could not acquire the file lock")
         try:
             yield
         finally:

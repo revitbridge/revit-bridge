@@ -1,0 +1,171 @@
+"""Metadata on the effective pack, and the reviewed API surface of each built-in reader."""
+import asyncio
+import json
+import re
+
+import pytest
+import yaml
+
+from revit_bridge import mcp_server
+from revit_bridge.capabilities.schema import validate_pack
+from revit_bridge.capabilities.store import ToolStore
+from revit_bridge.evidence.ledger import Ledger
+from revit_bridge.execution import run_pack
+from revit_bridge.spec.gate import Gate
+from revit_bridge.spec.models import Action, ParamBinding, Source, TaskSpec
+from revit_bridge.spec.rules import missing_params, validate_spec
+
+
+READERS = {"count_by_level", "elements_in_link", "list_types", "query_levels", "query_model_stats",
+           "list_elements", "get_element_geometry", "get_element_parameters", "list_mep_types"}
+READ_CALLS = set("""
+    Add AsDouble AsElementId AsInteger AsString AsValueString Cast ComputeDerivatives Contains
+    ConvertFromInternalUnits Count CreateEqualsRule CrossProduct Equals Evaluate Except FirstOrDefault
+    GetCategory GetDataType GetElement GetElementCount GetElementIdIterator GetElementIds GetEndPoint
+    GetLength GetLinkDocument GetName GetTypeId GroupBy IsDefined Join Min MoveNext Normalize OfCategory
+    OfClass OfType OrderBy OrderByDescending Parse Round Select Split StartsWith Sum Take ThenBy ToList
+    ToString Trim TryGetValue TryParse Where WhereElementIsElementType WhereElementIsNotElementType
+    WherePasses get_Parameter Any Empty GetDuctSizeSettings GetSizeCount GetSizes StartNew
+""".split())
+READ_CONSTRUCTORS = set("""
+    Dictionary ElementId ElementLevelFilter ElementParameterFilter FilteredElementCollector HashSet
+    InvalidOperationException List LogicalOrFilter UIDocument double
+""".split())
+
+
+@pytest.mark.parametrize("name", sorted(READERS))
+def test_declared_reader_calls_only_reviewed_read_apis(tmp_path, name):
+    store = ToolStore(user_dir=tmp_path)
+    pack = store.load(name)
+    assert pack.read_only is True
+    for fixture in pack.fixtures or [{"params": {}}]:
+        code, errors = store.render(name, fixture["params"])
+        assert not errors
+        source = re.sub(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"', "", code, flags=re.S)
+        calls = set(re.findall(r"\.\s*(\w+)\s*(?:<[\w ,]+>)?\s*\(", source))
+        assert not calls - READ_CALLS, calls - READ_CALLS
+        local_collections = set(re.findall(r"\bvar\s+(\w+)\s*=\s*new\s+(?:List|HashSet|Dictionary)<", source))
+        for call in re.finditer(r"\.\s*Add\s*\(", source):
+            receiver = re.search(r"(?<![.\w])([A-Za-z_]\w*)\s*$", source[:call.start()])
+            assert receiver and receiver[1] in local_collections
+        assert not set(re.findall(r"\bnew\s+(\w+)", source)) - READ_CONSTRUCTORS
+        assert not re.search(r"\.\s*\w+\s*(?:[+*/-]?=(?!=|>)|\+\+|--)", source)
+
+
+@pytest.mark.parametrize("name", ["get_element_geometry", "list_elements", "query_levels", "get_element_parameters"])
+def test_reader_declares_compiled_revit_versions(tmp_path, name):
+    pack = ToolStore(user_dir=tmp_path).load(name)
+    years = ["2023", "2024", "2025", "2026", "2027"]
+    if name == "get_element_parameters":
+        assert pack.revit_versions == years
+        assert {"text": "Revit 2023 or later (Definition.GetDataType)"} in pack.preconditions
+    else:
+        assert pack.revit_versions == ["2021", *years]
+
+
+def test_tool_resource_preserves_pack_text_and_listing_exposes_read_only(tmp_path, monkeypatch):
+    user = tmp_path / "user"
+    user.mkdir()
+    store = ToolStore(user_dir=user)
+    monkeypatch.setattr(mcp_server, "_tool_store", store)
+    def listing():
+        return {t["name"]: t["read_only"] for t in json.loads(mcp_server.list_tools())}
+    assert {name for name, marked in listing().items() if marked} == READERS
+    assert {p.name for p in store.list_tools() if p.read_only} == READERS
+    for p in store.list_tools():
+        assert mcp_server.tool_resource(p.name).encode("utf-8") == store.path_of(p.name).read_bytes()
+    for name in ("list_elements", "get_element_geometry", "get_element_parameters"):
+        assert store.load(name).description.startswith("Read only. ")
+    yaml_text = "# User comment\r\nname: query_levels\r\ncode_template: |-\r\n  // example\r\n  return 1;"
+    path = user / "query_levels.yaml"
+    path.write_bytes(yaml_text.encode("utf-8"))
+    assert store.path_of("query_levels") == path
+    assert listing()["query_levels"] is False
+    assert mcp_server.tool_resource("query_levels") == yaml_text
+    path.write_bytes((yaml_text + "\r\nread_only: true\r\n").encode("utf-8"))
+    assert store.load("query_levels").read_only is True and store.path_of("query_levels") == path
+    updated = store.update("query_levels", {"description": "New label"})
+    assert updated.read_only is True and yaml.safe_load(path.read_text(encoding="utf-8"))["read_only"] is True
+
+
+@pytest.mark.parametrize("value", [None, 1, "false", "true", []])
+def test_read_only_accepts_only_a_boolean(tmp_path, value):
+    store = ToolStore(user_dir=tmp_path)
+    data = yaml.safe_load(store.path_of("query_levels").read_text(encoding="utf-8"))
+    data["read_only"] = value
+    assert any("read_only" in error for error in validate_pack(data))
+    (tmp_path / "query_levels.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert store.load("query_levels").read_only is False
+
+
+@pytest.mark.parametrize("user_override", [False, True])
+def test_read_only_declaration_keeps_the_normal_execution_gate(tmp_path, user_override):
+    store = ToolStore(user_dir=tmp_path)
+    if user_override:
+        (tmp_path / "query_levels.yaml").write_text("name: query_levels\nread_only: true\ncode_template: return 1;\n",
+                                                   encoding="utf-8")
+    assert store.load("query_levels").read_only is True
+    result = asyncio.run(run_pack(store=store, gate=Gate(tmp_path / "pending"), ledger=Ledger(tmp_path / "evidence"),
+                                  client=None, name="query_levels", params={}, token="", host="web"))
+    assert result.error == "confirmation_required" and result.evidence_id is None
+
+
+def test_catalogue_and_details_declare_exactly_the_instance_id_parameters(tmp_path, monkeypatch):
+    store = ToolStore(user_dir=tmp_path)
+    monkeypatch.setattr(mcp_server, "_tool_store", store)
+    declared = {}
+    for tool in json.loads(mcp_server.list_tools()):
+        detail = yaml.safe_load(mcp_server.tool_resource(tool["name"]))
+        assert not validate_pack(detail)
+        for parameter, full in zip(tool["parameters"], detail["parameters"], strict=True):
+            choice = parameter.get("choices_from")
+            assert choice == full.get("choices_from")
+            if choice == "elements" or (choice or "").startswith("elements:"):
+                declared[tool["name"], parameter["name"]] = choice
+    csv = ("change_type", "change_type_by_name", "copy_elements", "delete_elements", "mirror_elements",
+           "move_elements", "rotate_elements", "set_parameter", "select_elements", "select_in_box",
+           "zoom_to_elements", "set_section_box")
+    walls = ("create_door", "create_door_on_wall", "create_window", "create_window_on_wall")
+    assert declared == {
+        **{(name, "element_ids"): "elements" for name in csv},
+        **{(name, "wall_id"): "elements:OST_Walls" for name in walls},
+        **{(name, "element_id"): "elements:OST_Walls" for name in ("set_wall_constraints", "modify_wall_height")},
+        **{(name, "element_id"): "elements" for name in ("get_element_parameters", "get_element_geometry")},
+        ("create_wall_from_element", "reference_id"): "elements",
+        ("elements_in_link", "link_id"): "elements:OST_RvtLinks",
+        ("connect_pipes", "first_pipe_id"): "elements:OST_PipeCurves",
+        ("connect_pipes", "second_pipe_id"): "elements:OST_PipeCurves",
+    }
+    link = store.load("elements_in_link").parameters[0]
+    assert (link["name"], link["source"]) == ("link_id", "tool:elements")
+
+
+@pytest.mark.parametrize("tool,name,allowed", [
+    ("get_element_parameters", "element_id", {Source.designer, Source.answer, Source.preference, Source.tool}),
+    ("set_wall_constraints", "element_id", {Source.designer, Source.answer, Source.preference, Source.tool}),
+    ("delete_elements", "element_ids", {Source.designer, Source.answer, Source.preference, Source.tool}),
+    ("get_element_geometry", "element_id", set(Source)),
+    ("create_door", "wall_id", {Source.tool, Source.answer}),
+    ("elements_in_link", "link_id", {Source.tool, Source.answer}),
+    ("change_type", "type_id", {Source.designer, Source.answer, Source.preference}),
+])
+def test_element_choice_keeps_the_parameters_other_evidence_sources(tmp_path, tool, name, allowed):
+    store = ToolStore(user_dir=tmp_path)
+    pack = store.load(tool)
+    for source in Source:
+        binding = ParamBinding(name=name, value=101, source=source,
+                               evidence="preference:checked" if source is Source.preference else "checked")
+        spec = TaskSpec(task="Read instance", action=Action(kind="run_tool", tool=tool), parameters=[binding])
+        errors = [e.code for e in validate_spec(spec, pack) if e.param == name]
+        assert (not errors) == (source in allowed), (source, errors)
+    if tool == "get_element_geometry":
+        ok, errors, filled = store.validate_params(tool, {})
+        assert ok and not errors and filled[name] == ""
+
+
+@pytest.mark.parametrize("language", ["zh", "en"])
+def test_a_manual_id_question_keeps_its_source_before_a_pick(tmp_path, language):
+    from dataclasses import replace
+    pack = ToolStore(user_dir=tmp_path).load("get_element_parameters")
+    original = replace(pack, parameters=[{k: v for k, v in p.items() if k != "choices_from"} for p in pack.parameters])
+    assert missing_params(pack, {}, None, language) == missing_params(original, {}, None, language)

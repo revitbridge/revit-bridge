@@ -1,4 +1,4 @@
-"""Capability pack v1: validate_pack, the 8 built-ins, preconditions."""
+"""Capability pack v1: validate_pack, built-ins, preconditions."""
 from __future__ import annotations
 
 import copy
@@ -52,14 +52,40 @@ def param_variant(index: int, **changes) -> dict:
 
 # -- the built-ins ------------------------------------------------------------------------
 
+# No built-in validator can prove these three (an arbitrary parameter, a move, a mixed deletion);
+# each reads its own result back instead. Planner's ruling, 2026-11-23: an open item.
+WITHOUT_VALIDATOR = {
+    "set_parameter", "move_elements", "delete_selected", "delete_elements",
+    "copy_elements", "rotate_elements", "mirror_elements",
+    "get_element_geometry", "get_element_parameters", "change_type_by_name",
+    # These tools change UI state or a 3D view's section box. The existing
+    # model-count, created-id and element-parameter validators cannot verify them.
+    "select_elements", "select_in_box", "select_by_filter", "clear_selection",
+    "zoom_to_elements", "set_view_orientation", "set_section_box",
+    # View setting packs read back the property on the resolved view.
+    "set_view_detail_level", "set_view_display_style",
+    # The placement category varies, the route may partially succeed, and
+    # connecting pipes is verified against the fitting's physical connectors.
+    "place_family_instance", "create_pipes_by_points", "connect_pipes", "list_mep_types",
+    # Attached links can add several instances. The pack reads back the placed instance and its type.
+    "link_revit_model",
+    # CAD links have drawing-specific categories. Loaded families span categories.
+    "link_cad", "load_family",
+}
+
+
 def test_every_builtin_pack_is_valid_v1_with_a_validator():
     files = sorted(builtin_capabilities_dir().glob("*.yaml"))
-    assert len(files) == 8
+    assert len(files) == 58
+    assert WITHOUT_VALIDATOR <= {path.stem for path in files}
     for path in files:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert validate_pack(data) == [], path.name
         assert data["schema_version"] == 1 and data["version"] == "1.0.0", path.name
-        assert data["validator"]["kind"] in VALIDATOR_KINDS, path.name
+        if path.stem in WITHOUT_VALIDATOR:
+            assert data["validator"] is None, path.name
+        else:
+            assert data["validator"]["kind"] in VALIDATOR_KINDS, path.name
         for param in data["parameters"]:
             assert "source" in param and isinstance(param["required"], bool), (path.name, param["name"])
         for absent in ("tags", "execution_count", "last_used", "failure_count"):
@@ -110,6 +136,10 @@ def test_validate_pack_checks_sources_choices_defaults_and_units():
     assert "parameters[1] (x): unknown source 'guess'" in validate_pack(param_variant(1, source="guess"))
     assert any("tool:<query> needs a query kind" in e for e in validate_pack(param_variant(0, source="tool:")))
     assert any("choices_from must be" in e for e in validate_pack(param_variant(0, choices_from="walls")))
+    assert validate_pack(param_variant(0, source="tool:elements", choices_from="links")) == [
+        "parameters[0] (level_name): choices_from must be levels | floor_types | family_types:OST_* | "
+        "elements[:OST_*], got 'links'"]
+    assert any("names no usable query" in e for e in validate_pack(param_variant(0, source="tool:links", choices_from=None)))
     # a tool source whose query is not a choices source needs choices_from
     assert any("names no usable query" in e for e in validate_pack(param_variant(0, source="tool:grids", choices_from=None)))
     assert validate_pack(param_variant(0, source="tool:family_types:OST_Walls", choices_from=None)) == []
@@ -126,7 +156,8 @@ def test_validate_pack_checks_sources_choices_defaults_and_units():
 
 def test_validate_pack_checks_template_version_and_preconditions():
     assert validate_pack(variant(code_template="return {missing};")) == [
-        "code_template: placeholder {missing} is not a declared parameter"]
+        "code_template: placeholder {missing} is not a declared parameter at line 1, column 8 (code). "
+        'Move it into an ordinary string literal: string x = "{missing}";']
     assert any("non-empty string" in e for e in validate_pack(variant(code_template="  ")))
     assert any("semver" in e for e in validate_pack(variant(version="1.0")))
     assert any("revit_versions" in e for e in validate_pack(variant(revit_versions="2026")))

@@ -1,0 +1,108 @@
+schema_version: 1
+name: zoom_to_elements
+ui_only: true
+display_name: Zoom To Elements
+description: "View only. Frame the given elements or current selection in the active view window."
+version: "1.0.0"
+revit_versions: ["2021", "2023", "2024", "2025", "2026", "2027"]
+code_template: |
+  ElementId ParseId(string text)
+  {
+      long number;
+      if (!long.TryParse(text.Trim(), System.Globalization.NumberStyles.None,
+              System.Globalization.CultureInfo.InvariantCulture, out number) || number <= 0)
+          throw new InvalidOperationException("REFUSED: Invalid id " + text + ". Give positive element ids separated by commas.");
+      // Revit 2024 widened both the BuiltInCategory backing type and the ElementId constructor.
+      var native = (BuiltInCategory)number - (BuiltInCategory)0;
+      if ((long)native != number)
+          throw new InvalidOperationException("REFUSED: Id " + number + " is too large for this Revit year. Pick an element in the active document.");
+      return new ElementId(native);
+  }
+  var timer = System.Diagnostics.Stopwatch.StartNew();
+  void CheckTime()
+  {
+      // Bound managed model lookups inside this single API callback.
+      if (timer.ElapsedMilliseconds > 200)
+          throw new InvalidOperationException("REFUSED: The model lookup took too long. Narrow the range or use fewer elements.");
+  }
+  var uidoc = new UIDocument(document);
+  var view = document.ActiveView;
+  var window = uidoc.GetOpenUIViews().FirstOrDefault(w => w.ViewId == view.Id);
+  if (window == null || !FilteredElementCollector.IsViewValidForElementIteration(document, view.Id))
+      throw new InvalidOperationException("REFUSED: No graphical view window is active. Open a model view.");
+  string idText = "{element_ids}";
+  ICollection<ElementId> ids;
+  if (idText == "") ids = uidoc.Selection.GetElementIds();
+  else
+  {
+      var parts = idText.Split(',');
+      if (parts.Length > 5000)
+          throw new InvalidOperationException("REFUSED: Received " + parts.Length + " id entries. Give at most 5000.");
+      ids = new HashSet<ElementId>(parts.Select(ParseId));
+  }
+  if (ids.Count == 0)
+      throw new InvalidOperationException("REFUSED: Nothing to zoom to. Select elements or supply element_ids.");
+  if (ids.Count > 5000)
+      throw new InvalidOperationException("REFUSED: " + ids.Count + " selected. Narrow the selection to at most 5000.");
+
+  XYZ right = view.RightDirection, up = view.UpDirection, origin = null;
+  var perspective = view is View3D v && v.IsPerspective ? v.GetOrientation() : null;
+  double minX = double.PositiveInfinity, maxX = double.NegativeInfinity;
+  double minY = double.PositiveInfinity, maxY = double.NegativeInfinity;
+  double planeDepth = 0;
+  foreach (var id in ids)
+  {
+      CheckTime();
+      var element = document.GetElement(id);
+      var box = element == null || element is ElementType ? null : element.get_BoundingBox(view);
+      if (box == null)
+          throw new InvalidOperationException("REFUSED: Element " + id + " has no bounds here. Pick model instances in this view.");
+      var lo = box.Min;
+      var hi = box.Max;
+      if (origin == null)
+      {
+          origin = (lo + hi) * 0.5;
+          if (perspective != null) planeDepth = (origin - perspective.EyePosition).DotProduct(perspective.ForwardDirection);
+      }
+      // Project all eight corners. The model-space diagonal can collapse in a rotated view.
+      for (int i = 0; i < 8; ++i)
+      {
+          var p = new XYZ((i & 1) == 0 ? lo.X : hi.X, (i & 2) == 0 ? lo.Y : hi.Y, (i & 4) == 0 ? lo.Z : hi.Z);
+          if (perspective != null)
+          {
+              XYZ ray = p - perspective.EyePosition;
+              double depth = ray.DotProduct(perspective.ForwardDirection);
+              if (depth <= 0)
+                  throw new InvalidOperationException("REFUSED: Part of the bounds is behind the eye. Rotate the view or choose another target.");
+              p = perspective.EyePosition + ray * (planeDepth / depth);
+          }
+          double x = (p - origin).DotProduct(right), y = (p - origin).DotProduct(up);
+          minX = Math.Min(minX, x); maxX = Math.Max(maxX, x);
+          minY = Math.Min(minY, y); maxY = Math.Max(maxY, y);
+      }
+  }
+  // A minimum border also gives point and line targets a nonzero zoom rectangle.
+  double pad = Math.Max(100.0 / 304.8, Math.Max(maxX - minX, maxY - minY) * 0.05);
+  window.ZoomAndCenterRectangle(origin + right * (minX - pad) + up * (minY - pad),
+                                origin + right * (maxX + pad) + up * (maxY + pad));
+  return new { Status = "Zoomed", View = view.Name, Count = ids.Count };
+parameters:
+  - name: element_ids
+    type: string
+    description: "Comma-separated element ids. Omit to frame the current selection."
+    source: designer
+    choices_from: elements
+    required: false
+    default: ""
+preconditions:
+  - text: "Open a graphical view and supply element ids or select elements in the active document."
+applies_when:
+  - "zoom to elements"
+validator: null
+fixtures:
+  - name: explicit_ids
+    params: {"element_ids":"101,102"}
+    expect: {"Status":"Zoomed","Count":2}
+  - name: current_selection
+    params: {}
+    expect: {"Status":"Zoomed"}

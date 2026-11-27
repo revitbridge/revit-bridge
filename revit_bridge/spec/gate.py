@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -177,7 +178,7 @@ class Gate:
             pass  # memory still holds it; only restart resilience is lost
 
     def _load(self, token: str) -> Confirmation | None:
-        if not token:
+        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):  # token_urlsafe(24)
             return None
         conf = self._read(self._path(token))
         if conf is None or not secrets.compare_digest(conf.token, token):

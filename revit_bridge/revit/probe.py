@@ -26,14 +26,15 @@ PING_PROBE = "return document.Title;"
 CHECK_PROBE = PING_PROBE
 
 
-async def check_connection(settings: RevitSettings | None = None, environment: bool = False) -> dict:
+async def check_connection(settings: RevitSettings | None = None, environment: bool = False, *, client=None) -> dict:
     """Open a fresh connection, read the open document's title, describe the outcome.
 
     ``reachable`` is true as soon as the add-in answers at all; what it
     answered is reported separately: ``document`` is the title of the open
     document, ``document_error`` the add-in's message when the probe could
     not run (no document open, wrong token, ...). ``error`` holds transport
-    failures only.
+    failures only. A caller-supplied client is already routed and connected;
+    the caller owns its lifetime and no local settings are consulted.
 
     With ``environment`` the reply also carries ``capability`` (the
     ``get_bridge_capabilities`` state: supported / unsupported / unknown,
@@ -46,18 +47,22 @@ async def check_connection(settings: RevitSettings | None = None, environment: b
     from revit_bridge.revit.client import RevitClient   # client imports PING_PROBE from here
     from revit_bridge.revit.environment import get_environment, unknown_environment
 
-    try:
-        settings = settings or RevitSettings.from_env()
-    except ValueError as exc:                  # REVIT_BRIDGE_PORT=abc and the like: nothing to reach
-        return _unreachable_settings(exc, environment)
-    status = settings.describe()
+    owns_client = client is None
+    status = {}
+    if owns_client:
+        try:
+            settings = settings or RevitSettings.from_env()
+        except ValueError as exc:              # REVIT_BRIDGE_PORT=abc and the like: nothing to reach
+            return _unreachable_settings(exc, environment)
+        status = settings.describe()
+        client = RevitClient(settings=settings)
     status["document"] = None
     status["document_error"] = None
     env: dict | None = None
     unreached: Capabilities | None = None
-    client = RevitClient(settings=settings)
     try:
-        await client.connect()
+        if owns_client:
+            await client.connect()
         resp = await client.send_code(CHECK_PROBE)
         status["reachable"] = bool(resp.success or resp.raw)   # raw: a reply came back
         status["error"] = None if status["reachable"] else resp.error
@@ -75,7 +80,8 @@ async def check_connection(settings: RevitSettings | None = None, environment: b
         status["error"] = str(exc) or type(exc).__name__
         unreached = Capabilities.from_exception(exc)
     finally:
-        await client.disconnect()
+        if owns_client:
+            await client.disconnect()
     status["status"] = "connected" if status["reachable"] else "disconnected"
     if environment:
         if env is None:

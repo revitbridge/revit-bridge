@@ -1,0 +1,159 @@
+schema_version: 1
+name: create_column
+display_name: Create Column
+description: "Create a named architectural column on a base level. When no top level is specified, Revit uses the next level above the base."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, double> number = text =>
+  {
+      double value;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out value)
+          || double.IsNaN(value) || double.IsInfinity(value))
+          throw new InvalidOperationException("REFUSED: Expected a finite number: " + text);
+      return value;
+  };
+  Func<string, double> feet = text => UnitUtils.ConvertToInternalUnits(number(text), UnitTypeId.Millimeters);
+
+  Func<string, Level> levelByName = name =>
+  {
+      Level result = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+          .FirstOrDefault(l => l.Name == name);
+      if (result == null)
+          throw new InvalidOperationException("REFUSED: No level named " + name);
+      return result;
+  };
+
+  Action<Element, BuiltInParameter, ElementId> setId = (element, key, value) =>
+  {
+      Parameter p = element.get_Parameter(key);
+      if (p == null || p.IsReadOnly || (!p.Set(value) && p.AsElementId() != value))
+          throw new InvalidOperationException("REFUSED: Cannot set " + key + " on " + element.Id);
+  };
+  Action<Element, BuiltInParameter, double> setLength = (element, key, value) =>
+  {
+      Parameter p = element.get_Parameter(key);
+      if (p == null || p.IsReadOnly || (!p.Set(value) && (!p.HasValue || Math.Abs(p.AsDouble() - value) > 1e-9)))
+          throw new InvalidOperationException("REFUSED: Cannot set " + key + " on " + element.Id);
+  };
+
+  Level level = levelByName("{level_name}");
+  string topName = "{top_level_name}", typeName = "{type_name}";
+  Level top = topName == "" ? null : levelByName(topName);
+  var symbols = new FilteredElementCollector(document).OfClass(typeof(FamilySymbol))
+      .OfCategory(BuiltInCategory.OST_Columns).Cast<FamilySymbol>()
+      .Where(s => s.Name == typeName || s.FamilyName + ": " + s.Name == typeName).Take(2).ToList();
+  if (symbols.Count != 1)
+      throw new InvalidOperationException("REFUSED: Choose a unique column type; use Family: Type if ambiguous: " + typeName);
+  var symbol = symbols[0];
+  if (!symbol.IsActive) { symbol.Activate(); document.Regenerate(); }
+  XYZ location = new XYZ(feet("{x}"), feet("{y}"), 0);
+  var column = document.Create.NewFamilyInstance(location, symbol, level,
+      Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+  if (column == null) throw new InvalidOperationException("Revit returned no column.");
+  if (top != null)
+  {
+      Parameter baseOffset = column.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+      if (baseOffset == null || !baseOffset.HasValue)
+          throw new InvalidOperationException("REFUSED: Cannot resolve the column base offset.");
+      if (top.ProjectElevation <= level.ProjectElevation + baseOffset.AsDouble())
+          throw new InvalidOperationException("REFUSED: Effective column top must be above its base.");
+      setId(column, BuiltInParameter.FAMILY_TOP_LEVEL_PARAM, top.Id);
+      setLength(column, BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM, 0);
+  }
+
+  double angle = number("{rotation}") * Math.PI / 180;
+  if (angle != 0)
+      ElementTransformUtils.RotateElement(document, column.Id, Line.CreateBound(location, location + XYZ.BasisZ), angle);
+  document.Regenerate();
+  Level ReadLevel(BuiltInParameter key)
+  {
+      Parameter parameter = column.get_Parameter(key);
+      return parameter != null && parameter.HasValue ? document.GetElement(parameter.AsElementId()) as Level : null;
+  }
+  double? ReadOffset(BuiltInParameter key)
+  {
+      Parameter parameter = column.get_Parameter(key);
+      return parameter != null && parameter.HasValue ? (double?)parameter.AsDouble() : null;
+  }
+  Level actualBase = ReadLevel(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM);
+  Level actualTop = ReadLevel(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM);
+  double? actualBaseOffset = ReadOffset(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+  double? actualTopOffset = ReadOffset(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM);
+  double? height = actualTop?.ProjectElevation + actualTopOffset - actualBase?.ProjectElevation - actualBaseOffset;
+  if (top != null && (actualTop?.Id != top.Id || !actualTopOffset.HasValue || Math.Abs(actualTopOffset.Value) > 1e-8))
+      throw new InvalidOperationException("Column top constraint read-back failed.");
+  if (height.HasValue && height.Value <= 0)
+      throw new InvalidOperationException("REFUSED: Effective column top must be above its base.");
+  if (!height.HasValue)
+  {
+      // Families without level constraints can still expose their physical height.
+      var box = column.get_BoundingBox(null);
+      if (box != null) height = box.Max.Z - box.Min.Z;
+  }
+  double? Mm(double? value) => value.HasValue
+      ? (double?)UnitUtils.ConvertFromInternalUnits(value.Value, UnitTypeId.Millimeters) : null;
+  return new { ElementId = column.Id.Value, Status = "Created", FamilyType = symbol.Name, Level = level.Name,
+      TopLevel = actualTop?.Name, TopOffsetMm = Mm(actualTopOffset), HeightMm = Mm(height) };
+parameters:
+  - name: type_name
+    type: string
+    description: Column type name
+    source: tool:family_types
+    required: true
+    choices_from: family_types:OST_Columns
+  - name: level_name
+    type: string
+    description: Base level name
+    source: tool:levels
+    required: true
+    choices_from: levels
+  - name: x
+    type: double
+    description: "X coordinate (mm)"
+    source: designer
+    required: true
+    unit: mm
+  - name: y
+    type: double
+    description: "Y coordinate (mm)"
+    source: designer
+    required: true
+    unit: mm
+  - name: top_level_name
+    type: string
+    description: "Top constraint level, by exact name"
+    source: answer
+    choices_from: levels
+    required: false
+    default: ""
+  - name: rotation
+    type: double
+    description: "Counterclockwise rotation (degrees)"
+    source: default
+    required: false
+    default: 0
+preconditions:
+  - kind: levels_min
+    value: 1
+  - kind: category_present
+    category: OST_Columns
+not_for:
+  - "structural columns"
+applies_when:
+  - "create architectural column"
+validator:
+  kind: created_ids
+  category: OST_Columns
+fixtures:
+  - name: basic
+    params: {type_name: Square 400, level_name: L1, x: 0, y: 0}
+    expect: {Status: Created}
+  - name: top_and_rotation
+    params: {type_name: Square 400, level_name: L1, x: 0, y: 0, top_level_name: L2, rotation: 30}
+    expect: {Status: Created}
+approved_by: null
+approved_at: null
+created_at: "2026-11-25T00:00:00"
+source_query: create architectural column

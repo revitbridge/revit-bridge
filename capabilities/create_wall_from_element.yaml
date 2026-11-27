@@ -1,0 +1,194 @@
+schema_version: 1
+name: create_wall_from_element
+display_name: Create Wall From Element
+description: "Create a basic wall from a straight element's start, midpoint or end using its direction in the XY plane."
+version: "1.0.0"
+revit_versions: ["2026"]
+code_template: |
+  var invariant = System.Globalization.CultureInfo.InvariantCulture;
+  Func<string, double> number = text =>
+  {
+      double value;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float, invariant, out value)
+          || double.IsNaN(value) || double.IsInfinity(value))
+          throw new InvalidOperationException("REFUSED: Expected a finite number: " + text);
+      return value;
+  };
+  Func<string, double> feet = text => UnitUtils.ConvertToInternalUnits(number(text), UnitTypeId.Millimeters);
+
+  Func<string, Level> levelByName = name =>
+  {
+      Level result = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+          .FirstOrDefault(l => l.Name == name);
+      if (result == null)
+          throw new InvalidOperationException("REFUSED: No level named " + name);
+      return result;
+  };
+
+  Action<Element, BuiltInParameter, ElementId> setId = (element, key, value) =>
+  {
+      Parameter p = element.get_Parameter(key);
+      if (p == null || p.IsReadOnly || (!p.Set(value) && p.AsElementId() != value))
+          throw new InvalidOperationException("REFUSED: Cannot set " + key + " on " + element.Id);
+  };
+  Action<Element, BuiltInParameter, double> setLength = (element, key, value) =>
+  {
+      Parameter p = element.get_Parameter(key);
+      if (p == null || p.IsReadOnly || (!p.Set(value) && (!p.HasValue || Math.Abs(p.AsDouble() - value) > 1e-9)))
+          throw new InvalidOperationException("REFUSED: Cannot set " + key + " on " + element.Id);
+  };
+
+  string topName = "{top_level_name}", heightText = "{height}", typeName = "{type_name}";
+  bool heightIgnored = topName != "" && heightText != "";
+  Level top = topName == "" ? null : levelByName(topName);
+  double unconnectedHeight = feet(top != null || heightText == "" ? "3000" : heightText);
+  if (unconnectedHeight <= 0)
+      throw new InvalidOperationException("REFUSED: Height must be positive.");
+  WallType wallType = null;
+  if (typeName != "")
+  {
+      var types = new FilteredElementCollector(document).OfClass(typeof(WallType)).Cast<WallType>()
+          .Where(t => t.Name == typeName || t.FamilyName + ": " + t.Name == typeName).Take(2).ToList();
+      if (types.Count != 1 || types[0].Kind != WallKind.Basic)
+          throw new InvalidOperationException("REFUSED: Choose a unique basic wall type: " + typeName);
+      wallType = types[0];
+  }
+
+  Func<string, Element> elementById = text =>
+  {
+      long id;
+      if (!long.TryParse(text, out id) || id <= 0)
+          throw new InvalidOperationException("REFUSED: Expected a positive element id: " + text);
+      Element result = document.GetElement(new ElementId(id));
+      if (result == null)
+          throw new InvalidOperationException("REFUSED: Element no longer exists: " + text);
+      return result;
+  };
+
+  Element reference = elementById("{reference_id}");
+  Line line = (reference.Location as LocationCurve)?.Curve as Line;
+  if (line == null || !line.IsBound)
+      throw new InvalidOperationException("REFUSED: Reference needs a bounded straight location line.");
+  string levelName = "{level_name}";
+  Level level = levelName == "" ? document.GetElement(reference.LevelId) as Level : levelByName(levelName);
+  if (level == null && levelName == "")
+  {
+      Parameter referenceLevel = reference.get_Parameter(BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM);
+      if (referenceLevel != null && referenceLevel.HasValue && referenceLevel.StorageType == StorageType.ElementId)
+          level = document.GetElement(referenceLevel.AsElementId()) as Level;
+  }
+  if (level == null)
+      throw new InvalidOperationException("REFUSED: Reference has no base level; supply level_name.");
+
+  string anchor = "{anchor}", direction = "{direction}";
+  XYZ point;
+  switch (anchor)
+  {
+      case "start": point = line.GetEndPoint(0); break;
+      case "mid": point = line.Evaluate(0.5, true); break;
+      case "end": point = line.GetEndPoint(1); break;
+      default: throw new InvalidOperationException("REFUSED: Choose start, mid or end.");
+  }
+  XYZ planDirection = new XYZ(line.Direction.X, line.Direction.Y, 0);
+  const double MinHorizontalComponent = 1e-9; // dimensionless on a unit tangent
+  if (planDirection.GetLength() <= MinHorizontalComponent)
+      throw new InvalidOperationException("REFUSED: Vertical reference has no plan direction.");
+  XYZ along = planDirection.Normalize();
+  XYZ vector;
+  switch (direction)
+  {
+      case "normal_left": vector = XYZ.BasisZ.CrossProduct(along); break;
+      case "normal_right": vector = along.CrossProduct(XYZ.BasisZ); break;
+      case "along": vector = along; break;
+      case "reverse": vector = -along; break;
+      default: throw new InvalidOperationException("REFUSED: Unknown direction: " + direction);
+  }
+  double length = feet("{length}");
+  if (length <= document.Application.ShortCurveTolerance)
+      throw new InvalidOperationException("REFUSED: Length must exceed the minimum curve length.");
+  double baseElevation = levelName == "" ? point.Z : level.ProjectElevation;
+  if (top != null && top.ProjectElevation <= baseElevation)
+      throw new InvalidOperationException("REFUSED: Top level must be above the wall base at the anchor.");
+  XYZ start = new XYZ(point.X, point.Y, 0);
+  XYZ end = start + length * vector;
+  if (!XYZ.IsWithinLengthLimits(start) || !XYZ.IsWithinLengthLimits(end))
+      throw new InvalidOperationException("REFUSED: Wall segment is outside the model limits.");
+  Line axis = Line.CreateBound(start, end);
+  Wall wall = wallType == null
+      ? Wall.Create(document, axis, level.Id, false)
+      : Wall.Create(document, axis, wallType.Id, level.Id, unconnectedHeight, 0, false, false);
+  setLength(wall, BuiltInParameter.WALL_BASE_OFFSET, baseElevation - level.ProjectElevation);
+  if (top != null) setId(wall, BuiltInParameter.WALL_HEIGHT_TYPE, top.Id);
+  else setLength(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM, unconnectedHeight);
+  return new { Status = "Created", ElementId = wall.Id.Value, ReferenceId = reference.Id.Value, Level = level.Name, HeightIgnored = heightIgnored };
+parameters:
+  - name: reference_id
+    type: integer
+    description: Linear reference element id
+    source: designer
+    choices_from: elements
+    required: true
+  - name: anchor
+    type: string
+    description: "start, mid or end"
+    source: designer
+    required: true
+  - name: direction
+    type: string
+    description: "normal_left, normal_right, along or reverse, relative to the reference's start-to-end direction in plan"
+    source: designer
+    required: true
+  - name: length
+    type: double
+    description: "Wall length (mm)"
+    source: designer
+    required: true
+    unit: mm
+  - name: type_name
+    type: string
+    description: "Exact wall type name; omit for the document default"
+    source: answer
+    choices_from: family_types:OST_Walls
+    required: false
+    default: ""
+  - name: level_name
+    type: string
+    description: "Project the anchor onto this base level; omit to preserve its model elevation on the reference level"
+    source: answer
+    choices_from: levels
+    required: false
+    default: ""
+  - name: top_level_name
+    type: string
+    description: "Top constraint level, by exact name"
+    source: answer
+    choices_from: levels
+    required: false
+    default: ""
+  - name: height
+    type: double
+    description: "Unconnected height, 3000 when height and top level are omitted (mm)"
+    source: default
+    required: false
+    default: ""
+    unit: mm
+preconditions:
+  - kind: levels_min
+    value: 1
+not_for:
+  - "curtain or stacked wall"
+  - "curved reference"
+  - "vertical reference"
+applies_when:
+  - "create a wall normal to a reference element"
+validator:
+  kind: created_ids
+  category: OST_Walls
+fixtures:
+  - name: mid_left
+    params: {reference_id: 101, anchor: mid, direction: normal_left, length: 4200}
+    expect: {Status: Created}
+approved_by: null
+approved_at: null
+created_at: "2026-11-25T00:00:00"
+source_query: create a wall normal to a reference element

@@ -8,9 +8,12 @@ must not run against the model the snapshot describes.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 import re
 from typing import Any
 
+from revit_bridge.capabilities.scalars import NUMERIC_TYPES
+from revit_bridge.capabilities.template import PLACEHOLDER_RE, Slot, template_slots
 from revit_bridge.snapshot.project import ProjectSnapshot
 
 PACK_SCHEMA_VERSION = 1
@@ -18,24 +21,36 @@ PACK_SCHEMA_VERSION = 1
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
 CATEGORY_RE = re.compile(r"^OST_[A-Za-z]+$")
-PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_]\w*)\}")
-CHOICES_FROM_RE = re.compile(r"^(levels|floor_types|family_types:OST_[A-Za-z]+|elements:OST_[A-Za-z]+)$")
+ELEMENT_CHOICES = r"elements(?::OST_[A-Za-z]+)?"
+CHOICES_FROM_RE = re.compile(rf"^(levels|floor_types|family_types:OST_[A-Za-z]+|{ELEMENT_CHOICES})$")
 PARAM_REF_RE = re.compile(r"^\{([A-Za-z_]\w*)\}$")
 
 TOP_LEVEL_FIELDS = frozenset({
     "schema_version", "name", "display_name", "description", "version",
-    "revit_versions", "code_template", "parameters", "preconditions",
+    "revit_versions", "read_only", "ui_only", "code_template", "parameters", "preconditions",
     "not_for", "applies_when", "validator", "fixtures",
     "approved_by", "approved_at", "created_at", "source_query",
     "tags",   # 0.1 leftover: read, never written
 })
 PARAM_FIELDS = frozenset({"name", "type", "description", "source", "choices_from", "unit", "required", "default"})
 PARAM_TYPES = frozenset({"string", "double", "number", "float", "int", "integer", "bool", "boolean"})
-NUMERIC_TYPES = frozenset({"double", "number", "float", "int", "integer"})
 PARAM_SOURCES = frozenset({"designer", "answer", "default"})     # plus "tool:<query>"
 UNITS = frozenset({"mm", "m", "feet"})
 PRECONDITION_KINDS = frozenset({"levels_min", "category_present"})
 VALIDATOR_KINDS = frozenset({"created_ids", "count_delta", "param_equals"})
+
+
+def placeholders(code_template: str, parameters: Iterable[dict] | Mapping[str, dict]) -> list[Slot]:
+    """Return declared substitution sites in source order, with half-open Python str offsets.
+
+    Pass pack parameter definitions or a mapping keyed by parameter name.
+    Native C# locals are omitted. An unsafe or ambiguous template raises ValueError.
+    """
+    declared = parameters if isinstance(parameters, Mapping) else {p["name"]: p for p in parameters}
+    slots, errors = template_slots(code_template, declared)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return slots
 
 
 def validate_pack(data: Any) -> list[str]:
@@ -48,6 +63,11 @@ def validate_pack(data: Any) -> list[str]:
         errors.append(f"schema_version: expected {PACK_SCHEMA_VERSION}, got {data.get('schema_version')!r}")
     for key in sorted(set(data) - TOP_LEVEL_FIELDS):
         errors.append(f"unknown field {key!r}")
+    for flag in ("read_only", "ui_only"):
+        if flag in data and not isinstance(data[flag], bool):
+            errors.append(f"{flag}: must be a boolean")
+    if data.get("read_only") is True and data.get("ui_only") is True:
+        errors.append("read_only and ui_only cannot both be true")
 
     if not isinstance(data.get("name"), str) or not data["name"].strip():
         errors.append("name: required, non-empty string")
@@ -79,8 +99,8 @@ def validate_pack(data: Any) -> list[str]:
     for index, param in enumerate(params):
         errors.extend(_validate_param(index, param, declared))
 
-    for placeholder in sorted(set(PLACEHOLDER_RE.findall(code)) - set(declared)):
-        errors.append(f"code_template: placeholder {{{placeholder}}} is not a declared parameter")
+    _, template_errors = template_slots(code, declared)
+    errors.extend(template_errors)
 
     preconditions = data.get("preconditions", [])
     if not isinstance(preconditions, list):
@@ -106,6 +126,13 @@ def validate_pack(data: Any) -> list[str]:
             if not isinstance(fixture.get("expect", {}), dict):
                 errors.append(f"fixtures[{index}]: expect must be a mapping")
     return errors
+
+
+def optional_element_pick(param: dict) -> bool:
+    """An element picker can supplement an existing designer value or selection default."""
+    choices = param.get("choices_from")
+    return (param.get("source") in ("designer", "default") and isinstance(choices, str)
+            and re.fullmatch(ELEMENT_CHOICES, choices) is not None)
 
 
 def _validate_param(index: int, param: Any, declared: dict[str, dict]) -> list[str]:
@@ -138,11 +165,11 @@ def _validate_param(index: int, param: Any, declared: dict[str, dict]) -> list[s
 
     choices = param.get("choices_from")
     if choices is not None and (not isinstance(choices, str) or not CHOICES_FROM_RE.match(choices)):
-        errors.append(f"{label}: choices_from must be levels | floor_types | family_types:OST_* | elements:OST_*, "
+        errors.append(f"{label}: choices_from must be levels | floor_types | family_types:OST_* | elements[:OST_*], "
                       f"got {choices!r}")
     if source.startswith("tool:") and choices is None and not CHOICES_FROM_RE.match(source[5:]):
         errors.append(f"{label}: source {source!r} names no usable query; add choices_from")
-    if choices is not None and source and not source.startswith("tool:") and source != "answer":
+    if choices is not None and source and not source.startswith("tool:") and source != "answer" and not optional_element_pick(param):
         errors.append(f"{label}: a choices_from parameter must have source tool:<query> or answer")
 
     if "required" not in param or not isinstance(param["required"], bool):

@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
+from tests.conftest import legacy_escape_param_value  # the 0.11.1 spelling, see conftest
 from revit_bridge.capabilities.store import ToolStore, escape_param_value
 from revit_bridge.revit.client import RevitClient
+from revit_bridge.snapshot.atoms import AtomResolver
 from revit_bridge.snapshot.query import RevitQueryExecutor, detect_length_unit
 
 from tests.fake_revit import FakeRevit
@@ -79,9 +82,49 @@ def test_project_units_detection():
     assert detect_length_unit("", "Millimeters") == "mm"
 
 
+def test_instance_choices_use_selected_ids_and_link_choice_keeps_legacy_values(tmp_path):
+    store = ToolStore(user_dir=tmp_path)
+    def handler(request):
+        code = request["params"]["code"]
+        if "Selection.GetElementIds().Take(50)" in code:
+            return FakeRevit.code_result(request["id"], [None, {"Id": 0}, {"Id": "9007199254740993", "Name": "Column"}])
+        if "BuiltInCategory.OST_Walls" in code:
+            assert "WhereElementIsNotElementType().Take(50)" in code
+            return FakeRevit.code_result(request["id"], [None, {"Id": False}, {"Id": "602", "Name": "Basic wall"}])
+        assert "BuiltInCategory.OST_RvtLinks" in code
+        return FakeRevit.code_result(request["id"], [{"Id": -1}, {"Id": 701, "Name": "Linked model"}, None,
+                                                     {"Id": "702", "Name": None}])
+    async def scenario(executor, fake):
+        sources = [p for name in ("get_element_parameters", "delete_elements", "set_wall_constraints", "elements_in_link")
+                   for p in store.get_dynamic_params(name) if p["name"] in ("element_id", "element_ids", "link_id")]
+        sources[2] = dict(sources[2], name="wall")
+        return await executor.get_tool_choices([*sources, {"name": "invalid", "choices_from": "links"}])
+    choices = _run(handler, scenario)
+    assert choices["element_id"] == [{"label": "Column (ID: 9007199254740993)", "value": 9007199254740993}]
+    assert choices["element_ids"] == [{"label": "Column (ID: 9007199254740993)", "value": "9007199254740993"}]
+    assert choices["wall"] == [{"label": "Basic wall (ID: 602)", "value": 602}]
+    assert choices["invalid"] == []
+    assert choices["link_id"] == [
+        {"label": "Linked model (ID: 701)", "value": 701}, {"label": "? (ID: 702)", "value": 702},
+    ]
+
+
+def test_pipe_picker_keeps_0_11_1_integer_ids_for_string_parameters(tmp_path):
+    store = ToolStore(user_dir=tmp_path)
+    def handler(request):
+        assert "BuiltInCategory.OST_PipeCurves" in request["params"]["code"]
+        return FakeRevit.code_result(request["id"], [{"Id": 101}, {"Id": 102}])
+
+    choices = _run(handler, lambda ex, fake: ex.get_tool_choices(store.get_dynamic_params("connect_pipes")))
+    params = {"first_pipe_id": choices["first_pipe_id"][0]["value"],
+              "second_pipe_id": choices["second_pipe_id"][1]["value"]}
+    assert params == {"first_pipe_id": 101, "second_pipe_id": 102}
+    assert store.render("connect_pipes", params)[1] == []
+
+
 def test_rendered_parameters_cannot_break_out_of_string_literals(tmp_path):
-    assert escape_param_value('a"b\\c\nd') == 'a\\"b\\\\c\\nd'
-    assert escape_param_value(3000) == "3000"
+    assert legacy_escape_param_value('a"b\\c\nd') == 'a\\"b\\\\c\\nd'
+    assert legacy_escape_param_value(3000) == "3000"
 
     store = ToolStore(tmp_path)
     store.solidify(
@@ -91,3 +134,18 @@ def test_rendered_parameters_cannot_break_out_of_string_literals(tmp_path):
     )
     code = store.render_code("probe", {"level_name": 'L1"; System.IO.File.Delete("x"); var z = "'})
     assert code == 'var name = "L1\\"; System.IO.File.Delete(\\"x\\"); var z = \\""; return name;'
+
+
+def test_atom_prompts_are_escaped_like_parameter_values():
+    """An interactive atom's prompt sits in a C# literal too: a line end in it is escaped (B3)."""
+    class Capture:
+        def __init__(self):
+            self.codes = []
+
+        async def send_code(self, code, parameters=None, confirm=None):
+            self.codes.append(code)
+            return SimpleNamespace(success=False, result=None, error="not run")
+
+    client = Capture()
+    asyncio.run(AtomResolver(client).resolve("pick_point", prompt='Pick "here"\nthen \\ there'))
+    assert 'PickPoint("Pick \\"here\\"\\nthen \\\\ there");' in client.codes[0]

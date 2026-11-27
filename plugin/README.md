@@ -20,7 +20,7 @@ Build, change and query a running Autodesk Revit model from Claude: eight skills
 
 ## What it runs and where data goes
 
-- The MCP server runs on your machine and talks only to the Revit add-in on `127.0.0.1:18080` (the [revit-bridge-addin](https://github.com/revitbridge/revit-bridge-addin), installed separately, with **Add-Ins > Revit MCP Switch** turned on). It sends nothing to any other host.
+- The MCP server runs on your machine and talks only to the Revit add-in on `127.0.0.1:18080` (the [revit-bridge-addin](https://github.com/revitbridge/revit-bridge-addin), installed separately, with **Add-Ins > Revit Bridge** turned **On**; on add-ins up to 0.5 the button is **Revit MCP Switch**). It sends nothing to any other host.
 - The hook reads the tool call from standard input and prints a permission decision. It makes no network calls.
 - No credentials are read or stored. A pre-shared token is optional and only needed when you configured one in the add-in's settings; set `REVIT_BRIDGE_TOKEN` in your environment in that case.
 - Nothing from the Revit model leaves your machine except through the conversation with Claude.

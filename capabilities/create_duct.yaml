@@ -1,0 +1,171 @@
+schema_version: 1
+name: create_duct
+display_name: Create Duct
+description: "Create a round, rectangular or oval rigid duct between model internal-origin coordinates in millimetres."
+version: "1.0.0"
+revit_versions: ["2021","2023","2024","2025","2026","2027"]
+code_template: |
+  var timer = System.Diagnostics.Stopwatch.StartNew();
+  void CheckTime()
+  {
+      if (timer.ElapsedMilliseconds > 250)
+          throw new InvalidOperationException("REFUSED: Model lookup exceeded its time budget. Retry in an idle model.");
+  }
+
+  double Number(string text)
+  {
+      double value;
+      if (!double.TryParse(text, System.Globalization.NumberStyles.Float,
+              System.Globalization.CultureInfo.InvariantCulture, out value) || double.IsNaN(value) || double.IsInfinity(value))
+          throw new InvalidOperationException("REFUSED: Invalid number. Enter finite numeric values.");
+      return value;
+  }
+  double Feet(string text) => UnitUtils.ConvertToInternalUnits(Number(text), UnitTypeId.Millimeters);
+
+  XYZ Point(string text)
+  {
+      var parts = text.Split(',');
+      if (parts.Length != 3)
+          throw new InvalidOperationException("REFUSED: A point needs three coordinates. Enter X,Y,Z in millimetres.");
+      var point = new XYZ(Feet(parts[0]), Feet(parts[1]), Feet(parts[2]));
+      if (!XYZ.IsWithinLengthLimits(point))
+          throw new InvalidOperationException("REFUSED: Point exceeds Revit's model limits. Use coordinates nearer the internal origin.");
+      return point;
+  }
+
+  T Named<T>(string name, string kind) where T : ElementType
+  {
+      var available = new List<string>();
+      T match = null;
+      bool foundAny = false;
+      foreach (T type in new FilteredElementCollector(document).OfClass(typeof(T)).Cast<T>())
+      {
+          CheckTime();
+          foundAny = true;
+          if (available.Count < 12) available.Add(type.Name);
+          if (type.Name != name) continue;
+          if (match != null)
+              throw new InvalidOperationException("REFUSED: Ambiguous " + kind + " name. Give the types distinct names and retry.");
+          match = type;
+      }
+      if (!foundAny)
+          throw new InvalidOperationException("REFUSED: The model has no MEP types loaded for " + kind + ". Load the relevant MEP types or open an MEP project.");
+      if (match == null)
+          throw new InvalidOperationException("REFUSED: Unknown " + kind + " '" + name + "'. Choose a name from list_mep_types. Available (up to 12): " + string.Join(", ", available));
+      return match;
+  }
+
+  void SetSize(Element curve, BuiltInParameter key, double size)
+  {
+      // Revit stores lengths in feet. Allow only floating-point read-back error.
+      const double sizeTolerance = 1e-8;
+      var parameter = curve.get_Parameter(key);
+      bool Matches() => parameter != null && parameter.StorageType == StorageType.Double && parameter.HasValue
+          && Math.Abs(parameter.AsDouble() - size) <= sizeTolerance;
+      if (Matches()) return;
+      if (parameter == null || parameter.StorageType != StorageType.Double || parameter.IsReadOnly || !parameter.Set(size) || !Matches())
+          throw new InvalidOperationException("REFUSED: The type did not accept the requested size. Choose a compatible size in the model.");
+  }
+
+  var ductType = Named<Autodesk.Revit.DB.Mechanical.DuctType>("{duct_type_name}", "duct type");
+  var systemType = Named<Autodesk.Revit.DB.Mechanical.MechanicalSystemType>("{system_type_name}", "duct system type");
+  string levelName = "{level_name}";
+  var level = new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>()
+      .FirstOrDefault(l => { CheckTime(); return l.Name == levelName; });
+  if (level == null)
+      throw new InvalidOperationException("REFUSED: Unknown level. Select a level from the active document.");
+
+  // Revit requires MEP curves to span at least 1/10 inch (2.54 mm).
+  double minLength = Math.Max(document.Application.ShortCurveTolerance,
+      UnitUtils.ConvertToInternalUnits(2.54, UnitTypeId.Millimeters));
+
+  bool round = ductType.Shape == ConnectorProfileType.Round;
+  if (!round && ductType.Shape != ConnectorProfileType.Rectangular && ductType.Shape != ConnectorProfileType.Oval)
+      throw new InvalidOperationException("REFUSED: Unknown duct profile. Choose a round, rectangular or oval duct type.");
+  string diameterText = "{diameter_mm}", widthText = "{width_mm}", heightText = "{height_mm}";
+  if (round && (diameterText == "" || widthText != "" || heightText != ""))
+      throw new InvalidOperationException("REFUSED: The duct is round. Give its diameter and omit width and height.");
+  if (!round && (widthText == "" || heightText == "" || diameterText != ""))
+      throw new InvalidOperationException("REFUSED: The duct has a rectangular or oval profile. Give width and height and omit diameter.");
+  double first = Feet(round ? diameterText : widthText);
+  double height = round ? first : Feet(heightText);
+  if (first <= 0 || height <= 0)
+      throw new InvalidOperationException("REFUSED: Duct dimensions must be positive. Enter sizes in millimetres.");
+  XYZ start = Point("{start_mm}"), end = Point("{end_mm}");
+  if (start.DistanceTo(end) < minLength)
+      throw new InvalidOperationException("REFUSED: Duct endpoints are too close. Separate them by at least 2.54 mm and the model short-curve tolerance.");
+  try
+  {
+      var duct = Autodesk.Revit.DB.Mechanical.Duct.Create(document, systemType.Id, ductType.Id, level.Id, start, end);
+      if (duct == null)
+          throw new InvalidOperationException("REFUSED: Revit returned no duct. Check the selected type and endpoints.");
+      SetSize(duct, round ? BuiltInParameter.RBS_CURVE_DIAMETER_PARAM : BuiltInParameter.RBS_CURVE_WIDTH_PARAM, first);
+      if (!round) SetSize(duct, BuiltInParameter.RBS_CURVE_HEIGHT_PARAM, height);
+      return new { Status = "Created", ElementId = long.Parse(duct.Id.ToString()) };
+  }
+  catch (Exception ex) when (ex is Autodesk.Revit.Exceptions.ArgumentException || ex.GetType() == typeof(Autodesk.Revit.Exceptions.InvalidOperationException))
+  {
+      throw new InvalidOperationException("REFUSED: Revit could not create or size the duct. Check the type, dimensions and endpoints. " + ex.Message);
+  }
+parameters:
+  - name: duct_type_name
+    type: string
+    description: "Exact duct type name from list_mep_types."
+    source: answer
+    required: true
+  - name: system_type_name
+    type: string
+    description: "Exact duct system type name from list_mep_types."
+    source: answer
+    required: true
+  - name: level_name
+    type: string
+    description: "Reference level in the active project. Coordinates use the model internal origin."
+    source: tool:levels
+    required: true
+    choices_from: "levels"
+  - name: start_mm
+    type: string
+    description: "Start X,Y,Z in millimetres from the model internal origin."
+    source: designer
+    required: true
+  - name: end_mm
+    type: string
+    description: "End X,Y,Z in millimetres from the model internal origin."
+    source: designer
+    required: true
+  - name: diameter_mm
+    type: double
+    description: "Round duct nominal diameter in millimetres. Omit for other profiles."
+    source: default
+    required: false
+    default: ""
+    unit: "mm"
+  - name: width_mm
+    type: double
+    description: "Rectangular or oval duct width in millimetres. Omit for other profiles."
+    source: default
+    required: false
+    default: ""
+    unit: "mm"
+  - name: height_mm
+    type: double
+    description: "Rectangular or oval duct height in millimetres. Omit for other profiles."
+    source: default
+    required: false
+    default: ""
+    unit: "mm"
+preconditions:
+  - text: "Supported Revit years are 2021, 2023, 2024, 2025, 2026 and 2027."
+applies_when:
+  - "create duct"
+not_for:
+  - "flex duct or fittings"
+validator: {kind: count_delta, category: OST_DuctCurves, expected: 1}
+fixtures:
+  - name: round
+    params: {"system_type_name":"Sample Air","level_name":"L1","start_mm":"0,0,2400","end_mm":"3000,0,2400","duct_type_name":"Sample Round","diameter_mm":250}
+    expect: {Status: Created}
+  - name: rectangular
+    params: {"system_type_name":"Sample Air","level_name":"L1","start_mm":"0,0,2400","end_mm":"3000,0,2400","duct_type_name":"Sample Rectangular","width_mm":400,"height_mm":200}
+    expect: {Status: Created}
