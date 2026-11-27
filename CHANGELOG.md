@@ -8,6 +8,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Added
 
+- Designers can sketch on an orthographic 3D capture by choosing a level. The sketch
+  projects onto that level and snaps to its walls, columns and framing, and to visible grids.
 - `revit_bridge.sketch`: a line end also snaps to a crossing of two grids,
   a column and an end of a structural framing element, and to a point on a
   grid; point targets are taken before lines, and a line from a point
@@ -21,6 +23,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ### Fixed
 
+- Stroke simplification stops when a stroke exceeds the 12-segment limit. Each stroke
+  accepts up to 2000 input points.
 - `revit_bridge.sketch`: a short line drawn from a wall's end along that
   same wall was pulled back to its start and refused as having no length.
 

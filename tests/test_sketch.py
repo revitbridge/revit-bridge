@@ -1,10 +1,11 @@
-"""A sketch on a capture of a plan view: the frame, pixels to millimetres, snapping, the text."""
+"""Sketches on plan and orthographic 3D captures: frames, projection, snapping and text."""
 from __future__ import annotations
 
 import asyncio
 import base64
 import math
 import random
+import time
 
 import pytest
 
@@ -19,7 +20,7 @@ from tests.fake_revit import FakeRevit
 FEET = 304.8
 # The view shows x from -6000 to 10000 mm and y from -2000 to 6000 mm: 10 mm per pixel at 1600 x 800.
 RAW = {"document_id": "example-document", "view_id": "32", "view_uid": "example-view", "view_name": "L1",
-       "view_type": "FloorPlan", "level": "L1", "elevation": 0.0,
+       "view_type": "FloorPlan", "level": "L1", "elevation": 0.0, "is_3d": False, "is_perspective": False, "levels": [],
        "c0": [-6000 / FEET, -2000 / FEET, 0.0], "c1": [10000 / FEET, 6000 / FEET, 0.0],
        "right": [1.0, 0.0, 0.0], "up": [0.0, 1.0, 0.0], "direction": [0.0, 0.0, 1.0]}
 FRAME = sketch._frame(RAW)
@@ -41,7 +42,8 @@ def run(handler, fn, *args, **kwargs):
     return asyncio.run(go())
 
 
-def addin(*, frames=None, walls=WALLS, grids=(), columns=(), framing=(), legacy=False, complete=True, walls_error=None):
+def addin(*, frames=None, walls=WALLS, grids=(), columns=(), framing=(), legacy=False, complete=True, walls_error=None,
+          expected_level=""):
     frames = list(frames or [RAW])
 
     def handler(request):
@@ -49,30 +51,37 @@ def addin(*, frames=None, walls=WALLS, grids=(), columns=(), framing=(), legacy=
         if method == "get_bridge_capabilities":
             return FakeRevit.ok(request["id"], {"protocol": 2, "methods": ["export_view_image_in_revit", "send_code_to_revit"]})
         if method == "export_view_image_in_revit":
-            return FakeRevit.ok(request["id"], {"png_base64": PNG, "width": 1600, "height": 800, "view_name": "L1"})
+            return FakeRevit.ok(request["id"], {"png_base64": PNG, "width": 1600, "height": 800, "view_name": frames[0]["view_name"]})
         code = params["code"]
         assert review(code) == (True, []), code
         if "GetZoomCorners" in code:
             return FakeRevit.code_result(request["id"], frames.pop(0) if len(frames) > 1 else frames[0])
+        # Consume the level selector on a copy so FakeRevit retains the original request.
+        params = dict(params, parameters=params["parameters"].copy())
+        level = params["parameters"].pop()
+        assert level == expected_level
         assert params["parameters"] == ["example-view", "example-document"]
         if walls_error:
             return FakeRevit.code_result(request["id"], None, success=False, error=walls_error)
         result = {"walls": walls, "complete": complete}
         if not legacy:
             result.update(grids=grids, columns=columns, framing=framing)
+        if level:
+            for group in ("walls", "columns", "framing"):
+                result[group] = [row for row in result[group] if row["level"] == level]
         return FakeRevit.code_result(request["id"], result)
     return handler
 
 
-def resolve(strokes, **kwargs):
+def resolve(strokes, *, frame=FRAME, level=None, **kwargs):
     async def go(client):
-        return await sketch.resolve_sketch(RevitQueryExecutor(client), FRAME, 1600, 800, strokes)
+        return await sketch.resolve_sketch(RevitQueryExecutor(client), frame, 1600, 800, strokes, level)
     return run(addin(**kwargs), go)[0]
 
 
 def test_the_frame_is_the_view_rectangle_in_millimetres():
     assert FRAME == {"document_id": "example-document", "view_id": 32, "view_uid": "example-view", "view_name": "L1",
-                     "view_type": "FloorPlan", "level": "L1", "elevation_mm": 0.0,
+                     "view_type": "FloorPlan", "kind": "plan", "level": "L1", "elevation_mm": 0.0,
                      "u": [-6000.0, 10000.0], "v": [-2000.0, 6000.0], "right": [1.0, 0.0], "up": [0.0, 1.0]}
     # The corners in either order, and a view turned by a quarter.
     swapped = sketch._frame({**RAW, "c0": RAW["c1"], "c1": RAW["c0"]})
@@ -179,7 +188,8 @@ def test_capture_for_sketch_refuses_a_view_that_moved_or_is_not_a_plan(tmp_path)
     moved = {**RAW, "c1": [10500 / FEET, 6000 / FEET, 0.0]}
     out, _ = run(addin(frames=[RAW, moved]), sketch.capture_for_sketch, 1600, ledger=ledger)
     assert out["error"] == "view_changed" and "frame" not in out and out.get("png_base64") is None
-    out, requests = run(addin(frames=[{**RAW, "view_type": "ThreeD"}]), sketch.capture_for_sketch, 1600, ledger=ledger)
+    perspective = {**RAW, "view_type": "ThreeD", "is_3d": True, "is_perspective": True}
+    out, requests = run(addin(frames=[perspective]), sketch.capture_for_sketch, 1600, ledger=ledger)
     assert out["error"] == "unsupported_view" and "plan view" in out["hint"]
     assert not any(r["method"] == "export_view_image_in_revit" for r in requests)    # nothing was exported
 
@@ -343,3 +353,159 @@ def test_a_box_drawn_between_pixels_comes_out_on_whole_millimetres():
     xs = sorted({p["x"] for p in line["points"]})
     ys = sorted({p["y"] for p in line["points"]})
     assert len(xs) == 2 and len(ys) == 2                          # an axis-aligned rectangle
+
+
+# A 3-4-5 view tilted toward the model. Both corners satisfy -.6*y + .8*z = 4000 mm.
+TILTED = {**RAW, "view_type": "ThreeD", "view_name": "Tilted box", "is_3d": True,
+          "level": None, "elevation": None, "levels": [{"name": "Shelf", "elevation": 2000 / FEET},
+                                                      {"name": "Base", "elevation": 0}],
+          "right": [1, 0, 0], "up": [0, .8, .6], "direction": [0, -.6, .8],
+          "c0": [-6000 / FEET, -4000 / FEET, 2000 / FEET], "c1": [10000 / FEET, 2400 / FEET, 6800 / FEET]}
+
+
+def oriented_view(azimuth, altitude, roll):
+    az, alt, roll = map(math.radians, (azimuth, altitude, roll))
+    horizontal = [math.cos(az), math.sin(az), 0]
+    vertical = [-math.sin(az) * math.sin(alt), math.cos(az) * math.sin(alt), math.cos(alt)]
+    direction = [math.sin(az) * math.cos(alt), -math.cos(az) * math.cos(alt), math.sin(alt)]
+    right = [math.cos(roll) * r + math.sin(roll) * v for r, v in zip(horizontal, vertical)]
+    up = [-math.sin(roll) * r + math.cos(roll) * v for r, v in zip(horizontal, vertical)]
+
+    def corner(u, v):
+        return [(u * r + v * a + 4000 * d) / FEET for r, a, d in zip(right, up, direction)]
+
+    return {**TILTED, "right": right, "up": up, "direction": direction,
+            "c0": corner(-6000, -2000), "c1": corner(10000, 6000)}
+
+
+@pytest.mark.parametrize("angles", [(45, 35.264, 0), (107, 42, 34), (203, 89.8, 0)])
+def test_pixel_model_pixel_round_trip_at_two_elevations(angles):
+    frame = sketch._frame(oriented_view(*angles))
+    strokes = [[[0, 0], [1600, 800]], [[125.3, 734.2], [1300.6, 77.1]]]
+    for z in (0, 2000):
+        lines = sketch.sketch_lines(frame, 1600, 800, strokes, elevation_mm=z)
+        for line, stroke in zip(lines, strokes):
+            for (x, y), pixel in zip(line, stroke):
+                assert sketch.pixel_of(frame, 1600, 800, x, y, elevation_mm=z) == pytest.approx(pixel, abs=.1)
+
+
+def test_tilted_view_intersects_each_level_at_known_model_points():
+    frame = sketch._frame(TILTED)
+    assert frame == {**FRAME, "view_name": "Tilted box", "view_type": "ThreeD", "kind": "axonometric",
+                     "right": [1, 0, 0], "up": [0, .8, .6], "direction": [0, -.6, .8], "w0": pytest.approx(4000),
+                     "level": None, "elevation_mm": None, "levels": [{"name": "Base", "elevation_mm": 0},
+                                                                     {"name": "Shelf", "elevation_mm": 2000}]}
+    # u = x, v = .8*y + .6*z. Top left has (u, v) = (-6000, 6000), bottom right (10000, -2000).
+    for z, top, bottom in ((0, 7500, -2500), (2000, 6000, -4000)):
+        (line,) = sketch.sketch_lines(frame, 1600, 800, [[[0, 0], [1600, 800]]], elevation_mm=z)
+        assert line[0] == pytest.approx((-6000, top))
+        assert line[1] == pytest.approx((10000, bottom))
+        assert sketch.pixel_of(frame, 1600, 800, -6000, top, z) == [0, 0]
+    with pytest.raises(ValueError, match="elevation"):
+        sketch.pixel_of(frame, 1600, 800, 0, 0)
+    with pytest.raises(ValueError, match="elevation"):
+        sketch.sketch_lines(frame, 1600, 800, [[[0, 0], [1600, 800]]])
+
+
+@pytest.mark.parametrize("altitude", [0, 2.8, -2.8])
+def test_an_almost_horizontal_3d_view_is_refused(altitude):
+    with pytest.raises(RevitQueryError, match="horizontally"):
+        sketch._frame(oriented_view(53, altitude, 0))
+
+
+def test_perspective_refusal_names_supported_views():
+    with pytest.raises(RevitQueryError, match="orthographic 3D view or a plan"):
+        sketch._frame({"view_type": "ThreeD", "is_3d": True, "is_perspective": True})
+
+
+@pytest.mark.parametrize("bad", [
+    {"right": [1, 0]}, {"up": [0, math.nan, .6]}, {"direction": [1, 0, .8]}, {"c0": [0, math.inf, 0]},
+    {"is_perspective": "false"}, {"levels": None}, {"levels": [{"name": "Shelf"}]},
+    {"levels": [{"name": None, "elevation": 0}]}, {"levels": [{"name": "Shelf", "elevation": math.inf}]},
+    {"levels": [{"name": "Shelf", "elevation": 10**400}]}, {"levels": TILTED["levels"] * 101},
+])
+def test_bad_3d_readings_are_refused(bad):
+    with pytest.raises(RevitQueryError, match="^Invalid view frame$"):
+        sketch._frame({**TILTED, **bad})
+
+
+@pytest.mark.parametrize("level", [None, "Missing shelf"])
+def test_3d_sketch_requires_an_available_level_before_reading_targets(level):
+    frame = sketch._frame(TILTED)
+    # Leave the executor absent: rejecting the level should need no Revit request.
+    result = asyncio.run(sketch.resolve_sketch(None, frame, 1600, 800, [[[0, 0], [100, 100]]], level))
+    assert result["error"] == "invalid_args"
+    assert "Base" in result["message"] and "Shelf" in result["message"]
+
+
+def test_available_level_message_is_limited_to_twenty_names():
+    levels = [{"name": f"Shelf-{n:02d}", "elevation": n} for n in range(22)]
+    frame = sketch._frame({**TILTED, "levels": levels})
+    result = asyncio.run(sketch.resolve_sketch(None, frame, 1600, 800, [[[0, 0], [100, 100]]]))
+    assert result["error"] == "invalid_args"
+    assert result["message"].count("Shelf-") == 20 and "Shelf-20" not in result["message"]
+
+
+def test_legacy_plan_frame_and_supplied_level_preserve_plan_sketch():
+    legacy = FRAME.copy()
+    del legacy["kind"]
+    strokes = [[[310, 108], [590, 90]]]
+    expected = resolve(strokes)
+    assert expected["view_kind"] == "plan"
+    assert resolve(strokes, frame=legacy, level="Shelf") == resolve(strokes, level="Shelf") == expected
+
+
+def test_3d_wall_snaps_square_on_the_chosen_level_and_project_back_to_the_capture():
+    frame = sketch._frame(TILTED)
+    # At z=2000, wall 11 ends at (-3000, 5000), pixel (300, 80). Wall 12 runs along x=0.
+    # A wall on Base ends exactly at the first drawn pixel and would otherwise win the snap.
+    walls = [dict(row, level="Shelf") for row in WALLS]
+    walls.append({"level": "Base", "id": "99", "straight": True, "a": [-2900 / FEET, 4900 / FEET], "b": [-4, 1]})
+    out = resolve([[[310, 88], [590, 70]]], frame=frame, level="Shelf", expected_level="Shelf", walls=walls)
+    assert (out["view_kind"], out["level"], out["elevation_mm"]) == ("axonometric", "Shelf", 2000)
+    assert out["lines"] == [{"line": 1, "length_mm": 3000, "pixels": [[300, 80], [600, 80]], "points": [
+        {"x": -3000, "y": 5000, "snap": {"kind": "wall_end", "wall_id": 11}},
+        {"x": 0, "y": 5000, "snap": {"kind": "on_wall", "wall_id": 12}}]}]
+    assert sketch.sketch_block(out).startswith(
+        'Designer\'s sketch (drawn by the designer on a capture of the 3D view "Tilted box", projected onto level "Shelf"; '
+        'the host converted it to model coordinates, x and y in millimetres): line 1 from (-3000, 5000) [the end of wall id 11]')
+    assert sketch.sketch_block(out) == sketch.sketch_block({**out, "view_type": "FloorPlan"})
+
+
+def test_free_3d_lines_align_with_each_projected_axis_even_when_the_view_is_rolled():
+    # Roll the 3-4-5 view so screen right and up project along (1, .6) and (-.6, .64).
+    raw = oriented_view(0, math.degrees(math.asin(.8)), math.degrees(math.asin(.6)))
+    frame = sketch._frame(raw)
+    strokes = [[sketch.pixel_of(frame, 1600, 800, x, y, 0) for x, y in [(0, 0), end]]
+               for end in ((2000, 1260), (-1500, 1700))]
+    out = resolve(strokes, frame=frame, level="Base", expected_level="Base", walls=[])
+    for line, axis, end in zip(out["lines"], ((1, .6), (-.6, .64)), ((2000, 1260), (-1500, 1700))):
+        a, b = line["points"]
+        assert a == {"x": 0, "y": 0}
+        distance = sum(p * d for p, d in zip(end, axis)) / sum(d * d for d in axis)
+        assert (b["x"], b["y"]) == pytest.approx([d * distance for d in axis], abs=2)
+
+
+def test_capture_for_sketch_returns_the_3d_frame_and_detects_a_changed_level(tmp_path):
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    out, _ = run(addin(frames=[TILTED]), sketch.capture_for_sketch, 1600, ledger=ledger)
+    assert out["error"] is None and out["png_base64"] == PNG and out["frame"] == sketch._frame(TILTED)
+    changed = {**TILTED, "levels": [{"name": "Base", "elevation": 1}]}
+    out, _ = run(addin(frames=[TILTED, changed]), sketch.capture_for_sketch, 1600, ledger=ledger)
+    assert out["error"] == "view_changed" and "frame" not in out
+
+
+@pytest.mark.parametrize("advance", [False, True], ids=["two-fixed-points", "sawtooth"])
+def test_2000_point_zigzag_is_rejected_quickly(advance):
+    stroke = [[i if advance else 0, 700 * (i % 2)] for i in range(2000)]
+    start = time.perf_counter()
+    with pytest.raises(ValueError, match="too tangled"):
+        sketch.sketch_lines(FRAME, 2000, 800, [stroke])
+    assert time.perf_counter() - start < 0.5
+    if advance:
+        assert len(sketch._simplify(stroke, 65)) == sketch.MAX_SEGMENTS + 2
+
+
+def test_stroke_over_the_2000_point_limit_is_refused_at_input():
+    with pytest.raises(ValueError, match="list of"):
+        sketch.sketch_lines(FRAME, 2000, 800, [[[i, 100] for i in range(2001)]])

@@ -31,9 +31,10 @@ uvx --from . revit-bridge check   # read the open document's title through the a
   whole model when nothing is selected and reads a rough 3D shape of one element (`element_preview`).
   `mention_search.py` ranks and facets results using `mention_aliases.json`. `mention_cache.py` caches
   type inventories per open document.
-- `revit_bridge/sketch.py` - a designer's sketch on a capture of a plan view as model coordinates: the view's
-  frame with the capture (`capture_for_sketch`), strokes in pixels to lines in millimetres snapped to walls, grids, columns and framing
-  (`resolve_sketch`), the text for the model (`sketch_block`). Read only; no image is read.
+- `revit_bridge/sketch.py` - `capture_for_sketch` captures a plan or orthographic 3D view with its frame.
+  `resolve_sketch` converts pixel strokes to lines in millimetres, projecting onto the designer's chosen level
+  in 3D and snapping to walls, grids, columns and framing. `sketch_block` formats the lines for the model.
+  Geometry comes from the pixel coordinates and read-only Revit queries.
 - `revit_bridge/checking.py` — `check_code`: compile C# in Revit without running it (local `sandbox.review`
   first, then the add-in's `check_code_in_revit`); the reply adds `hints` and `guidance` lessons.
 - `revit_bridge/dry_run.py` - `dry_run_code`: run C# in Revit and always roll it back (`sandbox.review`, the
