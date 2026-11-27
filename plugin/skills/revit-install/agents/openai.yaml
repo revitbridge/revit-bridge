@@ -1,0 +1,4 @@
+interface:
+  display_name: "Revit Install"
+  short_description: "Install Autodesk desktop products and the Revit content libraries from a queue"
+  default_prompt: "Use $revit-install to read my configuration, install the Autodesk products and the Revit content libraries for the years I named, and verify the result."

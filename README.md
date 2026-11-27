@@ -76,11 +76,12 @@ skill's `SKILL.md` has a table saying what they add.
 | Test | `revit-addin-test` | Runs the compiled add-in in a real Revit without disturbing others on the machine, reads journals, finds why Revit hangs, judges a build matrix, compares base and branch. | No; with the revit-bridge-addin calls go through its protocol |
 | Release | `revit-addin-release` | Multi-year release build, obfuscation, installer, acceptance on a real machine, the review record, logs from a user's machine. | No |
 | Diagnosis | `revit-journal-analysis` | Reads Revit journals (`journal.NNNN.txt`) by hand or with plain text search and quotes every line it rests on: how the session ended, crash and exception markers, licence and model-open errors, which add-ins loaded and from which vendor, dialogs, CER and Steel Connections logs. | No; the optional `revit-journal` analyser only makes it faster |
+| Machine setup | `revit-install` | Installs Revit, Navisworks Manage, Civil 3D and AutoCAD on Windows from a queue (local media or the official Web Install), resumes an interrupted run, repairs the Revit Unit Schemas, and identifies, renames and installs the Revit Chinese and US English content libraries year by year, each step checked against signatures, exit codes and installed files. | No |
 
 ### Install the skills in another project
 
-The seven skills (`revit-task-brief`, `revit-addin-dev`, `revit-addin-test`,
-`revit-addin-release`, `revit-journal-analysis`, `revit-bridge`, `revit-core`) are self-contained
+The eight skills (`revit-task-brief`, `revit-addin-dev`, `revit-addin-test`,
+`revit-addin-release`, `revit-journal-analysis`, `revit-install`, `revit-bridge`, `revit-core`) are self-contained
 folders: a `SKILL.md` plus `references/`, `scripts/` and `assets/`. Any agent
 that reads skill folders can use them, with or without the MCP server. The
 four add-in phase skills need no bridge connection at all (testing and
@@ -89,6 +90,8 @@ only the journal files; `revit-bridge` and `revit-core` describe the bridge
 tools and are most useful with the server configured; in a repository without
 the server their descriptions only cost context, so install `--profile addin`
 there, and add `revit-journal-analysis` by name where you read journals.
+`revit-install` is in neither profile as well: name it on a machine where
+the Autodesk products or the content libraries are to be installed.
 
 | Where you work | Install |
 | --- | --- |
@@ -112,7 +115,9 @@ revit-bridge@latest skills install ...`).
 The bundled scripts need Python 3.11+ or Windows PowerShell 5.1+:
 `new_addin.py` in `revit-addin-dev`; `journal_tail.py`, `addin_snapshot.py`,
 `revit_ps.ps1` and `window_list.ps1` in `revit-addin-test`; `collect_logs.ps1`
-with its `collect_logs.bat` launcher in `revit-addin-release`. Nothing else is
+with its `collect_logs.bat` launcher in `revit-addin-release`; `plan.py`,
+`inspect_revit_content_adix.py`, `inspect_revit_content_msi.ps1` and
+`read_content_identity.ps1` (which also needs 7-Zip) in `revit-install`. Nothing else is
 installed and none of them starts, installs or closes a Revit.
 
 Example request once installed: "Use revit-addin-dev to continue my C#
@@ -309,7 +314,7 @@ dsh runs an agent that can talk to revit-bridge and revit-api-docs like any othe
    ```
 
    Keys (`TYPESAFE_API_KEY`, `REVIT_API_DOCS_EMBEDDING_API_KEY`) and a proxy go into each server's `env`; dsh strips `KEY`/`TOKEN` variables from its own environment, so set them there, not globally.
-3. Put the skills where dsh finds them: copy `plugin/skills/revit-task-brief`, `revit-addin-dev`, `revit-addin-test`, `revit-addin-release`, `revit-journal-analysis`, `revit-core` and `revit-bridge` into `<project>/.agents/skills/`.
+3. Put the skills where dsh finds them: copy `plugin/skills/revit-task-brief`, `revit-addin-dev`, `revit-addin-test`, `revit-addin-release`, `revit-journal-analysis`, `revit-install`, `revit-core` and `revit-bridge` into `<project>/.agents/skills/`.
 4. Start dsh in the project directory and give it the task in one or two designer sentences, plus the facts it cannot discover: "Revit 2026 with the test model is open on this machine", whether anyone will answer questions, and what the report must contain. With `--profile headless --json` it runs unattended and streams events; interactive mode lets you answer the bridge's confirmation requests, which is what lets the agent prototype in the open model (`check_code`, `confirm_spec`, `execute_code`) before it ports the logic into the add-in.
 5. Read the agent's report against the brief (what was built, what it verified in Revit, what it could not), then install the add-in and test the picks, dialogs and cancel paths yourself.
 

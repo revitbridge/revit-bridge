@@ -13,8 +13,9 @@ from revit_bridge import skills_cli
 from revit_bridge.paths import skills_dir
 
 NAMES = ["revit-addin-dev", "revit-addin-release", "revit-addin-test", "revit-bridge", "revit-core",
-         "revit-journal-analysis", "revit-task-brief"]
+         "revit-install", "revit-journal-analysis", "revit-task-brief"]
 JOURNAL = "revit-journal-analysis"                 # in no profile but "all"; installable by name
+INSTALL = "revit-install"                          # the same: machine setup, in no profile but "all"
 
 
 def run(capsys, *argv: str) -> tuple[int, str]:
@@ -188,12 +189,12 @@ def test_profile_all_equals_the_default(tmp_path, capsys):
     assert sorted(p.name for p in (tmp_path / "skills").iterdir()) == NAMES
 
 
-def test_profiles_partition_the_bundled_skills_but_the_journal_skill():
+def test_profiles_partition_the_bundled_skills_but_the_journal_and_install_skills():
     groups = list(skills_cli.PROFILES.values())
     members = [n for g in groups for n in g]
     assert len(members) == len(set(members))                     # no skill in two profiles
-    assert sorted(members) == [n for n in NAMES if n != JOURNAL]
-    assert all(JOURNAL not in g for g in groups)
+    assert sorted(members) == [n for n in NAMES if n not in (JOURNAL, INSTALL)]
+    assert all(JOURNAL not in g and INSTALL not in g for g in groups)
 
 
 def test_the_journal_skill_installs_by_name_alone(tmp_path, capsys):
@@ -223,8 +224,25 @@ def test_the_journal_skill_and_a_profile_add_up(tmp_path, capsys):
     assert [line.split(":")[0] for line in out.strip().splitlines()] == ["revit-bridge", "revit-core", JOURNAL]
 
 
+@pytest.mark.parametrize("profile,has_install", [("addin", False), ("bridge", False), ("all", True)])
+def test_only_profile_all_brings_the_install_skill(tmp_path, capsys, profile, has_install):
+    target = tmp_path / "skills"
+    code, _ = run(capsys, "install", "--profile", profile, "--to", str(target))
+    assert code == 0
+    assert (target / INSTALL / "SKILL.md").is_file() is has_install
+
+
+def test_the_install_skill_installs_by_name_alone(tmp_path, capsys):
+    target = tmp_path / "skills"
+    code, _ = run(capsys, "install", INSTALL, "--to", str(target))
+    assert code == 0
+    assert sorted(p.name for p in target.iterdir()) == [INSTALL]
+    assert tree(target / INSTALL) == tree(skills_dir() / INSTALL)
+    assert {"SKILL.md", "scripts/plan.py", "assets/install-config.example.json"} <= set(tree(target / INSTALL))
+
+
 def test_the_help_and_the_module_say_where_the_journal_skill_is(capsys):
-    assert JOURNAL in (skills_cli.__doc__ or "")
+    assert JOURNAL in (skills_cli.__doc__ or "") and INSTALL in skills_cli.__doc__
     assert "neither" in skills_cli.__doc__ and "--profile all or its name installs it" in skills_cli.__doc__
     with pytest.raises(SystemExit):
         server.main(["skills", "install", "--help"])

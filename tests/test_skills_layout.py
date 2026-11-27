@@ -37,9 +37,9 @@ def test_every_skill_names_itself_and_keeps_its_description_short(folder):
     assert "<" not in description and ">" not in description
 
 
-def test_the_skill_set_is_the_six_phase_skills_and_the_journal_skill():
+def test_the_skill_set_is_the_six_phase_skills_the_journal_skill_and_the_install_skill():
     assert [p.name for p in FOLDERS] == ["revit-addin-dev", "revit-addin-release", "revit-addin-test", "revit-bridge",
-                                         "revit-core", "revit-journal-analysis", "revit-task-brief"]
+                                         "revit-core", "revit-install", "revit-journal-analysis", "revit-task-brief"]
 
 
 @pytest.mark.parametrize("name", PHASES)
@@ -97,6 +97,81 @@ def test_scripts_are_ascii_without_a_bom():
         data = script.read_bytes()
         assert not data.startswith(b"\xef\xbb\xbf"), script
         assert all(byte < 128 for byte in data), script
+
+
+# -- revit-install: installing the products and the content libraries ----------------
+
+INSTALL = SKILLS / "revit-install"
+INSTALL_FILES = ["SKILL.md", "agents/openai.yaml", "assets/install-config.example.json", "references/content.md",
+                 "references/products.md", "scripts/inspect_revit_content_adix.py",
+                 "scripts/inspect_revit_content_msi.ps1", "scripts/plan.py", "scripts/read_content_identity.ps1"]
+
+
+def install_files():
+    return sorted(p for p in INSTALL.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+
+
+def test_the_install_skill_describes_itself_in_both_languages_and_ships_these_files():
+    meta, _ = read_skill(INSTALL / "SKILL.md")
+    assert set(meta) == {"name", "description"}
+    description = str(meta["description"])
+    assert description.startswith("Install Autodesk Revit and the desktop products that go with it on Windows")
+    assert re.search(r"[\u4e00-\u9fff]", description) and "Needs no revit-bridge component" in description
+    assert sorted(p.relative_to(INSTALL).as_posix() for p in install_files()) == sorted(INSTALL_FILES)
+    text = (INSTALL / "SKILL.md").read_text(encoding="utf-8")
+    for target in ("assets/install-config.example.json", "references/products.md", "references/content.md"):
+        assert f"]({target})" in text, target
+
+
+def test_the_install_skill_is_english_outside_its_description():
+    for path in install_files():
+        text = path.read_text(encoding="utf-8")
+        if path.name == "SKILL.md":
+            text = text.split("\n---\n", 1)[1]                     # the description is in both languages
+        assert text.isascii(), path
+
+
+def test_the_install_skill_holds_nothing_from_a_real_machine():
+    # The template and the texts carry placeholders only: no drive-letter or profile path, no
+    # address, no guid, no hash, no proxy endpoint (repository CLAUDE.md).
+    shapes = {
+        "a drive-letter path": r"\b[A-Za-z]:[\\/]",
+        "a user profile": r"(?i)[\\/]Users[\\/]",
+        "a URL": r"(?i)\b(?:https?|socks5?)://",
+        "an address": r"(?<![\d.])\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?![\d.])",
+        "a guid": r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        "a hash": r"\b[0-9a-fA-F]{40,}\b",
+    }
+    for path in install_files():
+        text = path.read_text(encoding="utf-8")
+        for what, pattern in shapes.items():
+            found = re.search(pattern, text)
+            assert not found, (path.name, what, found.group(0))
+    template = (INSTALL / "assets" / "install-config.example.json").read_text(encoding="ascii")
+    for placeholder in ('"<DOWNLOAD_DIR>"', '"<CONTENT_ROOT>"', '"<PROXY_URL_OR_NULL>"'):
+        assert placeholder in template, placeholder
+
+
+def test_the_install_plan_refuses_the_unfilled_template_and_prints_a_filled_one(tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    script = INSTALL / "scripts" / "plan.py"
+    template = INSTALL / "assets" / "install-config.example.json"
+    refused = subprocess.run([sys.executable, str(script), str(template)], capture_output=True, text=True)
+    assert refused.returncode == 2 and "Configuration error" in refused.stderr and not refused.stdout
+    config = json.loads(template.read_text(encoding="ascii"))
+    config.update(downloadDir="X:/media", contentRoot="X:/content", proxyUrl=None, contentYears=[2026])
+    filled = tmp_path / "install.json"
+    filled.write_text(json.dumps(config), encoding="utf-8")
+    done = subprocess.run([sys.executable, str(script), str(filled)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    plan = json.loads(done.stdout)
+    assert plan["deferRestart"] is True and plan["proxyUrl"] is None and plan["products"] == config["products"]
+    assert plan["content"] == [
+        {"year": 2026, "locale": "CHS", "verifiedName": "RVTCPCHS_2026.exe", "target": "X:\\content\\2026"},
+        {"year": 2026, "locale": "ENU", "verifiedName": "RVTCPENU_2026.exe", "target": "X:\\content\\2026"}]
 
 
 # -- revit-journal-analysis: reading journals with nothing installed -----------------
