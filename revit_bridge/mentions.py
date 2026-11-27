@@ -9,8 +9,11 @@ writing a message (section 2.4 of the hostv2 plan):
     cannot be picked (a link that is not loaded) adds ``disabled: true`` and
     ``reason``. An empty type search without a category offers categories
     first. Text searches rank all matching types across categories, with
-    bilingual aliases and unpaginated category facets. ``element`` requires
-    ``source="selection"`` and returns at most 50 items in one page. ``limit``
+    bilingual aliases and unpaginated category facets. ``element`` returns at
+    most 50 items in one page and says where they come from in ``source``:
+    with ``source="selection"`` the elements selected in Revit, with
+    ``source="model"`` a search of the whole model (``revit_bridge.mention_model``),
+    and without ``source`` the selection when there is one, else the model. ``limit``
     and ``offset`` select a page; ``total`` counts every match on a complete
     search. A budget-limited selection reports its full selection count,
     ``facets_partial`` and a warning. ``truncated`` also covers incomplete
@@ -49,6 +52,7 @@ import unicodedata
 
 from revit_bridge import mention_cache
 from revit_bridge.mention_elements import SELECTION_LIMIT, items_by_id, selected_items
+from revit_bridge.mention_model import model_items
 from revit_bridge.mention_search import category_terms, facets, rank_items, search_terms
 from revit_bridge.snapshot.query import (
     CATEGORY_RE,
@@ -64,6 +68,7 @@ from revit_bridge.snapshot.query import (
 )
 
 MENTION_KINDS = ("level", "type", "link", "element")
+ELEMENT_SOURCES = ("selection", "model")
 MAX_MENTIONS = 20                   # the host's ChatRequest takes at most this many
 DEFAULT_MENTION_LIMIT = 50
 # A name in the text block is at most this many characters AFTER escaping, quotes not counted
@@ -167,8 +172,9 @@ async def mention_candidates(executor: RevitQueryExecutor, kind: str, category: 
         return {"error": "unknown_kind", "kind": kind, "kinds": list(MENTION_KINDS)}
     if q is not None and not isinstance(q, str):
         return {"error": "invalid_args", "kind": kind, "message": "q must be a string"}
-    if (kind == "element" and source != "selection") or (kind != "element" and source is not None):
-        return {"error": "invalid_args", "kind": kind, "message": "only element takes source=selection"}
+    if source is not None and (kind != "element" or source not in ELEMENT_SOURCES):
+        return {"error": "invalid_args", "kind": kind,
+                "message": "only element takes a source: selection or model"}
     if offset is None:
         offset = 0
     if int_or_none(offset) is None or int(offset) < 0:
@@ -189,7 +195,13 @@ async def mention_candidates(executor: RevitQueryExecutor, kind: str, category: 
     if kind == "element":
         limit = min(limit, SELECTION_LIMIT)
         try:
-            return await selected_items(executor, offset, limit, terms)
+            # Without a source: what the designer selected in Revit, and the whole model
+            # when nothing is selected.
+            if source != "model":
+                selected = dict(await selected_items(executor, offset, limit, terms), source="selection")
+                if source == "selection" or selected["selected"] > 0:
+                    return selected
+            return await model_items(executor, offset, limit, terms)
         except RevitQueryError as exc:
             return {"error": "revit_error", "kind": kind, "message": str(exc)}
     elif kind == "type":

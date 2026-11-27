@@ -156,7 +156,7 @@ def test_bad_input_never_reaches_revit():
     assert out == {"error": "unknown_kind", "kind": "view", "kinds": ["level", "type", "link", "element"]}
     assert methods == []
     for kind, kwargs in (("type", {"category": "Walls"}), ("type", {"category": "OST_Walls; x"}),
-                         ("level", {"category": "OST_Walls"}), ("level", {"q": 5}), ("element", {}),
+                         ("level", {"category": "OST_Walls"}), ("level", {"q": 5}),
                          ("element", {"source": "all"}), ("type", {"source": "selection"}),
                          ("type", {"offset": -1}), ("type", {"offset": "oops"}),
                          ("type", {"q": "a b c d e f g h i"}), ("element", {"q": "a b c d e f g h 墙200",

@@ -210,7 +210,8 @@ async def selected_items(executor, offset, limit, terms):
         if not terms:
             indexed = {item["id"] for item in ranked}
             ranked.extend(item for item in rows if item["id"] not in indexed)
-    return {"kind": "element", "items": rows, "offset": offset, "total": total if partial else len(ranked),
+    return {"kind": "element", "selected": total, "items": rows, "offset": offset,
+            "total": total if partial else len(ranked),
             "truncated": partial or len(ranked) > offset + limit, "category_matched": [], "facets": facets(ranked),
             **({"facets_partial": True} if partial else {}),
             **({"warnings": list(dict.fromkeys(warnings))} if warnings else {})}

@@ -90,6 +90,8 @@ def test_watch_returns_same_element_as_get_current_selection():
     replies = [dict(snapshot, items=[row]), dict(document_id="a", items=[row]), snapshot]
     device.send_code = AsyncMock(side_effect=[RevitResponse(success=True, result=r) for r in replies * 2])
     expected = asyncio.run(mentions.mention_candidates(RevitQueryExecutor(device), "element", source="selection"))
+    # The candidates also say where they come from and how many elements are selected.
+    assert expected.pop("source") == "selection" and expected.pop("selected") == 1
     assert asyncio.run(device.watch("single")) == expected
     assert expected["items"][0]["document_id"] == "a" and expected["items"][0]["detail"] == "Walls, 1200 mm, L2"
 
