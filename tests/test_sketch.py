@@ -509,3 +509,19 @@ def test_2000_point_zigzag_is_rejected_quickly(advance):
 def test_stroke_over_the_2000_point_limit_is_refused_at_input():
     with pytest.raises(ValueError, match="list of"):
         sketch.sketch_lines(FRAME, 2000, 800, [[[i, 100] for i in range(2001)]])
+
+
+def test_a_wobble_on_an_edge_of_a_box_is_not_a_corner():
+    # A box drawn with a shaky hand, the bottom edge sagging in the middle: the simplifier first
+    # splits at the sag, which is farther from the chord than either bottom corner.
+    random.seed(3)
+    corners = [(1152, 296), (1408, 302), (1400, 458), (1155, 453), (1154, 300)]
+    stroke = []
+    for (x0, y0), (x1, y1) in zip(corners, corners[1:]):
+        stroke += [[x0 + (x1 - x0) * i / 30 + random.uniform(-3, 3), y0 + (y1 - y0) * i / 30 + random.uniform(-3, 3)]
+                   for i in range(30)]
+    kept = sketch._stroke([(float(x), float(y)) for x, y in stroke])
+    assert len(kept) == 5                                          # four corners and the return to the start
+    (line,) = resolve([stroke], walls=[])["lines"]
+    assert line.get("closed") is True and len(line["points"]) == 4
+    assert len({p["x"] for p in line["points"]}) == 2 and len({p["y"] for p in line["points"]}) == 2

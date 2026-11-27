@@ -287,7 +287,23 @@ def _simplify(points, epsilon):
             if kept_count > MAX_SEGMENTS + 1:
                 break
             stack += [(first, index), (index, last)]
-    return [p for p, kept in zip(points, keep) if kept]
+    out = [p for p, kept in zip(points, keep) if kept]
+    # The simplifier splits at the farthest point, which on a closed or sharply bent stroke
+    # can be a wobble on an edge rather than a corner; the real corners are then kept as well
+    # and the wobble stays between them. Drop a kept point that lies within the tolerance of
+    # the straight line between its neighbours.
+    i = 1
+    while len(out) <= MAX_SEGMENTS + 1 and i < len(out) - 1:
+        (ax, ay), (px, py), (bx, by) = out[i - 1], out[i], out[i + 1]
+        dx, dy = bx - ax, by - ay
+        span = dx * dx + dy * dy
+        s = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / span)) if span else 0.0
+        if math.hypot(px - (ax + dx * s), py - (ay + dy * s)) <= epsilon:
+            del out[i]
+            i = max(1, i - 1)
+        else:
+            i += 1
+    return out
 
 
 def _stroke(points):
