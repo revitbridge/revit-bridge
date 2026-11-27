@@ -6,6 +6,8 @@ All notable changes to `revit-bridge` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-11-26
+
 ### Added
 
 - `revit-install` skill: install Autodesk Revit,
@@ -1594,7 +1596,8 @@ First release of the standalone package, extracted from the former
 - RAG tools `search_revit_api`, `get_code_examples`, `generate_code` and every
   model / vector-store dependency. Hosts bring their own model.
 
-[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/revitbridge/revit-bridge/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/revitbridge/revit-bridge/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/revitbridge/revit-bridge/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/revitbridge/revit-bridge/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/revitbridge/revit-bridge/compare/v0.10.1...v0.11.0
